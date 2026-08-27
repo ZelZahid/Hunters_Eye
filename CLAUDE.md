@@ -33,6 +33,8 @@ In order, because they can conflict and the tradeoff should always be made delib
 
 `updates.txt` is the changelog and the source of truth for version numbers — read it before assuming what "the current version" means. Versioning starts at `0.001` and increments by `0.001` per significant update, working toward `1.000` ("Hunter's Eye complete," which is intentionally far off). Each version has a matching git tag (`v0.001`, `v0.002`, ...) on the exact commit for that state — **when asked to roll back to a known-working version, check out that tag; don't guess from raw commit history.** When cutting a new version: append an entry to `updates.txt` (date + a short description of what changed, in the same style as existing entries), commit, then create an annotated tag (`git tag -a v0.XXX -m "..."`) on that commit.
 
+`Error_history.txt` logs significant bugs hit during development with root cause + fix + a one-line lesson each — **check it before debugging something that feels familiar** (e.g. anything touching `overlay.py`'s Win32 layered-window code, OCR/Tesseract error handling, or shared capture-resolution constants); it may already be documented there with the fix ready to reapply. Append a new entry there (same format as existing ones) any time a bug takes real effort to track down, not just quick typo fixes.
+
 ## Running
 
 No build step (no `setup.py`/`pyproject.toml`). Dependencies are listed in `requirements.txt`; install with:

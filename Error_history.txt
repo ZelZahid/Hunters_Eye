@@ -1,0 +1,186 @@
+Hunter's Eye - Error History
+=============================
+
+Log of significant bugs hit during development, their root cause, and the fix -
+kept so the same mistake doesn't get repeated (or re-diagnosed from scratch,
+burning time/tokens) later. Listed chronologically. See updates.txt for the
+version/changelog this all landed in (v0.001).
+
+------------------------------------------------------------------------------
+1. AttributeError: module 'cv2' has no attribute 'groupRectangles'
+------------------------------------------------------------------------------
+Where: main.py, detect_objects()
+Cause: OpenCV 5.0 removed cv.groupRectangles from its Python bindings (legacy
+  API tied to the old HOG/cascade detectors). Code written against OpenCV 4.x
+  assumptions broke on the OpenCV 5.x actually installed (opencv-python 5.0.0.93).
+Fix: Replaced with cv.dnn.NMSBoxes (standard, actively-maintained non-max
+  suppression) - collapses overlapping matches using their real match
+  confidence scores instead of raw rectangle-overlap counts.
+Lesson: Don't assume an OpenCV tutorial/example's API surface matches whatever
+  version is actually installed - check cv2.__version__ and be ready for
+  legacy functions to be gone in v5.
+
+------------------------------------------------------------------------------
+2. Result-limiting slice was backwards (silent logic bug, not a crash)
+------------------------------------------------------------------------------
+Where: main.py, detect_objects() (found while fixing #1)
+Cause: `rectangles = rectangles[max_results:]` was written to "keep only the
+  top max_results" but actually DROPS the first max_results entries and keeps
+  everything after - the opposite of the intent.
+Fix: Changed to `rectangles[:max_results]`.
+Lesson: Slice-based truncation bugs are easy to get backwards and easy to miss
+  since both versions "run fine" - only the wrong items get kept. Worth a
+  second look any time a slice is used to "limit to N".
+
+------------------------------------------------------------------------------
+3. pytesseract per-region OCR calls collapsed FPS from ~15 to ~0.6
+------------------------------------------------------------------------------
+Where: text_detection.py (early MSER-based version)
+Cause: pytesseract launches a brand-new tesseract.exe subprocess on EVERY
+  call (~120-150ms fixed cost, independent of image size). Calling it once
+  per candidate text region (up to 12/frame) multiplied that fixed cost into
+  a 10-20x FPS hit.
+Fix: Rewrote to make exactly ONE Tesseract call per frame, over the whole
+  image, using pytesseract.image_to_data() and grouping its per-word output
+  back into lines - instead of pre-cropping N regions and OCR'ing each.
+Lesson: For any external-subprocess-backed API (OCR, CLI tools wrapped in
+  Python, etc.), profile whether cost is dominated by call overhead or by
+  work size BEFORE assuming "smaller inputs = faster." Batch calls when the
+  overhead is the bottleneck.
+
+------------------------------------------------------------------------------
+4. OCR still stalled the fast image-matching loop even when throttled
+------------------------------------------------------------------------------
+Where: main.py, detect_objects() (early throttled version)
+Cause: OCR ran inline in the same thread as image matching, gated to every
+  Nth frame - but on the Nth frame it still blocked that thread for its full
+  ~150ms cost, capping overall FPS well below what image matching alone
+  could do.
+Fix: Moved OCR onto its own thread (detect_text()) that only *publishes*
+  results (shared_text_tracks, behind a lock) - the fast image-matching
+  thread reads whatever's latest and never waits on OCR. Took the pipeline
+  from ~25 FPS to ~44-46 FPS with OCR active either way.
+Lesson: Throttling an expensive call's frequency doesn't fix the stall it
+  causes on the frame it DOES run - if that stall is unacceptable, the call
+  needs to be decoupled onto its own thread, not just made less frequent.
+
+------------------------------------------------------------------------------
+5. Unguarded Tesseract-missing / Tesseract-error paths could crash the thread
+------------------------------------------------------------------------------
+Where: text_detection.py
+Cause: (a) If Tesseract isn't installed at all, every OCR call throws
+  TesseractNotFoundError. (b) Even installed, the Windows Tesseract 5.4.0
+  build intermittently throws a spurious TesseractError ("ObjectCache leak"
+  warning during its own internal cleanup, unrelated to whether OCR actually
+  succeeded) - confirmed happening roughly once per 15-20 calls in testing.
+  Neither was originally guarded, so either would kill the detect_text thread.
+Fix: (a) Check pytesseract.get_tesseract_version() once at import time; if it
+  fails, print one warning and make find_text_matches() a no-op instead of
+  letting every call throw. (b) Wrap each OCR call in try/except
+  TesseractError - log and skip that scan, don't crash.
+Lesson: Any call into an external, unversioned, non-Python-controlled binary
+  should be treated as unreliable by default - check availability once, and
+  wrap every individual call, not just the "is it installed" check.
+
+------------------------------------------------------------------------------
+6. Dropping CAPTURE_SCALE for speed silently broke OCR accuracy
+------------------------------------------------------------------------------
+Where: main.py (CAPTURE_SCALE 0.5 -> 0.3) + text_detection.py
+Cause: CAPTURE_SCALE was lowered specifically to speed up cv.matchTemplate
+  for icon matching. detect_text() was reading that SAME downscaled frame for
+  OCR - and at 0.3x, in-game text on a 1280x800 screen shrinks to only a few
+  pixels tall, well below what Tesseract can read. Result: OCR stopped
+  finding anything, with no error at all (just silently no matches).
+Fix: Gave detect_text() its own independent mss capture loop at a much
+  higher, separate resolution (OCR_CAPTURE_SCALE = 1.0), and convert its
+  match coordinates back into CAPTURE_SCALE space before publishing them.
+Lesson: Different detectors can have fundamentally different resolution
+  needs (template matching tolerates small/blurry input; OCR does not).
+  Sharing one downscaled frame across detector types is a trap - a change
+  tuned for one detector's speed can silently break another's correctness,
+  with no exception to point at the cause. Worth re-checking every consumer
+  of a shared frame/resolution constant before changing it.
+
+------------------------------------------------------------------------------
+7. Transparent overlay rendered as solid black
+------------------------------------------------------------------------------
+Where: overlay.py, Overlay.__init__
+Cause: Tk's "-transparentcolor" attribute sets up the window's Win32 layered
+  colorkey transparency internally. Immediately after, calling
+  win32gui.SetWindowLong to add WS_EX_TRANSPARENT reset that transparency
+  data, because Tk has no idea the window was modified behind its back.
+  Windows' fallback for a layered window with invalid transparency data is
+  to render it solid black - which blanketed the whole monitor.
+Fix: Re-assert the colorkey explicitly right after the SetWindowLong call,
+  via win32gui.SetLayeredWindowAttributes(hwnd, colorkey, 0, LWA_COLORKEY).
+Lesson: Mixing a high-level toolkit's (Tk's) internal window-state management
+  with manual low-level (Win32) style changes is fragile - any manual style
+  change can silently invalidate state the toolkit set up, with no error,
+  only wrong visual output. Re-verify/re-apply toolkit-managed state after
+  any manual Win32 call on the same window.
+
+------------------------------------------------------------------------------
+8. Transparent overlay looked correct but clicks didn't pass through
+------------------------------------------------------------------------------
+Where: overlay.py, Overlay.__init__ (found immediately after fixing #7)
+Cause: Two compounding issues. (a) root.winfo_id() can return an inner Tk
+  drawing-surface window handle, not the actual outer OS-level frame that
+  Windows uses for hit-testing/click-routing - styling the wrong (child)
+  window does nothing, silently. (b) Even targeting the right HWND,
+  SetWindowLong alone doesn't reliably make Windows re-evaluate hit-testing
+  for a newly-added style bit.
+Fix: (a) Walk up to the real frame via win32gui.GetParent(hwnd) before
+  applying styles. (b) Force Windows to re-evaluate by calling
+  win32gui.SetWindowPos(hwnd, ..., SWP_FRAMECHANGED) right after
+  SetWindowLong.
+Verification: Visual screenshot inspection could NOT have caught this - the
+  overlay looks identical whether clicks pass through or not. Built an
+  isolated test instead: a plain Tk window with a click-counting button, on
+  a monitor away from the live game, with the overlay on top; simulated a
+  real click via pyautogui at its exact screen coordinates and confirmed via
+  a status file + before/after screenshot that the click reached the button
+  underneath.
+Lesson: For click-through / input-routing bugs specifically, visual
+  correctness and input correctness are independent properties governed by
+  different Win32 mechanisms - test both explicitly, don't infer one from
+  the other. A real interactive test (even a scripted/simulated one) is
+  sometimes the only way to actually verify a fix.
+
+------------------------------------------------------------------------------
+9. git commit failed: "Author identity unknown"
+------------------------------------------------------------------------------
+Where: local machine, first commit attempt this project
+Cause: git user.name/user.email were never configured on this machine.
+Fix: Had the user run `git config user.name "..."` and
+  `git config user.email "..."` themselves (Claude Code is not permitted to
+  modify git config directly, even on request).
+Lesson: Not a code bug - an environment-setup gap. Worth checking
+  `git config user.name/user.email` early on a fresh machine before
+  assuming a commit will succeed.
+
+------------------------------------------------------------------------------
+10. winget install hung / failed on an interactive prompt
+------------------------------------------------------------------------------
+Where: installing the Tesseract OCR engine via winget
+Cause: `winget install UB-Mannheim.TesseractOCR` triggered an interactive
+  "do you agree to the msstore source terms?" Y/N prompt, which can't receive
+  input through a non-interactive shell pipe - it errored out
+  (0x8a150042 : Error reading input in prompt).
+Fix: Re-ran with `--accept-source-agreements --accept-package-agreements`
+  flags to answer the prompt non-interactively up front.
+Lesson: winget commands run from a non-interactive context should default to
+  including both accept flags rather than hitting the prompt and retrying.
+
+------------------------------------------------------------------------------
+11. __pycache__ almost got committed to the repo
+------------------------------------------------------------------------------
+Where: repo root, after running `python -m py_compile` for syntax checks
+Cause: There was no .gitignore yet, so running compile checks (which create
+  __pycache__/*.pyc) left artifacts that `git add -A` swept up alongside
+  real changes. Caught via reviewing `git status` before committing, not
+  automatically.
+Fix: Added a .gitignore covering __pycache__/, *.pyc, and venv/.venv/ early,
+  and made a habit of `rm -rf __pycache__` before staging after any test run.
+Lesson: Always add .gitignore near the start of a project, before the first
+  round of local testing - not after noticing compiled artifacts in
+  `git status`.
