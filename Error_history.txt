@@ -290,3 +290,34 @@ Lesson: Don't tune timing constants against an assumed or synthetically-
   dumber one (a fixed crop) - measure both against the real workload before
   committing to the more complex one, since its own overhead can eat the
   benefit it was supposed to provide.
+
+------------------------------------------------------------------------------
+14. OCR_INTERVAL_SECONDS was timed from call completion, not call start
+------------------------------------------------------------------------------
+Where: main.py detect_text()
+Cause: `last_ocr_time = time.time()` was set AFTER the OCR call finished, not
+  before it started. Since the interval check is `time.time() - last_ocr_time
+  >= OCR_INTERVAL_SECONDS`, this meant the real gap between successive scans
+  was actually (interval + the previous call's own duration), not just the
+  interval as intended - e.g. with a 0.7s interval and a ~0.5s call, the real
+  cadence was ~1.2s, not 0.7s. User report ("takes like 3 seconds") was
+  higher than this bug alone explains, but a live diagnostic ("[scan-to-scan
+  gap: ...]", timing actual successive scan starts) confirmed the real gap
+  was ~1.2s before the fix and ~0.7s after - matching the interval exactly.
+  A separate hypothesis (OCR cost spiking during actual combat/drop moments
+  due to higher visual complexity) was tested and NOT confirmed - real
+  combat-moment OCR calls measured 0.42-0.63s, the same range as calm-moment
+  testing, not meaningfully higher.
+Fix: Move the `last_ocr_time = time.time()` timestamp to the START of the
+  OCR call instead of after it completes, so the interval can elapse WHILE
+  the call is running - the next scan fires right after the current one
+  finishes instead of waiting a full interval again on top of it.
+Lesson: When a periodic action's "next run" timestamp is set after the
+  action completes rather than when it starts, the action's own duration
+  silently stacks onto the intended interval every cycle. This is easy to
+  miss by inspection (both versions "look right" in isolation) - a live
+  diagnostic that measures the actual real-world gap between occurrences
+  (not just log each occurrence) is what caught it. Also worth remembering:
+  a plausible-sounding hypothesis (combat complexity spiking OCR cost) can
+  be wrong even when it fits the symptom - measure before treating a guess
+  as the explanation.

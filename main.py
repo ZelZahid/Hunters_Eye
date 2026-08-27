@@ -161,6 +161,7 @@ def detect_text():
     global shared_text_tracks
     local_tracks = [] #(x, y, w, h, matched_name, patch) - patch is only needed here for tracking
     last_ocr_time = 0.0
+    prev_scan_start = None #diagnostic only: measures the real gap between successive scan starts
     coord_scale = CAPTURE_SCALE / OCR_CAPTURE_SCALE #converts OCR_CAPTURE_SCALE coords -> CAPTURE_SCALE coords for shared_text_tracks
 
     #Diagnostic: this loop's own iteration rate. If it's much slower under real gameplay than on
@@ -189,20 +190,34 @@ def detect_text():
             frame = grab_frame()
 
             if time.time() - last_ocr_time >= OCR_INTERVAL_SECONDS:
+                #Timestamp the START of the call, not its completion. A call takes ~0.5s and the
+                #interval is 0.7s - timing from completion meant the real gap between scans was
+                #interval + call duration (~1.2s), not just the interval as intended. Timing from
+                #the start means the interval can elapse WHILE the call is running, so the next
+                #scan can fire right after this one finishes instead of waiting a full interval again.
+                last_ocr_time = time.time()
+                if prev_scan_start is not None:
+                    print(f"[scan-to-scan gap: {last_ocr_time - prev_scan_start:.3f}s]")
+                prev_scan_start = last_ocr_time
+
                 frame_h = frame.shape[0]
                 viewport_y0 = int(frame_h * VIEWPORT_TOP_MARGIN)
                 viewport_y1 = int(frame_h * (1 - VIEWPORT_BOTTOM_MARGIN))
                 viewport = frame[viewport_y0:viewport_y1, :]
 
+                ocr_t0 = time.time()
+                ocr_results = text_detection.find_text_matches(viewport, target_items)
+                print(f"[OCR call: {time.time() - ocr_t0:.3f}s]")
+
                 local_tracks = []
-                for (tx, ty, tw, th, matched_name) in text_detection.find_text_matches(viewport, target_items):
+                for (tx, ty, tw, th, matched_name) in ocr_results:
                     ty += viewport_y0 #translate back from viewport-relative to full-frame coordinates
                     patch = frame[ty:ty + th, tx:tx + tw].copy()
                     local_tracks.append((tx, ty, tw, th, matched_name, patch))
                     print(f"Found '{matched_name}' at center {(tx + tw // 2, ty + th // 2)}")
-                last_ocr_time = time.time()
 
-                #The OCR call above took ~150-300ms - the position it returned describes where
+                #The OCR call above took real time (measured ~0.4-0.6s against a real viewport
+                #crop) - the position it returned describes where
                 #the item was BEFORE that call started, not now. Left as-is, the very first
                 #relocalization attempt has to bridge that whole gap on top of a normal loop
                 #iteration, which real testing showed failing almost every time while moving

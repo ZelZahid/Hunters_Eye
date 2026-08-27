@@ -77,3 +77,13 @@ game rather than assumed:
 - Result: item discovery and tracking now hold up well during continuous
   movement and direction changes, not just while standing still - confirmed
   via real gameplay testing, not just code review.
+- Found and fixed one more discovery-latency bug after user-reported real
+  gameplay felt like a ~3-second delay: the OCR refresh interval was timed
+  from when the previous call FINISHED, not when it started, silently
+  stacking the call's own ~0.5s duration onto the intended 0.7s interval
+  (~1.2s real gap instead of 0.7s). Confirmed via a live scan-to-scan-gap
+  diagnostic before and after the fix. Real-gameplay hotkey behavior (Alt
+  held continuously, not pressed on-demand) and a "does combat complexity
+  spike OCR cost" hypothesis were both checked and ruled out as explanations
+  - see Error_history.txt for both. User-confirmed after the fix: perceived
+  delay dropped from "like 3 seconds" to "more like 0.5 seconds."
