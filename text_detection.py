@@ -22,6 +22,14 @@ from pathlib import Path
 
 import pytesseract
 
+# D2R (and most games) draw a semi-transparent background panel behind floating item-name
+# labels, sized a bit larger than the text itself for legibility. Tesseract's word boxes only
+# cover the glyphs, not that panel, so the box would look visibly too small/tight without this
+# padding. These are estimates (in native screen pixels, since OCR runs at OCR_CAPTURE_SCALE=1.0
+# in main.py) - tune against real gameplay if the box still doesn't match the panel's edges.
+LABEL_PAD_X = 10
+LABEL_PAD_Y = 6
+
 # On Windows, the official Tesseract installer doesn't add itself to PATH by
 # default. Point pytesseract at the default install location if it exists and
 # nothing is already on PATH - avoids every Windows user having to configure this by hand.
@@ -74,8 +82,9 @@ def _group_words_into_lines(ocr_data):
         ys = [w[2] for w in words]
         x2s = [w[1] + w[3] for w in words]
         y2s = [w[2] + w[4] for w in words]
-        x, y = min(xs), min(ys)
-        results.append((text, x, y, max(x2s) - x, max(y2s) - y))
+        x, y = min(xs) - LABEL_PAD_X, min(ys) - LABEL_PAD_Y
+        w, h = (max(x2s) - min(xs)) + 2 * LABEL_PAD_X, (max(y2s) - min(ys)) + 2 * LABEL_PAD_Y
+        results.append((text, max(x, 0), max(y, 0), w, h))
     return results
 
 

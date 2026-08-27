@@ -30,7 +30,7 @@ needle_image = cv.imread(str(ASSETS_DIR / "image1.png"))
 needle_image = cv.resize(needle_image, (0,0) , fx=CAPTURE_SCALE, fy=CAPTURE_SCALE)
 needle_w = needle_image.shape[1]
 needle_h = needle_image.shape[0]
-target_items = text_detection.load_target_items(ASSETS_DIR / "items.txt") #item names to watch for via OCR
+target_items = text_detection.load_target_items(ASSETS_DIR / "targets.txt") #item names to watch for via OCR
 
 #Queues for thread-safe comms
 screenshot_queue = Queue(maxsize = 3)
