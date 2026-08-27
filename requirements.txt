@@ -1,0 +1,19 @@
+# Hunter's Eye dependencies
+# Install everything with:
+#   python -m pip install -r requirements.txt
+#
+# (Recommended) create a virtual environment first:
+#   Windows (PowerShell):  python -m venv venv; venv\Scripts\Activate.ps1
+#   macOS / Linux:         python3 -m venv venv && source venv/bin/activate
+
+# --- Core (used by root main.py) ---
+opencv-python>=4.9
+numpy>=1.26
+mss>=9.0
+pyautogui>=0.9.54
+
+# --- Legacy / version1 scripts ---
+keyboard>=0.13.5
+
+# Windows-only: provides win32gui/win32ui/win32con used by version1/Window_Capture.py
+pywin32>=306 ; sys_platform == "win32"
