@@ -1,0 +1,4 @@
+# One item name per line — this is what Hunter's Eye watches for on screen.
+# Lines starting with # are ignored. Matching is case-insensitive and tolerant
+# of small OCR misreads (fuzzy match), so write names exactly as they appear in-game.
+FULL REJUVENATION POTION

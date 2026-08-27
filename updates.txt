@@ -1,0 +1,40 @@
+Hunter's Eye - Update Log
+=========================
+
+Versioning: starts at 0.001, incrementing by 0.001 for each significant update,
+working toward 1.000 ("Hunter's Eye complete" - see the long-term vision in
+CLAUDE.md, which is a long way off on purpose). Each version below has a
+matching git tag (v0.001, v0.002, ...) pointing at the exact commit for that
+state. To get back to a known-working point after something breaks, check out
+that tag rather than guessing from commit history - that's what these are for.
+
+------------------------------------------------------------------------------
+Version 0.001 - 2026-08-27
+------------------------------------------------------------------------------
+First tagged checkpoint. Took the project from a rough Diablo II prototype to
+a working, documented, cross-platform-minded detection engine:
+
+- Docs & project setup: added CLAUDE.md (architecture + long-term product
+  vision), requirements.txt, a portfolio-ready README, and a source-available
+  license (PolyForm Strict) suited to a future commercial product.
+- Cleanup: merged two main.py files into one, renamed version1/ -> legacy/,
+  organized assets into folders, added .gitignore.
+- Fixed an OpenCV 5 compatibility break (cv.groupRectangles was removed from
+  OpenCV's Python bindings; replaced with NMS-based match merging) and a
+  backwards result-limiting slice bug.
+- Added OCR-based item-name detection (text_detection.py + assets/items.txt)
+  so new items can be watched for by adding a line of text, not a new
+  reference image - built to scale to hundreds of item names at no extra
+  per-frame cost.
+- Performance pass: profiled every stage of the pipeline, cut matchTemplate
+  cost via a tuned capture scale, and moved OCR onto its own thread so it can
+  no longer stall the fast detection loop. Took real-gameplay FPS from ~11 to
+  ~40+.
+- Replaced the debug window with a real transparent, click-through overlay
+  (overlay.py) drawn directly over the game, fixing two subtle Win32 bugs
+  along the way (the window rendering solid black, and clicks not passing
+  through to the game) - both verified with actual on-screen testing, not
+  just code review.
+- Confirmed end-to-end on real gameplay: the overlay correctly boxes
+  "Full Rejuvenation Potion" text over the live game, with the character
+  still fully controllable through the overlay.

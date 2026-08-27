@@ -12,8 +12,19 @@ numpy>=1.26
 mss>=9.0
 pyautogui>=0.9.54
 
-# --- Legacy / version1 scripts ---
+# --- OCR (text_detection.py) ---
+# pytesseract is just a Python wrapper - it needs the actual Tesseract OCR
+# engine installed separately (it's not a pip package):
+#   Windows: winget install UB-Mannheim.TesseractOCR   (or the installer at
+#            https://github.com/UB-Mannheim/tesseract/wiki - default install
+#            path is auto-detected by text_detection.py)
+#   macOS:   brew install tesseract
+pytesseract>=0.3.10
+
+# --- Overlay (overlay.py, main.py's quit hotkey) + legacy scripts (legacy/) ---
 keyboard>=0.13.5
 
-# Windows-only: provides win32gui/win32ui/win32con used by version1/Window_Capture.py
+# Windows-only: provides win32gui/win32con used by overlay.py (click-through window) and
+# legacy/Window_Capture.py. The transparent overlay itself is also Windows-only right now
+# (see overlay.py) - on other platforms main.py falls back to a plain debug window.
 pywin32>=306 ; sys_platform == "win32"
