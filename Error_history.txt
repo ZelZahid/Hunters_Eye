@@ -184,3 +184,109 @@ Fix: Added a .gitignore covering __pycache__/, *.pyc, and venv/.venv/ early,
 Lesson: Always add .gitignore near the start of a project, before the first
   round of local testing - not after noticing compiled artifacts in
   `git status`.
+
+------------------------------------------------------------------------------
+12. OCR item-label tracking couldn't keep up with real character movement
+------------------------------------------------------------------------------
+Where: main.py, detect_text() / _relocalize_track()
+Cause: Two compounding issues, found via a loop-rate diagnostic added to
+  detect_text() rather than by guessing:
+  (a) OCR_INTERVAL_SECONDS was set to 0.3, but a single Tesseract OCR call
+  itself costs ~150-300ms - ABOVE that interval. So the "wait between calls"
+  throttle did nothing in practice: by the time one OCR call finished, the
+  interval had usually already elapsed, so OCR ran back-to-back on nearly
+  every loop iteration. Measured effect: the loop dropped to ~6-9 Hz (should
+  be ~20-70 Hz depending on system load), leaving almost no time for the
+  cheap, fast relocalization step that's supposed to keep the box glued to a
+  moving target.
+  (b) Separately, _relocalize_track() always matched against the ORIGINAL
+  patch captured at the last full OCR refresh, never updating it. Fine while
+  standing still (nothing nearby changes), but real gameplay has dynamic
+  content near labels (flickering torches, animated water/grass, other
+  moving characters) - the longer a reference patch goes unrefreshed, the
+  more the live scene has drifted from it, degrading match confidence.
+  Together: the box worked fine standing still (matched the "only works
+  when standing still" symptom exactly) and lagged/lost the target the
+  moment the camera panned.
+Fix: (a) Raised OCR_INTERVAL_SECONDS to 1.5 - well above a single OCR call's
+  own cost, leaving real room for many fast relocalization passes between
+  refreshes. (b) Changed _relocalize_track() to re-crop the patch from the
+  CURRENT frame at the newly-found position after every successful match,
+  so the reference is always at most one loop iteration stale, not up to
+  OCR_INTERVAL_SECONDS stale.
+Lesson: When throttling an expensive periodic call, always check the
+  interval against the call's OWN duration, not just against "what feels
+  like a reasonable number." An interval near or below the call's cost
+  doesn't throttle anything - it just serializes the expensive call onto
+  every loop iteration. When a "smart tracker" reuses a reference captured
+  once, ask whether anything nearby is expected to change over time even
+  without motion (animation, lighting, particles) - if so, refresh the
+  reference, don't assume a stale snapshot stays valid. And when a fix
+  doesn't work, add a cheap diagnostic (a loop-rate print, in this case)
+  before guessing at a third parameter tweak - it turned "still doesn't
+  work" into an exact, measurable root cause in one round trip.
+
+Follow-up (still #12, same investigation): (a) and (b) above weren't enough -
+  user report: "slightly better moving straight, even worse changing
+  direction." Real-gameplay logging (TRACK LOST prints added per-track) showed
+  the ACTUAL cause: relocalization was failing on almost the very FIRST
+  attempt after every OCR refresh, at very low confidence (0.08-0.30 - a
+  genuine miss, not a near-threshold one). Root cause: a single OCR call
+  itself takes ~150-300ms, so the position it returns describes where the
+  item was BEFORE that call started - by the time the first relocalization
+  check runs, the real position has already moved by the OCR call's full
+  duration PLUS a loop iteration, not just one iteration's worth as
+  previously assumed. Fix: immediately grab one more fresh frame right after
+  OCR completes and relocalize against THAT before publishing the position,
+  instead of leaving the OCR-time position stale until the next loop
+  iteration. Also raised TRACK_SEARCH_MARGIN 150 -> 250 for headroom on the
+  steady-state (non-OCR) gap. Re-tested live: TRACK LOST events dropped from
+  nearly every refresh cycle to ~3 in a full test run with heavy movement.
+  Lesson (sharper version of the one above): when a periodic expensive call
+  reports a result, that result describes the PAST, aged by the call's own
+  duration - if anything downstream treats it as "current," measure the
+  call's duration and account for it explicitly (here: one extra catch-up
+  frame), don't just assume the caller's next scheduled step will catch up
+  naturally.
+
+------------------------------------------------------------------------------
+13. Discovery latency for NEW items was assumed to be ~150-300ms; it was ~0.9s
+------------------------------------------------------------------------------
+Where: text_detection.py find_text_matches(), main.py OCR_INTERVAL_SECONDS
+Cause: All earlier OCR timing assumptions (~150-300ms/call) came from a
+  synthetic benchmark - a mostly-blank test image with two short lines of
+  text. Measured directly against real, busy gameplay: a single full-frame
+  (1920x1080) OCR call actually cost ~0.9s. Tesseract's sparse-text-mode
+  segmentation cost scales with visual complexity, not just pixel count, so
+  a cluttered real game screen is far more expensive to analyze than a quiet
+  synthetic one. This meant OCR_INTERVAL_SECONDS=1.5 (tuned around the wrong,
+  much lower, assumed cost) left far less headroom than it looked like, and
+  capped how fast a brand-new item (one not already being tracked) could
+  ever be discovered - bounded by the interval, not by anything relocalize
+  could help with.
+Investigation: tried (and rejected, after measuring) an MSER-based
+  candidate-region pre-filter to crop OCR down to just where text-like
+  content is. Measured cost of MSER itself against real gameplay: ~240ms -
+  not free. Worse, the combined bounding box of all its candidates covered
+  99% of the frame, because unrelated UI chrome (health/mana numbers, clock,
+  inventory) is scattered at the very top and bottom edges of the screen,
+  forcing the box wide regardless. Net: MSER's own cost ate most of the
+  benefit of a smaller crop. Rejected in favor of something simpler.
+Fix: Permanently crop OCR calls to a fixed "gameplay viewport" - excluding a
+  top margin (game clock/info) and a larger bottom margin (health/mana
+  orbs, inventory bar) - via VIEWPORT_TOP_MARGIN/VIEWPORT_BOTTOM_MARGIN in
+  main.py. Item labels never render inside HUD chrome anyway (the world
+  isn't visible there), so nothing is lost by excluding it, and it costs
+  nothing extra (a slice, not a detection pass). Measured effect: ~0.9s ->
+  ~0.42s per OCR call, over 2x. This let OCR_INTERVAL_SECONDS drop from 1.5
+  to 0.7 safely (still well above the new call cost), roughly halving
+  worst-case new-item discovery latency on top of the per-call speedup.
+Lesson: Don't tune timing constants against an assumed or synthetically-
+  benchmarked cost when the real workload is available to measure directly -
+  a "close enough" assumption (150-300ms vs the real ~900ms) can be off by
+  3-6x and quietly caps what's achievable elsewhere (here: discovery
+  latency) without any error or crash to point at. Also: a smarter-sounding
+  optimization (candidate pre-filtering) isn't automatically better than a
+  dumber one (a fixed crop) - measure both against the real workload before
+  committing to the more complex one, since its own overhead can eat the
+  benefit it was supposed to provide.

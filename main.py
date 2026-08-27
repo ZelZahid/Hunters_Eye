@@ -93,12 +93,36 @@ def detect_objects():
         detection_queue.put((detected_SS,rectangles)) #puts screenshot and rectangle locations in Queue
 
 #Thread 3 - OCR-based text detection, fully decoupled from the image-matching loop above
-OCR_INTERVAL_SECONDS = 0.5 #how often to run a full OCR pass - this is the expensive part
+#IMPORTANT: a single OCR call itself costs real time - measured ~0.9s against a full 1920x1080
+#real gameplay frame (Tesseract's sparse-text segmentation cost scales with visual complexity,
+#not just pixel count - a busy game screen is far slower than a mostly-blank test image). This
+#interval must be well ABOVE that cost, not below/near it - if it isn't, the "wait between calls"
+#throttle does nothing (by the time one call finishes, the interval has usually already elapsed),
+#so OCR ends up running back-to-back on nearly every loop iteration, starving the cheap
+#relocalization step of any chance to run. Confirmed via the "[detect_text loop rate: ...]"
+#diagnostic print below: a 0.3s interval (below the call's own cost) dropped the loop to ~6-9 Hz.
+#See VIEWPORT_TOP_MARGIN/VIEWPORT_BOTTOM_MARGIN below for how the ~0.9s call cost was cut to ~0.4s.
+OCR_INTERVAL_SECONDS = 0.7
 #OCR needs far more pixel detail than icon matching does - in-game text at CAPTURE_SCALE (0.3)
-#shrinks to just a few pixels tall and becomes unreadable. OCR only runs a couple times a second,
+#shrinks to just a few pixels tall and becomes unreadable. OCR only runs a few times a second,
 #so it can afford its own, much less aggressively downscaled, capture.
 OCR_CAPTURE_SCALE = 1.0
-TRACK_SEARCH_MARGIN = 60 #how far (px, at OCR_CAPTURE_SCALE) a tracked item can drift between OCR refreshes before we give up finding it
+#Most games render their HUD (health/mana, inventory, minimap, clock) in fixed top/bottom
+#margins, with actual gameplay - and item drops - occupying the middle viewport. Tesseract's
+#segmentation cost scales with how much visual complexity it has to process, and a busy UI bar
+#is expensive per pixel (lots of small icons/numbers) for zero benefit, since item labels never
+#render there anyway. Excluding it cut a real measured OCR call from ~0.9s to ~0.42s - more than
+#2x - for free (a slice, no extra processing). This is a general HUD-vs-viewport assumption, not
+#hardcoded to Diablo II specifically, but it IS an assumption: if an item ever legitimately
+#appears very close to the top or bottom edge and goes undetected, narrow these margins.
+VIEWPORT_TOP_MARGIN = 0.08
+VIEWPORT_BOTTOM_MARGIN = 0.25
+#How far (px, at OCR_CAPTURE_SCALE) a tracked item can drift between consecutive relocalization
+#checks before we give up finding it. Real gameplay logging showed jumps well beyond 150px
+#between checks during active movement/direction changes (confidence 0.08-0.30 on the very next
+#check - genuinely outside that window, not a near miss). Raised for headroom; the immediate
+#post-OCR catch-up relocalization (see detect_text()) handles the biggest single source of drift.
+TRACK_SEARCH_MARGIN = 250
 TRACK_MIN_CONFIDENCE = 0.5 #below this, the item has likely been picked up or scrolled off-screen - drop the track
 
 def _relocalize_track(frame, track):
@@ -114,16 +138,23 @@ def _relocalize_track(frame, track):
     sy2 = min(frame_h, y + h + TRACK_SEARCH_MARGIN)
     search_window = frame[sy1:sy2, sx1:sx2]
     if search_window.shape[0] < h or search_window.shape[1] < w:
+        print(f"TRACK LOST '{matched_name}': too close to frame edge to search")
         return None #too close to a frame edge to search meaningfully - drop it
 
     result = cv.matchTemplate(search_window, patch, cv.TM_CCOEFF_NORMED)
     _, confidence, _, top_left = cv.minMaxLoc(result)
     if confidence < TRACK_MIN_CONFIDENCE:
+        print(f"TRACK LOST '{matched_name}': confidence {confidence:.2f} < {TRACK_MIN_CONFIDENCE}")
         return None #lost it - probably picked up or moved off-screen
 
     new_x = sx1 + top_left[0]
     new_y = sy1 + top_left[1]
-    return (new_x, new_y, w, h, matched_name, patch)
+    #Re-crop the patch from THIS frame instead of reusing the original OCR-time snapshot.
+    #Without this, every relocalization compares against an increasingly stale reference -
+    #fine while standing still (nothing around it changes), but it degrades fast while moving,
+    #since the background behind the label and rendering context shift out from under it.
+    fresh_patch = frame[new_y:new_y + h, new_x:new_x + w].copy()
+    return (new_x, new_y, w, h, matched_name, fresh_patch)
 
 
 def detect_text():
@@ -132,21 +163,54 @@ def detect_text():
     last_ocr_time = 0.0
     coord_scale = CAPTURE_SCALE / OCR_CAPTURE_SCALE #converts OCR_CAPTURE_SCALE coords -> CAPTURE_SCALE coords for shared_text_tracks
 
+    #Diagnostic: this loop's own iteration rate. If it's much slower under real gameplay than on
+    #an idle desktop (CPU/GPU contention from the game itself), relocalization can't keep up with
+    #fast camera movement no matter how large TRACK_SEARCH_MARGIN is - this print tells us if
+    #that's actually happening instead of guessing.
+    loop_count = 0
+    rate_window_start = time.time()
+
+    def grab_frame():
+        img = sct.grab(monitor_area)
+        f = np.array(img)
+        if f.shape[2] == 4:
+            f = cv.cvtColor(f, cv.COLOR_BGRA2BGR)
+        return cv.resize(f, (0,0), fx=OCR_CAPTURE_SCALE, fy=OCR_CAPTURE_SCALE)
+
     with mss.mss() as sct:
         while True:
-            img = sct.grab(monitor_area)
-            frame = np.array(img)
-            if frame.shape[2] == 4:
-                frame = cv.cvtColor(frame, cv.COLOR_BGRA2BGR)
-            frame = cv.resize(frame, (0,0), fx=OCR_CAPTURE_SCALE, fy=OCR_CAPTURE_SCALE)
+            loop_count += 1
+            elapsed = time.time() - rate_window_start
+            if elapsed >= 2.0:
+                print(f"[detect_text loop rate: {loop_count / elapsed:.1f} Hz, active tracks: {len(local_tracks)}]")
+                loop_count = 0
+                rate_window_start = time.time()
+
+            frame = grab_frame()
 
             if time.time() - last_ocr_time >= OCR_INTERVAL_SECONDS:
+                frame_h = frame.shape[0]
+                viewport_y0 = int(frame_h * VIEWPORT_TOP_MARGIN)
+                viewport_y1 = int(frame_h * (1 - VIEWPORT_BOTTOM_MARGIN))
+                viewport = frame[viewport_y0:viewport_y1, :]
+
                 local_tracks = []
-                for (tx, ty, tw, th, matched_name) in text_detection.find_text_matches(frame, target_items):
+                for (tx, ty, tw, th, matched_name) in text_detection.find_text_matches(viewport, target_items):
+                    ty += viewport_y0 #translate back from viewport-relative to full-frame coordinates
                     patch = frame[ty:ty + th, tx:tx + tw].copy()
                     local_tracks.append((tx, ty, tw, th, matched_name, patch))
                     print(f"Found '{matched_name}' at center {(tx + tw // 2, ty + th // 2)}")
                 last_ocr_time = time.time()
+
+                #The OCR call above took ~150-300ms - the position it returned describes where
+                #the item was BEFORE that call started, not now. Left as-is, the very first
+                #relocalization attempt has to bridge that whole gap on top of a normal loop
+                #iteration, which real testing showed failing almost every time while moving
+                #(confidence 0.08-0.30, nowhere close to threshold - genuinely outside the
+                #search window, not a near miss). Catch it up immediately against a fresh frame
+                #instead of leaving it stale until the next loop iteration.
+                catch_up_frame = grab_frame()
+                local_tracks = [t for t in (_relocalize_track(catch_up_frame, track) for track in local_tracks) if t is not None]
             else:
                 local_tracks = [t for t in (_relocalize_track(frame, track) for track in local_tracks) if t is not None]
 

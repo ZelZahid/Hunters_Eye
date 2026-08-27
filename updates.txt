@@ -38,3 +38,42 @@ a working, documented, cross-platform-minded detection engine:
 - Confirmed end-to-end on real gameplay: the overlay correctly boxes
   "Full Rejuvenation Potion" text over the live game, with the character
   still fully controllable through the overlay.
+
+------------------------------------------------------------------------------
+Version 0.002 - 2026-08-27
+------------------------------------------------------------------------------
+Focused entirely on making OCR item tracking usable during real, active
+gameplay instead of only while standing still - a mix of visual fit and a
+multi-round performance investigation, each step verified against the real
+game rather than assumed:
+
+- assets/items.txt renamed to assets/targets.txt (matches the code's own
+  target_items/load_target_items naming); added FLAWLESS RUBY as a second
+  watched item.
+- Label boxes now padded to match the game's semi-transparent background
+  panel instead of hugging just the OCR'd text glyphs.
+- Fixed OCR item-tracking during movement, in three rounds once each fix
+  proved insufficient on real gameplay:
+  1. Widened the local re-localization search window and shortened the OCR
+     refresh interval.
+  2. Found the interval was now BELOW a single OCR call's own cost, making
+     the throttle a no-op (confirmed via a loop-rate diagnostic); fixed the
+     interval, and made tracking refresh its own reference patch every
+     frame instead of comparing against an increasingly stale one.
+  3. Found - via real gameplay logging - that OCR's returned position is
+     already stale by the OCR call's own duration (~150-300ms at the time),
+     not just "since the last loop tick"; fixed by immediately re-localizing
+     against a fresh frame right after every OCR call instead of waiting for
+     the next loop iteration.
+- Cut real OCR latency significantly: measured actual OCR cost against real
+  gameplay (~0.9s/call - far higher than earlier synthetic-benchmark
+  assumptions of ~150-300ms), then cropped OCR to the gameplay viewport
+  (excluding HUD margins where item labels never render anyway), cutting it
+  to ~0.42s/call - over 2x - for free. This let the OCR refresh interval
+  drop further, roughly halving worst-case discovery latency for brand-new
+  items on top of the per-call speedup. An MSER-based smarter-sounding
+  alternative was tried and measured first, then rejected when its own
+  overhead turned out to eat most of its benefit - see Error_history.txt.
+- Result: item discovery and tracking now hold up well during continuous
+  movement and direction changes, not just while standing still - confirmed
+  via real gameplay testing, not just code review.
