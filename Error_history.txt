@@ -321,3 +321,31 @@ Lesson: When a periodic action's "next run" timestamp is set after the
   a plausible-sounding hypothesis (combat complexity spiking OCR cost) can
   be wrong even when it fits the symptom - measure before treating a guess
   as the explanation.
+
+------------------------------------------------------------------------------
+15. tesserocr wouldn't build from source; a prebuilt wheel fixed it
+------------------------------------------------------------------------------
+Where: environment setup, adding tesserocr as a faster OCR backend
+Cause: `python -m pip install tesserocr` failed with `RuntimeError: Tesseract
+  library not found in LIBPATH: []`. tesserocr has no PyPI wheel for Windows -
+  only a source distribution, which needs Tesseract's C++ development library
+  and headers (not just the `tesseract.exe` runtime binary already installed)
+  plus a C++ compiler to build against them. Installing a full build toolchain
+  (Visual Studio Build Tools + Tesseract dev libraries via something like
+  vcpkg) just to get one package building was considered disproportionate
+  effort for uncertain payoff.
+Fix: Used a prebuilt wheel from a well-established third-party build instead:
+  github.com/simonflueckiger/tesserocr-windows_build/releases - it bundles
+  Tesseract + Leptonica as DLLs directly in the wheel, so no separate compiler
+  or dev libraries are needed at all. It covers current Python versions
+  including very new ones (a cp314-win_amd64 wheel already existed the same
+  day Python 3.14 was current). Installed directly via
+  `pip install <release-asset-url>.whl`. Still needed to separately point it
+  at the existing Tesseract installation's tessdata folder (the wheel doesn't
+  bundle language data) via `PyTessBaseAPI(path=...)`.
+Lesson: A package failing to build from source on Windows doesn't mean it's
+  unusable - check for a well-established prebuilt-wheel project before
+  assuming a full compiler/dev-library toolchain install is required. This
+  is common for Python packages wrapping C/C++ libraries on Windows
+  specifically, since Windows has no standard system package manager most
+  such libraries assume (unlike apt/brew on Linux/macOS).

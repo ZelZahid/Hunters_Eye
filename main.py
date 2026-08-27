@@ -94,15 +94,15 @@ def detect_objects():
 
 #Thread 3 - OCR-based text detection, fully decoupled from the image-matching loop above
 #IMPORTANT: a single OCR call itself costs real time - measured ~0.9s against a full 1920x1080
-#real gameplay frame (Tesseract's sparse-text segmentation cost scales with visual complexity,
-#not just pixel count - a busy game screen is far slower than a mostly-blank test image). This
-#interval must be well ABOVE that cost, not below/near it - if it isn't, the "wait between calls"
-#throttle does nothing (by the time one call finishes, the interval has usually already elapsed),
-#so OCR ends up running back-to-back on nearly every loop iteration, starving the cheap
-#relocalization step of any chance to run. Confirmed via the "[detect_text loop rate: ...]"
-#diagnostic print below: a 0.3s interval (below the call's own cost) dropped the loop to ~6-9 Hz.
-#See VIEWPORT_TOP_MARGIN/VIEWPORT_BOTTOM_MARGIN below for how the ~0.9s call cost was cut to ~0.4s.
-OCR_INTERVAL_SECONDS = 0.7
+#real gameplay frame with pytesseract (subprocess-per-call), cut to ~0.42-0.6s via the viewport
+#crop below, then to ~0.1-0.26s by switching to tesserocr (in-process bindings - see
+#text_detection.py). This interval must be well ABOVE the call's own cost, not below/near it -
+#if it isn't, the "wait between calls" throttle does nothing (by the time one call finishes, the
+#interval has usually already elapsed), so OCR ends up running back-to-back on nearly every loop
+#iteration, starving the cheap relocalization step of any chance to run. Confirmed via the
+#"[detect_text loop rate: ...]" diagnostic print below: a 0.3s interval (below the call's own
+#cost, back when calls cost ~0.9s) dropped the loop to ~6-9 Hz.
+OCR_INTERVAL_SECONDS = 0.4
 #OCR needs far more pixel detail than icon matching does - in-game text at CAPTURE_SCALE (0.3)
 #shrinks to just a few pixels tall and becomes unreadable. OCR only runs a few times a second,
 #so it can afford its own, much less aggressively downscaled, capture.
@@ -236,12 +236,15 @@ def detect_text():
                 ]
 
 WINDOW_NAME = "Hunters Eye"
+FPS_PRINT_INTERVAL_SECONDS = 5.0 #how often to print the FPS line - printing every single frame just floods the console
 
 def run_debug_window():
     """Fallback for platforms the transparent overlay doesn't support yet (see overlay.py):
     a plain resizable window mirroring the (downscaled) captured frame with boxes drawn on it."""
     t0 = time.time()
     n_frames = 1
+    window_start = t0 #resets every FPS_PRINT_INTERVAL_SECONDS - the printed FPS is an average over just that window, not the whole session
+    window_frames = 0
     displayed_size = None #(width, height) the window is currently sized to - re-checked below so it adapts if resolution changes
 
     #WINDOW_NORMAL makes the window resizable and lets its content scale to fill whatever
@@ -263,11 +266,13 @@ def run_debug_window():
         if cv.waitKey(1) == ord('q'):
             break
 
-        #realtime FPS
-        elapsed_time = time.time() - t0
-        avg_fps = (n_frames / elapsed_time)
-        print(f"FPS: {avg_fps:.2f}")
         n_frames += 1
+        window_frames += 1
+        window_elapsed = time.time() - window_start
+        if window_elapsed >= FPS_PRINT_INTERVAL_SECONDS:
+            print(f"FPS: {window_frames / window_elapsed:.2f}")
+            window_start = time.time()
+            window_frames = 0
 
     cv.destroyAllWindows()
     #Final Stats [prints average Runtime FPS]
@@ -296,6 +301,8 @@ def run_overlay():
 
     t0 = time.time()
     n_frames = 1
+    window_start = t0 #resets every FPS_PRINT_INTERVAL_SECONDS - the printed FPS is an average over just that window, not the whole session
+    window_frames = 0
     while not quit_requested.is_set() and overlay.is_open():
         current_size = pyautogui.size()
         if current_size != displayed_size:
@@ -315,10 +322,13 @@ def run_overlay():
         overlay.draw_rectangles(native_rectangles)
         overlay.pump()
 
-        elapsed_time = time.time() - t0
-        avg_fps = (n_frames / elapsed_time)
-        print(f"FPS: {avg_fps:.2f}")
         n_frames += 1
+        window_frames += 1
+        window_elapsed = time.time() - window_start
+        if window_elapsed >= FPS_PRINT_INTERVAL_SECONDS:
+            print(f"FPS: {window_frames / window_elapsed:.2f}")
+            window_start = time.time()
+            window_frames = 0
 
     overlay.close()
     total_elapsed = time.time() - t0

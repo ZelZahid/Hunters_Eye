@@ -87,3 +87,32 @@ game rather than assumed:
   spike OCR cost" hypothesis were both checked and ruled out as explanations
   - see Error_history.txt for both. User-confirmed after the fix: perceived
   delay dropped from "like 3 seconds" to "more like 0.5 seconds."
+
+------------------------------------------------------------------------------
+Version 0.003 - 2026-08-27
+------------------------------------------------------------------------------
+Pushed OCR speed further after user still wanted more than v0.002 delivered.
+Considered and measured two alternative approaches before picking one:
+
+- Considered switching text detection from OCR to template-matching known
+  target strings (like the image-matching path already does for icons).
+  Measured first: at OCR's native resolution, a single matchTemplate call
+  costs ~21ms, so 20 templates/frame (~424ms) already matches OCR's old
+  cost, and 80 templates/frame (~40 items with color-rarity variants) costs
+  ~1.7s - over 3x slower than OCR. Rejected: OCR's cost is constant
+  regardless of vocabulary size, template matching's grows linearly - the
+  wrong trade for a system meant to scale to dozens/hundreds of items.
+- Added tesserocr as the primary OCR backend (text_detection.py), talking to
+  the Tesseract engine in-process instead of pytesseract's subprocess-per-
+  call model, with automatic fallback to pytesseract if unavailable. No
+  official Windows wheel exists (source build failed, needs a full C++
+  toolchain - see Error_history.txt); used a well-established prebuilt-wheel
+  project instead, no compiler needed. Measured ~3.5-4.5x faster against
+  real gameplay (~0.1-0.26s vs ~0.42-0.6s per OCR call).
+- Retuned OCR_INTERVAL_SECONDS down to 0.4 (from 0.7) now that a call costs
+  far less, cutting worst-case new-item discovery latency further to ~0.6s.
+- Verified live against real gameplay: zero lost-track events across a full
+  test with substantial on-screen movement, FPS unaffected (~41).
+- Changed the console FPS line to print once every 5 seconds (average over
+  just that window) instead of every single frame, which was flooding the
+  console at ~40 lines/second.

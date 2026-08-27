@@ -21,6 +21,22 @@ pyautogui>=0.9.54
 #   macOS:   brew install tesseract
 pytesseract>=0.3.10
 
+# OPTIONAL, Windows only, but strongly recommended: tesserocr talks to the same
+# Tesseract engine in-process instead of launching a new tesseract.exe subprocess
+# per call. Measured ~3.5-4.5x faster against real gameplay (~0.1-0.26s vs
+# ~0.42-0.6s per OCR call) - text_detection.py uses it automatically if installed,
+# and falls back to pytesseract above if not, so this is safe to skip.
+# No PyPI wheel exists for Windows (only a source dist needing a C++ build
+# toolchain), so install a prebuilt wheel instead - pick the one matching your
+# Python version/architecture from:
+#   https://github.com/simonflueckiger/tesserocr-windows_build/releases/latest
+# e.g. for Python 3.14 64-bit:
+#   python -m pip install "https://github.com/simonflueckiger/tesserocr-windows_build/releases/download/tesserocr-v2.10.0-tesseract-5.5.2/tesserocr-2.10.0-cp314-cp314-win_amd64.whl"
+# Not listed as a plain requirement above since there's no single line that
+# installs the right wheel for every Python version - see text_detection.py's
+# tessdata-path detection if a different Tesseract version needs the tessdata
+# folder pointed somewhere other than the Windows default install location.
+
 # --- Overlay (overlay.py, main.py's quit hotkey) + legacy scripts (legacy/) ---
 keyboard>=0.13.5
 
