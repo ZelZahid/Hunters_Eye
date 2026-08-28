@@ -189,3 +189,40 @@ behind each round below.
   re-tuning OCR_INTERVAL_SECONDS later, but too noisy to leave on by default
   once auto-collect added its own console output.
 - User-confirmed after all of the above: click accuracy issue resolved.
+
+------------------------------------------------------------------------------
+Version 0.005 - 2026-08-28
+------------------------------------------------------------------------------
+Added per-item detection box colors, with a design discussion up front about
+which targets.txt convention would be least error-prone before writing any
+code:
+
+- assets/targets.txt: an optional trailing "[colorname]" tag (e.g.
+  "[purple]", "[darkorange]") sets an item's box color; omitted or
+  misspelled falls back to the same green used before this feature existed,
+  with a load-time warning on a misspelling rather than a silent wrong
+  color or a crash. Considered and rejected a single-letter code (the
+  user's original "[o]"/"[p]" idea) and a category-indirection scheme
+  (define a color once, tag many items with a category name) in favor of
+  this simpler per-item tag once the user clarified they wanted color set
+  per item, not shared across a category.
+- text_detection.py: new NAMED_COLORS palette (green, red, blue, yellow,
+  cyan, purple, orange, darkorange, pink, gold, white) and DEFAULT_BOX_COLOR
+  (green, unchanged). Deliberately excludes magenta/fuchsia - overlay.py's
+  click-through mechanism depends on one exact color being invisible, and a
+  box in that exact color would silently vanish.
+- Colored FULL REJUVENATION POTION purple and all 15 runes dark orange in
+  targets.txt, per the user's request.
+- Threaded color end-to-end through the whole detection pipeline
+  (find_text_matches -> shared_text_tracks -> detect_objects's rectangle
+  merge -> detection_queue -> both run_overlay and the run_debug_window
+  fallback) as an (r, g, b) tuple, converted to hex for Tk and reversed to
+  BGR for OpenCV at each renderer's own call site - verified with a
+  simulation script threading fake tracks through every stage before
+  relying on live testing.
+- Image-template matches (the icon-matching path, unrelated to targets.txt)
+  keep using DEFAULT_BOX_COLOR - the color tag only applies to OCR matches.
+- Found and fixed a documentation gap while touching CLAUDE.md for this:
+  the auto-collect thread and actions.py added in v0.004 were never
+  actually documented in the Architecture section (only referenced in
+  passing from other sections) - added proper subsections for both.

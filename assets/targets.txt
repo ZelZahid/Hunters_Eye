@@ -6,20 +6,26 @@
 # mouse to it and click until it disappears (picked up) or 5 seconds pass with it still
 # on the ground (gives up and hands mouse control back to you). Press 'F4' anytime to
 # snooze auto-collect for 10 seconds if you don't want it grabbing your mouse mid-fight.
-FULL REJUVENATION POTION*
+#
+# An optional trailing "[color]" tag sets that item's detection box color (checked against
+# a small named list in text_detection.py's NAMED_COLORS - e.g. purple, orange, darkorange,
+# red, blue, yellow, cyan, pink, gold, white). Omit it, or misspell it, and the box just
+# falls back to the default green. If both "*" and "[color]" apply to one item, "*" comes
+# first, e.g. "ITEM NAME* [purple]".
+FULL REJUVENATION POTION* [purple]
 FLAWLESS RUBY
-Lum Rune*
-Ko Rune*
-Lem Rune*
-Pul Rune*
-Um Rune*
-Mal Rune*
-Gul Rune*
-Vex Rune*
-Ohm Rune*
-Lo Rune*
-Sur Rune*
-Ber Rune*
-Jah Rune*
-Cham Rune*
-Zod Rune*
+Lum Rune* [darkorange]
+Ko Rune* [darkorange]
+Lem Rune* [darkorange]
+Pul Rune* [darkorange]
+Um Rune* [darkorange]
+Mal Rune* [darkorange]
+Gul Rune* [darkorange]
+Vex Rune* [darkorange]
+Ohm Rune* [darkorange]
+Lo Rune* [darkorange]
+Sur Rune* [darkorange]
+Ber Rune* [darkorange]
+Jah Rune* [darkorange]
+Cham Rune* [darkorange]
+Zod Rune* [darkorange]

@@ -68,6 +68,7 @@ class Overlay:
         self.canvas.config(width=width, height=height)
 
     def draw_rectangles(self, rectangles):
+        """rectangles: [(x, y, w, h, color), ...] where color is an (r, g, b) tuple."""
         #This gets called every frame (~40-50x/sec) regardless of whether there's anything to
         #draw or whether it changed - redrawing this always-on-top layered window that often
         #for no visible change forces Windows to recomposite it constantly, which is a plausible
@@ -77,8 +78,8 @@ class Overlay:
             return
         self._last_rectangles = rectangles
         self.canvas.delete("all")
-        for (x, y, w, h) in rectangles:
-            self.canvas.create_rectangle(x, y, x + w, y + h, outline="#00ff00", width=2)
+        for (x, y, w, h, color) in rectangles:
+            self.canvas.create_rectangle(x, y, x + w, y + h, outline="#%02x%02x%02x" % color, width=2)
 
     def pump(self):
         """Processes pending Tk events. Call this regularly from the main thread -

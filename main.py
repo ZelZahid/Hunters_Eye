@@ -43,7 +43,7 @@ detection_queue = Queue(maxsize = 3)
 #gets its own thread entirely: it publishes its latest results here, and the fast image-matching
 #loop just reads whatever's most recent without ever waiting on OCR.
 text_tracks_lock = threading.Lock()
-shared_text_tracks = [] #list of (x, y, w, h, matched_name, to_collect), in CAPTURE_SCALE coordinates - written by detect_text(), read by detect_objects() and run_auto_collect()
+shared_text_tracks = [] #list of (x, y, w, h, matched_name, to_collect, color), in CAPTURE_SCALE coordinates - written by detect_text(), read by detect_objects() and run_auto_collect()
 
 #Thread 1
 def get_screenshot():
@@ -85,10 +85,15 @@ def detect_objects():
             print("Too Many Results, raise the threshhold [max_results]")
             rectangles = rectangles[:max_results] #keep the top max_results matches
 
+        #Image-template matches aren't tied to targets.txt's per-item [color] tags (those only
+        #apply to OCR matches), so they always draw in the same default color OCR falls back to
+        #when a target has no tag - one shared "default box color" instead of two separate ideas.
+        rectangles = [(x, y, w, h, text_detection.DEFAULT_BOX_COLOR) for (x, y, w, h) in rectangles]
+
         #merge in whatever detect_text() last published - never blocks on OCR
         with text_tracks_lock:
-            for (tx, ty, tw, th, _, _) in shared_text_tracks:
-                rectangles.append([tx, ty, tw, th])
+            for (tx, ty, tw, th, _, _, color) in shared_text_tracks:
+                rectangles.append((tx, ty, tw, th, color))
 
         #--------------------------
         detected_SS = screenshot.copy()
@@ -136,7 +141,7 @@ def _relocalize_track(frame, track):
     matchTemplate search (cheap - a small search window against a small patch), instead of
     trusting its last known position. This is what keeps the box glued to the item as the
     game camera pans, in between the much-less-frequent full OCR refreshes."""
-    x, y, w, h, matched_name, to_collect, patch = track
+    x, y, w, h, matched_name, to_collect, color, patch = track
     frame_h, frame_w = frame.shape[:2]
     sx1 = max(0, x - TRACK_SEARCH_MARGIN)
     sy1 = max(0, y - TRACK_SEARCH_MARGIN)
@@ -160,12 +165,12 @@ def _relocalize_track(frame, track):
     #fine while standing still (nothing around it changes), but it degrades fast while moving,
     #since the background behind the label and rendering context shift out from under it.
     fresh_patch = frame[new_y:new_y + h, new_x:new_x + w].copy()
-    return (new_x, new_y, w, h, matched_name, to_collect, fresh_patch)
+    return (new_x, new_y, w, h, matched_name, to_collect, color, fresh_patch)
 
 
 def detect_text():
     global shared_text_tracks
-    local_tracks = [] #(x, y, w, h, matched_name, to_collect, patch) - patch is only needed here for tracking
+    local_tracks = [] #(x, y, w, h, matched_name, to_collect, color, patch) - patch is only needed here for tracking
     last_ocr_time = 0.0
     prev_scan_start = None #diagnostic only: measures the real gap between successive scan starts
     coord_scale = CAPTURE_SCALE / OCR_CAPTURE_SCALE #converts OCR_CAPTURE_SCALE coords -> CAPTURE_SCALE coords for shared_text_tracks
@@ -218,10 +223,10 @@ def detect_text():
                     print(f"[OCR call: {time.time() - ocr_t0:.3f}s]")
 
                 local_tracks = []
-                for (tx, ty, tw, th, matched_name, to_collect) in ocr_results:
+                for (tx, ty, tw, th, matched_name, to_collect, color) in ocr_results:
                     ty += viewport_y0 #translate back from viewport-relative to full-frame coordinates
                     patch = frame[ty:ty + th, tx:tx + tw].copy()
-                    local_tracks.append((tx, ty, tw, th, matched_name, to_collect, patch))
+                    local_tracks.append((tx, ty, tw, th, matched_name, to_collect, color, patch))
                     print(f"Found '{matched_name}'{' [to collect]' if to_collect else ''} at center {(tx + tw // 2, ty + th // 2)}")
 
                 #The OCR call above took real time (measured ~0.4-0.6s against a real viewport
@@ -239,8 +244,8 @@ def detect_text():
 
             with text_tracks_lock:
                 shared_text_tracks = [
-                    (int(x * coord_scale), int(y * coord_scale), int(w * coord_scale), int(h * coord_scale), name, to_collect)
-                    for (x, y, w, h, name, to_collect, _) in local_tracks
+                    (int(x * coord_scale), int(y * coord_scale), int(w * coord_scale), int(h * coord_scale), name, to_collect, color)
+                    for (x, y, w, h, name, to_collect, color, _) in local_tracks
                 ]
 
 #Thread 4 - auto-collect: the first concrete use of the "action" seam from CLAUDE.md (move
@@ -284,7 +289,7 @@ def _native_collectible_tracks():
         tracks = list(shared_text_tracks)
     return [
         (name, int(x * SCALE_TO_NATIVE), int(y * SCALE_TO_NATIVE), int(w * SCALE_TO_NATIVE), int(h * SCALE_TO_NATIVE))
-        for (x, y, w, h, name, to_collect) in tracks if to_collect
+        for (x, y, w, h, name, to_collect, _color) in tracks if to_collect
     ]
 
 
@@ -387,8 +392,8 @@ def run_debug_window():
 
     while True:
         screenshot, rectangles = detection_queue.get()
-        for (x,y,w,h) in rectangles:
-            cv.rectangle(screenshot, (x,y), (x+w,y+h), (0,255,0), 2)
+        for (x, y, w, h, color) in rectangles:
+            cv.rectangle(screenshot, (x, y), (x + w, y + h), color[::-1], 2) #color is (r,g,b) - cv uses BGR
 
         current_size = pyautogui.size() #cheap OS query - re-checked every frame so this stays correct if resolution changes mid-run
         if current_size != displayed_size:
@@ -449,8 +454,8 @@ def run_overlay():
             continue
 
         native_rectangles = [
-            (int(x * SCALE_TO_NATIVE), int(y * SCALE_TO_NATIVE), int(w * SCALE_TO_NATIVE), int(h * SCALE_TO_NATIVE))
-            for (x, y, w, h) in rectangles
+            (int(x * SCALE_TO_NATIVE), int(y * SCALE_TO_NATIVE), int(w * SCALE_TO_NATIVE), int(h * SCALE_TO_NATIVE), color)
+            for (x, y, w, h, color) in rectangles
         ]
         overlay.draw_rectangles(native_rectangles)
         overlay.pump()

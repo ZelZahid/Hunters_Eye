@@ -85,20 +85,62 @@ elif _pytesseract_available:
           "see requirements.txt for the faster tesserocr wheel)")
 
 
+DEFAULT_BOX_COLOR = (0, 255, 0) #(r, g, b) - the green boxes have always used, kept as the fallback
+                                 #for any item with no [color] tag, or an unrecognized one
+
+#Small named-color palette for targets.txt's optional trailing "[color]" tag. Deliberately
+#spelled-out names ("darkorange"), not single letters ("o") - a single letter is ambiguous
+#(does 'o' mean orange or olive?) and a typo in one is indistinguishable from a different valid
+#letter, whereas a misspelled word just fails the dict lookup and falls back to green with a
+#warning instead of silently picking the wrong color. Deliberately excludes magenta/fuchsia:
+#overlay.py's click-through mechanism relies on one exact color (TRANSPARENT_COLOR, "#ff00ff")
+#being invisible - a box drawn in that exact color would silently vanish into the background.
+NAMED_COLORS = {
+    "green": (0, 255, 0),
+    "red": (255, 0, 0),
+    "blue": (0, 100, 255),
+    "yellow": (255, 255, 0),
+    "cyan": (0, 255, 255),
+    "purple": (160, 32, 240),
+    "orange": (255, 165, 0),
+    "darkorange": (255, 140, 0),
+    "pink": (255, 105, 180),
+    "gold": (255, 215, 0),
+    "white": (255, 255, 255),
+}
+
+_COLOR_TAG_RE = re.compile(r"\[([A-Za-z]+)\]\s*$")
+
+
 def load_target_items(path):
-    """Returns {item_name: to_collect}. A trailing '*' on a line marks that item as
-    "to collect" (see main.py's auto-collect thread) and is stripped before matching -
-    OCR output never contains '*' (see _clean_text), so leaving it in the name would mean
-    that item could never fuzzy-match."""
+    """Returns {item_name: {"to_collect": bool, "color": (r, g, b)}}.
+
+    A trailing '*' marks an item "to collect" (see main.py's auto-collect thread) and a
+    trailing "[color]" tag (e.g. "[purple]", checked against NAMED_COLORS) sets its detection
+    box color, defaulting to DEFAULT_BOX_COLOR if omitted or unrecognized. Both are stripped
+    before matching - OCR output never contains '*', '[', or ']' (see _clean_text), so leaving
+    either in the name would mean that item could never fuzzy-match."""
     items = {}
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
+
+            color = DEFAULT_BOX_COLOR
+            color_match = _COLOR_TAG_RE.search(line)
+            if color_match:
+                color_name = color_match.group(1).lower()
+                if color_name in NAMED_COLORS:
+                    color = NAMED_COLORS[color_name]
+                else:
+                    print(f"WARNING: targets.txt: unrecognized color '{color_name}' "
+                          f"(line: {line!r}) - using default green")
+                line = line[:color_match.start()].strip()
+
             to_collect = line.endswith("*")
             name = line[:-1].strip() if to_collect else line
-            items[name.upper()] = to_collect
+            items[name.upper()] = {"to_collect": to_collect, "color": color}
     return items
 
 
@@ -179,8 +221,9 @@ def _required_cutoff(item_length, base_cutoff):
 
 
 def find_text_matches(frame, target_items, match_cutoff=0.75):
-    """Returns a list of (x, y, w, h, matched_name, to_collect) for on-screen text matching
-    target_items (an {item_name: to_collect} dict from load_target_items()).
+    """Returns a list of (x, y, w, h, matched_name, to_collect, color) for on-screen text
+    matching target_items (the {item_name: {"to_collect", "color"}} dict from
+    load_target_items()).
 
     Runs exactly one OCR call - see the module docstring for why and which backend."""
     if _tesserocr_api is not None:
@@ -211,7 +254,7 @@ def find_text_matches(frame, target_items, match_cutoff=0.75):
         # name like "GUL" would fail to match "GUL RUNE" outright (see _required_cutoff), and
         # when it did match, the box (and therefore where auto-collect clicks) would jump in
         # size depending on whatever else got swept into the line that pass.
-        best = None #(name, to_collect, x, y, w, h)
+        best = None #(name, to_collect, color, x, y, w, h)
         best_ratio = 0.0
         n = len(line_words)
         for start in range(n):
@@ -228,9 +271,10 @@ def find_text_matches(frame, target_items, match_cutoff=0.75):
                     ratio = difflib.SequenceMatcher(None, text, name).ratio()
                     if ratio > best_ratio and ratio >= _required_cutoff(len(name), match_cutoff):
                         x, y, w, h = _padded_box(window)
-                        best = (name, target_items[name], x, y, w, h)
+                        info = target_items[name]
+                        best = (name, info["to_collect"], info["color"], x, y, w, h)
                         best_ratio = ratio
         if best:
-            name, to_collect, x, y, w, h = best
-            matches.append((x, y, w, h, name, to_collect))
+            name, to_collect, color, x, y, w, h = best
+            matches.append((x, y, w, h, name, to_collect, color))
     return matches
