@@ -349,3 +349,127 @@ Lesson: A package failing to build from source on Windows doesn't mean it's
   is common for Python packages wrapping C/C++ libraries on Windows
   specifically, since Windows has no standard system package manager most
   such libraries assume (unlike apt/brew on Linux/macOS).
+
+------------------------------------------------------------------------------
+16. Short target names (2-3 letter runes) false-matched unrelated OCR noise
+------------------------------------------------------------------------------
+Where: text_detection.py find_text_matches()
+Cause: User added ~15 short Diablo II rune names (Lo, Um, Ko, ...) to
+  targets.txt, all marked "*" for auto-collect. The existing fuzzy matcher
+  used one fixed cutoff (0.75, via difflib.get_close_matches) for every
+  target regardless of length. difflib's ratio is 2*matched/(lenA+lenB) - for
+  a 25-character name like "FULL REJUVENATION POTION" one stray mismatched
+  letter barely moves the ratio, so 0.75 works well; for a 2-3 letter name, a
+  single shared letter with ANY unrelated short OCR misread (stray HUD text,
+  chat, icons) can already clear 0.75. Confirmed via a standalone script
+  testing candidate strings ("LOL", "SOL", "GOLD", "HUM", etc.) against the
+  cutoff logic before and after the fix. Because these items were all
+  auto-collect targets, a false match didn't just draw a wrong box - it moved
+  the mouse and clicked.
+Fix: Added _required_cutoff(item_length, base_cutoff), scaling the required
+  cutoff up as the target name gets shorter - effectively exact-match at
+  length <= 3, 0.9 at length <= 6, the base cutoff above that. Not
+  difflib.get_close_matches() any more since it only accepts one cutoff for
+  every candidate; matching is now a manual per-target-name loop instead.
+Lesson: A similarity threshold tuned against long strings can be far too
+  loose for short ones, since the same ratio formula behaves very
+  differently at different string lengths - check short edge cases
+  separately rather than assuming one cutoff generalizes. This matters more
+  than usual whenever a fuzzy match result drives a real-world action
+  (here: a mouse click) rather than just a label.
+
+------------------------------------------------------------------------------
+17. OCR detection box (and auto-collect's click point) changed size between
+    passes for the same physical item
+------------------------------------------------------------------------------
+Where: text_detection.py, _group_words_into_lines() (now _group_words_by_line
+  + _padded_box)
+Cause: Matching (and the returned bounding box) was based on Tesseract's
+  WHOLE recognized line, joining every word Tesseract grouped into that
+  line/paragraph. Tesseract's own line-grouping isn't consistent between OCR
+  passes for the same on-screen content - e.g. a rune's name and the word
+  "Rune" rendered next to/below it sometimes landed on the same line,
+  sometimes on separate lines. This compounded with #16's fix: a line OCR'd
+  as "GUL RUNE" would never exact-match target "GUL" at all (ratio ~0.545,
+  well under the required 1.0), so detection only worked on the passes where
+  Tesseract happened to isolate the rune name by itself - and even then, the
+  box's width/height (hence its center, hence where auto-collect clicked)
+  varied depending on what else got swept onto that line that particular
+  pass. User-reported symptom: "the size of the boxes constantly changing."
+Fix: Rewrote matching to try every contiguous word-run within a line (single
+  word, first two words, etc.) against every target name, and box only the
+  words in the best-scoring run - not the whole line. Verified with a
+  standalone script simulating both groupings ("Gul"+"Rune" merged onto one
+  line vs. split across two): match result and box came out byte-identical
+  either way, confirming the box no longer depends on Tesseract's
+  inconsistent line assignment.
+Lesson: When an OCR/text pipeline groups recognized words into larger units
+  (lines, paragraphs) before matching, don't assume that grouping is stable
+  frame-to-frame just because it usually looks reasonable - test whether the
+  match (and any geometry derived from it) survives the grouping coming out
+  differently for the same physical content. This one also compounded with
+  an unrelated recent fix (#16) in a way that wasn't obvious until traced
+  through by hand: the exact-match rule that fixed false positives on short
+  names also depended on this grouping being minimal.
+
+------------------------------------------------------------------------------
+18. Auto-collect clicks didn't reliably land on / pick up the item
+------------------------------------------------------------------------------
+Where: actions.py click_until_gone(), main.py run_auto_collect()
+Cause: Four compounding issues, found in sequence as each fix proved
+  insufficient against real gameplay - each confirmed by reading pyautogui's
+  actual source rather than guessing at its behavior:
+  (a) click_until_gone() called pyautogui.moveTo() then pyautogui.click() as
+  two separate calls. Both are decorated to sleep pyautogui's own PAUSE
+  (default 0.1s) after they run, before returning - so moveTo() didn't
+  return, and click() didn't fire, until ~0.1s after the cursor arrived.
+  During that gap, if the character/camera was moving, the item's on-screen
+  position had already drifted out from under the now-stationary cursor.
+  User-reported symptom: "very inaccurate... character is moving while the
+  detection is happening."
+  (b) After (a), clicks landed accurately but items still weren't reliably
+  picked up. D2R (like many games) treats a click on an item as "walk over
+  and pick it up on arrival," not an instant action - but clicks were being
+  re-issued every 0.15s, far faster than a walk-to-item takes, so each new
+  click kept re-issuing the move command and retargeting the character
+  before it ever completed the walk to the previous click.
+  (c) After (b), user reported clicks now looked accurate (cursor visibly
+  on the item) but still weren't registering as a pickup at all. Read
+  pyautogui's Windows backend (_pyautogui_win.py) directly: click() sends
+  MOUSEEVENTF_LEFTCLICK, which IS MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP
+  combined into one single mouse_event() call - button down and up in the
+  same instant, zero time held. A game polling input state once per frame
+  can miss a press/release pair that lands within the same instant entirely.
+  (d) After (c) (manual mouseDown(x,y)+sleep+mouseUp()), user reported the
+  click still "seemed rushed... not waiting for the mouse to get to the
+  location, then click." mouseDown(x, y) repositions the cursor AND presses
+  the button in the same call with nothing separating them - the game could
+  receive "cursor moved" and "button down" in the same input instant and
+  resolve the click against where the cursor was a frame earlier.
+Fix: (a) One click(x, y) call instead of moveTo()+click() (later superseded
+  by (d)). (b) Separated "how often to check if the item is gone" (fast
+  poll, stayed at ~0.1s) from "how often to actually click" (slowed to
+  0.8s) in click_until_gone(). (c) Replaced click() with manual
+  mouseDown()/time.sleep(CLICK_HOLD_SECONDS)/mouseUp(), holding the button
+  down for a real, deliberate duration (0.05s) instead of an instantaneous
+  combined event. (d) Split the move and the press into two separate steps
+  with their own settle delay (MOVE_SETTLE_SECONDS, 0.05s) between them,
+  instead of moving and pressing in the same call. All pyautogui calls pass
+  _pause=False explicitly so the only delays present are the two
+  intentional ones, not an incidental side effect of pyautogui's own
+  default post-call pause.
+Lesson: A physical input action (mouse click, key press) synthesized via an
+  automation library can fail for reasons that have nothing to do with
+  screen-space accuracy - timing gaps between move/press/release, and
+  whether an event is held long enough for the target application's own
+  input polling to observe it, are separate failure modes from "did the
+  cursor end up in the right place." When an automation call behaves
+  unexpectedly, read the library's actual platform-specific implementation
+  (here: _pyautogui_win.py's use of a combined MOUSEEVENTF_LEFTCLICK flag)
+  rather than assuming its high-level API name ("click") maps onto what a
+  real human physical click does at the OS event level. Also worth noting
+  generally: user-reported symptoms arrived one layer at a time (position
+  accuracy, then registration, then timing) precisely because each fix
+  removed the dominant error source and exposed the next smaller one
+  underneath it - a "still broken" report after a real fix often means a
+  different, smaller bug, not that the fix didn't work.

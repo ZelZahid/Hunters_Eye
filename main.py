@@ -16,6 +16,7 @@ import keyboard
 from pathlib import Path
 from queue import Queue, Empty
 
+import actions
 import text_detection
 from overlay import Overlay
 
@@ -25,6 +26,7 @@ monitor_area = {"top":0, "left":0, "width": w, "height": h}
 #matchTemplate cost scales with frame area - profiling showed 0.5x costs ~43ms/call (~16 FPS
 #ceiling on its own), while 0.25x costs ~12ms/call. This is the main FPS lever in this pipeline.
 CAPTURE_SCALE = 0.3
+SCALE_TO_NATIVE = 1 / CAPTURE_SCALE #detection runs at CAPTURE_SCALE - anything driving real mouse/screen coordinates (the overlay, auto-collect) needs to convert back
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 needle_image = cv.imread(str(ASSETS_DIR / "image1.png"))
 needle_image = cv.resize(needle_image, (0,0) , fx=CAPTURE_SCALE, fy=CAPTURE_SCALE)
@@ -41,7 +43,7 @@ detection_queue = Queue(maxsize = 3)
 #gets its own thread entirely: it publishes its latest results here, and the fast image-matching
 #loop just reads whatever's most recent without ever waiting on OCR.
 text_tracks_lock = threading.Lock()
-shared_text_tracks = [] #list of (x, y, w, h, matched_name), in CAPTURE_SCALE coordinates - written by detect_text(), read by detect_objects()
+shared_text_tracks = [] #list of (x, y, w, h, matched_name, to_collect), in CAPTURE_SCALE coordinates - written by detect_text(), read by detect_objects() and run_auto_collect()
 
 #Thread 1
 def get_screenshot():
@@ -85,7 +87,7 @@ def detect_objects():
 
         #merge in whatever detect_text() last published - never blocks on OCR
         with text_tracks_lock:
-            for (tx, ty, tw, th, _) in shared_text_tracks:
+            for (tx, ty, tw, th, _, _) in shared_text_tracks:
                 rectangles.append([tx, ty, tw, th])
 
         #--------------------------
@@ -124,13 +126,17 @@ VIEWPORT_BOTTOM_MARGIN = 0.25
 #post-OCR catch-up relocalization (see detect_text()) handles the biggest single source of drift.
 TRACK_SEARCH_MARGIN = 250
 TRACK_MIN_CONFIDENCE = 0.5 #below this, the item has likely been picked up or scrolled off-screen - drop the track
+#The loop-rate/scan-gap/OCR-call-time prints below were how the OCR_INTERVAL_SECONDS and viewport
+#margin tuning above was actually diagnosed (see the comments on those constants) - keep them
+#available for the next time those need re-tuning, but they're too noisy to leave on by default.
+OCR_DEBUG_TIMING = False
 
 def _relocalize_track(frame, track):
     """Re-finds a previously OCR-matched item in the current frame via a small local
     matchTemplate search (cheap - a small search window against a small patch), instead of
     trusting its last known position. This is what keeps the box glued to the item as the
     game camera pans, in between the much-less-frequent full OCR refreshes."""
-    x, y, w, h, matched_name, patch = track
+    x, y, w, h, matched_name, to_collect, patch = track
     frame_h, frame_w = frame.shape[:2]
     sx1 = max(0, x - TRACK_SEARCH_MARGIN)
     sy1 = max(0, y - TRACK_SEARCH_MARGIN)
@@ -154,12 +160,12 @@ def _relocalize_track(frame, track):
     #fine while standing still (nothing around it changes), but it degrades fast while moving,
     #since the background behind the label and rendering context shift out from under it.
     fresh_patch = frame[new_y:new_y + h, new_x:new_x + w].copy()
-    return (new_x, new_y, w, h, matched_name, fresh_patch)
+    return (new_x, new_y, w, h, matched_name, to_collect, fresh_patch)
 
 
 def detect_text():
     global shared_text_tracks
-    local_tracks = [] #(x, y, w, h, matched_name, patch) - patch is only needed here for tracking
+    local_tracks = [] #(x, y, w, h, matched_name, to_collect, patch) - patch is only needed here for tracking
     last_ocr_time = 0.0
     prev_scan_start = None #diagnostic only: measures the real gap between successive scan starts
     coord_scale = CAPTURE_SCALE / OCR_CAPTURE_SCALE #converts OCR_CAPTURE_SCALE coords -> CAPTURE_SCALE coords for shared_text_tracks
@@ -183,7 +189,8 @@ def detect_text():
             loop_count += 1
             elapsed = time.time() - rate_window_start
             if elapsed >= 2.0:
-                print(f"[detect_text loop rate: {loop_count / elapsed:.1f} Hz, active tracks: {len(local_tracks)}]")
+                if OCR_DEBUG_TIMING:
+                    print(f"[detect_text loop rate: {loop_count / elapsed:.1f} Hz, active tracks: {len(local_tracks)}]")
                 loop_count = 0
                 rate_window_start = time.time()
 
@@ -196,7 +203,7 @@ def detect_text():
                 #the start means the interval can elapse WHILE the call is running, so the next
                 #scan can fire right after this one finishes instead of waiting a full interval again.
                 last_ocr_time = time.time()
-                if prev_scan_start is not None:
+                if prev_scan_start is not None and OCR_DEBUG_TIMING:
                     print(f"[scan-to-scan gap: {last_ocr_time - prev_scan_start:.3f}s]")
                 prev_scan_start = last_ocr_time
 
@@ -207,14 +214,15 @@ def detect_text():
 
                 ocr_t0 = time.time()
                 ocr_results = text_detection.find_text_matches(viewport, target_items)
-                print(f"[OCR call: {time.time() - ocr_t0:.3f}s]")
+                if OCR_DEBUG_TIMING:
+                    print(f"[OCR call: {time.time() - ocr_t0:.3f}s]")
 
                 local_tracks = []
-                for (tx, ty, tw, th, matched_name) in ocr_results:
+                for (tx, ty, tw, th, matched_name, to_collect) in ocr_results:
                     ty += viewport_y0 #translate back from viewport-relative to full-frame coordinates
                     patch = frame[ty:ty + th, tx:tx + tw].copy()
-                    local_tracks.append((tx, ty, tw, th, matched_name, patch))
-                    print(f"Found '{matched_name}' at center {(tx + tw // 2, ty + th // 2)}")
+                    local_tracks.append((tx, ty, tw, th, matched_name, to_collect, patch))
+                    print(f"Found '{matched_name}'{' [to collect]' if to_collect else ''} at center {(tx + tw // 2, ty + th // 2)}")
 
                 #The OCR call above took real time (measured ~0.4-0.6s against a real viewport
                 #crop) - the position it returned describes where
@@ -231,9 +239,135 @@ def detect_text():
 
             with text_tracks_lock:
                 shared_text_tracks = [
-                    (int(x * coord_scale), int(y * coord_scale), int(w * coord_scale), int(h * coord_scale), name)
-                    for (x, y, w, h, name, _) in local_tracks
+                    (int(x * coord_scale), int(y * coord_scale), int(w * coord_scale), int(h * coord_scale), name, to_collect)
+                    for (x, y, w, h, name, to_collect, _) in local_tracks
                 ]
+
+#Thread 4 - auto-collect: the first concrete use of the "action" seam from CLAUDE.md (move
+#mouse / click). Reads whatever detect_text() published in shared_text_tracks (never blocks
+#waiting on it, same as detect_objects()) and, for any track whose item was marked "*" in
+#targets.txt, drives actions.click_until_gone() to click it until it's picked up or 5 seconds
+#pass. The click loop itself lives in actions.py and knows nothing about item names or OCR -
+#this thread is the game-specific glue that feeds it positions.
+COLLECT_TIMEOUT_SECONDS = 5.0
+#A click on an item in most games (D2R included) means "walk over there and pick it up on
+#arrival", not an instant action - re-clicking much faster than that walk takes keeps
+#re-issuing the move command, which can retarget/interrupt the character before it ever
+#reaches the item (observed as missed pickups). This only paces actual clicks - see
+#AUTO_COLLECT_POLL_SECONDS below for how often we still check whether it worked.
+CLICK_RETRY_INTERVAL_SECONDS = 0.8
+AUTO_COLLECT_POLL_SECONDS = 0.1 #how often to check for a new to-collect item when idle, and (during
+                                 #an attempt) how often to re-check if the item is gone yet - kept
+                                 #fast so success/position tracking stays responsive even though
+                                 #actual clicks fire much less often (CLICK_RETRY_INTERVAL_SECONDS)
+SNOOZE_SECONDS = 10.0 #'F4' suppresses auto-collect for this long, then it re-arms itself automatically -
+                       #deliberately NOT a plain on/off toggle, since a toggle you forgot to flip back on
+                       #means silently missing pickups indefinitely; a snooze can't be forgotten like that.
+#Native-screen-pixel radius for "is this the same on-ground item" - both across the short gaps
+#between clicks in an active attempt (the item's on-screen position drifts as the camera pans,
+#same reason text_detection tracking needs TRACK_SEARCH_MARGIN) and for recognizing a
+#previously-given-up item so we don't immediately re-attempt it while it's still sitting there.
+ITEM_POSITION_MATCH_RADIUS = 200
+
+snooze_until = 0.0 #module-level; set by the 'F4' hotkey callback, read by run_auto_collect()
+
+
+def _snooze_auto_collect():
+    global snooze_until
+    snooze_until = time.time() + SNOOZE_SECONDS
+    print(f"Auto-collect snoozed for {SNOOZE_SECONDS:.0f}s")
+
+
+def _native_collectible_tracks():
+    """Returns [(name, x, y, w, h)] for current to-collect OCR tracks, in real screen pixels."""
+    with text_tracks_lock:
+        tracks = list(shared_text_tracks)
+    return [
+        (name, int(x * SCALE_TO_NATIVE), int(y * SCALE_TO_NATIVE), int(w * SCALE_TO_NATIVE), int(h * SCALE_TO_NATIVE))
+        for (x, y, w, h, name, to_collect) in tracks if to_collect
+    ]
+
+
+def _track_near(tracks, name, x, y):
+    """Among tracks with a matching name, returns whichever is within ITEM_POSITION_MATCH_RADIUS
+    of (x, y) - disambiguates same-named items on screen at once and tolerates camera-pan drift."""
+    for (n, tx, ty, tw, th) in tracks:
+        if n != name:
+            continue
+        cx, cy = tx + tw // 2, ty + th // 2
+        if (cx - x) ** 2 + (cy - y) ** 2 <= ITEM_POSITION_MATCH_RADIUS ** 2:
+            return (n, tx, ty, tw, th)
+    return None
+
+
+def _is_abandoned(abandoned, name, cx, cy):
+    """True if (name, cx, cy) is within ITEM_POSITION_MATCH_RADIUS of a previously-given-up
+    attempt - i.e. this is almost certainly the same physical item we already failed to collect."""
+    return any(
+        a_name == name and (a_x - cx) ** 2 + (a_y - cy) ** 2 <= ITEM_POSITION_MATCH_RADIUS ** 2
+        for (a_name, a_x, a_y) in abandoned
+    )
+
+
+def run_auto_collect():
+    keyboard.add_hotkey('f4', _snooze_auto_collect)
+    print(f"Auto-collect running - press 'F4' anytime to snooze it for {SNOOZE_SECONDS:.0f}s.")
+
+    #Items we gave up on (5s of clicking, still on the ground): (name, x, y) at the moment we gave
+    #up, so we don't immediately re-attempt the same physical item every poll tick. Pruned below
+    #once that item is no longer seen nearby, so a *future* drop of the same item there is still
+    #eligible - this only suppresses retrying the exact instance we already failed on.
+    abandoned = []
+
+    while True:
+        if time.time() < snooze_until:
+            time.sleep(AUTO_COLLECT_POLL_SECONDS)
+            continue
+
+        tracks = _native_collectible_tracks()
+
+        #forget abandoned entries whose item is no longer sitting there (picked up, moved
+        #off-screen, scene changed) - otherwise a future drop of the same item nearby would be
+        #wrongly skipped forever instead of just "we already failed on this one instance"
+        abandoned = [
+            (name, x, y) for (name, x, y) in abandoned
+            if _track_near(tracks, name, x, y) is not None
+        ]
+
+        candidates = [
+            (name, x, y, w, h) for (name, x, y, w, h) in tracks
+            if not _is_abandoned(abandoned, name, x + w // 2, y + h // 2)
+        ]
+        if not candidates:
+            time.sleep(AUTO_COLLECT_POLL_SECONDS)
+            continue
+
+        cursor_x, cursor_y = pyautogui.position()
+        target_name, tx, ty, tw, th = min(
+            candidates, key=lambda t: (t[1] + t[3] // 2 - cursor_x) ** 2 + (t[2] + t[4] // 2 - cursor_y) ** 2
+        )
+        last_known = {"x": tx + tw // 2, "y": ty + th // 2}
+        print(f"Auto-collect: attempting '{target_name}' at ({last_known['x']}, {last_known['y']})")
+
+        def get_position(name=target_name, last_known=last_known):
+            match = _track_near(_native_collectible_tracks(), name, last_known["x"], last_known["y"])
+            if match is None:
+                return None
+            _, mx, my, mw, mh = match
+            last_known["x"], last_known["y"] = mx + mw // 2, my + mh // 2
+            return last_known["x"], last_known["y"]
+
+        success = actions.click_until_gone(
+            get_position, timeout=COLLECT_TIMEOUT_SECONDS, click_interval=CLICK_RETRY_INTERVAL_SECONDS,
+            poll_interval=AUTO_COLLECT_POLL_SECONDS, is_paused=lambda: time.time() < snooze_until,
+        )
+
+        if success:
+            print(f"Auto-collect: picked up '{target_name}'")
+        else:
+            print(f"Auto-collect: gave up on '{target_name}' after {COLLECT_TIMEOUT_SECONDS:.0f}s - releasing mouse control")
+            abandoned.append((target_name, last_known["x"], last_known["y"]))
+
 
 WINDOW_NAME = "Hunters Eye"
 FPS_PRINT_INTERVAL_SECONDS = 5.0 #how often to print the FPS line - printing every single frame just floods the console
@@ -291,13 +425,12 @@ def run_overlay():
     screen_size = pyautogui.size()
     overlay = Overlay(screen_size.width, screen_size.height)
     displayed_size = screen_size
-    scale_to_native = 1 / CAPTURE_SCALE #detection runs at CAPTURE_SCALE - the overlay draws at real screen resolution
 
     quit_requested = threading.Event()
     #the overlay is click-through and can never take keyboard focus, so quitting needs a
     #global hotkey (same pattern legacy/pindle.py already uses) instead of a window keypress
-    keyboard.add_hotkey("q", quit_requested.set)
-    print("Overlay running - press 'q' anytime to quit.")
+    keyboard.add_hotkey("end", quit_requested.set)
+    print("Overlay running - press 'End' anytime to quit.")
 
     t0 = time.time()
     n_frames = 1
@@ -316,7 +449,7 @@ def run_overlay():
             continue
 
         native_rectangles = [
-            (int(x * scale_to_native), int(y * scale_to_native), int(w * scale_to_native), int(h * scale_to_native))
+            (int(x * SCALE_TO_NATIVE), int(y * SCALE_TO_NATIVE), int(w * SCALE_TO_NATIVE), int(h * SCALE_TO_NATIVE))
             for (x, y, w, h) in rectangles
         ]
         overlay.draw_rectangles(native_rectangles)
@@ -344,9 +477,11 @@ def main():
     t1 = threading.Thread(target=get_screenshot, daemon=True)
     t2 = threading.Thread(target=detect_objects, daemon=True)
     t3 = threading.Thread(target=detect_text, daemon=True)
+    t4 = threading.Thread(target=run_auto_collect, daemon=True)
     t1.start()
     t2.start()
     t3.start()
+    t4.start()
 
     try:
         run_overlay()

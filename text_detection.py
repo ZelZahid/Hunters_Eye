@@ -34,7 +34,7 @@ from pathlib import Path
 import cv2 as cv
 
 LABEL_PAD_X = 10 #D2R (and most games) draw a semi-transparent background panel behind floating
-LABEL_PAD_Y = 6  #item-name labels, sized a bit larger than the text - see _group_words_into_lines()
+LABEL_PAD_Y = 6  #item-name labels, sized a bit larger than the text - see _padded_box()
 
 
 def _find_tessdata_dir():
@@ -86,8 +86,20 @@ elif _pytesseract_available:
 
 
 def load_target_items(path):
+    """Returns {item_name: to_collect}. A trailing '*' on a line marks that item as
+    "to collect" (see main.py's auto-collect thread) and is stripped before matching -
+    OCR output never contains '*' (see _clean_text), so leaving it in the name would mean
+    that item could never fuzzy-match."""
+    items = {}
     with open(path, "r", encoding="utf-8") as f:
-        return [line.strip().upper() for line in f if line.strip() and not line.startswith("#")]
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            to_collect = line.endswith("*")
+            name = line[:-1].strip() if to_collect else line
+            items[name.upper()] = to_collect
+    return items
 
 
 def _clean_text(raw_text):
@@ -128,29 +140,47 @@ def _get_words_pytesseract(frame):
     return words
 
 
-def _group_words_into_lines(words):
-    """Groups per-word OCR output back into per-line (text, x, y, w, h) tuples, padded to
-    approximate the game's label background panel (see LABEL_PAD_X/Y above)."""
+def _group_words_by_line(words):
+    """Groups per-word OCR output by Tesseract's own line/paragraph assignment - each group is
+    [(word, left, top, width, height), ...] in reading order for one recognized line."""
     lines = {}
     for (word, left, top, width, height, block_num, par_num, line_num) in words:
         key = (block_num, par_num, line_num)
         lines.setdefault(key, []).append((word, left, top, width, height))
+    return list(lines.values())
 
-    results = []
-    for line_words in lines.values():
-        text = " ".join(w[0] for w in line_words)
-        xs = [w[1] for w in line_words]
-        ys = [w[2] for w in line_words]
-        x2s = [w[1] + w[3] for w in line_words]
-        y2s = [w[2] + w[4] for w in line_words]
-        x, y = min(xs) - LABEL_PAD_X, min(ys) - LABEL_PAD_Y
-        w, h = (max(x2s) - min(xs)) + 2 * LABEL_PAD_X, (max(y2s) - min(ys)) + 2 * LABEL_PAD_Y
-        results.append((text, max(x, 0), max(y, 0), w, h))
-    return results
+
+def _padded_box(words):
+    """Bounding box of just these words, padded to approximate the game's label background
+    panel (see LABEL_PAD_X/Y above)."""
+    xs = [w[1] for w in words]
+    ys = [w[2] for w in words]
+    x2s = [w[1] + w[3] for w in words]
+    y2s = [w[2] + w[4] for w in words]
+    x, y = min(xs) - LABEL_PAD_X, min(ys) - LABEL_PAD_Y
+    w, h = (max(x2s) - min(xs)) + 2 * LABEL_PAD_X, (max(y2s) - min(ys)) + 2 * LABEL_PAD_Y
+    return max(x, 0), max(y, 0), w, h
+
+
+def _required_cutoff(item_length, base_cutoff):
+    """Very short target names (e.g. 2-4 letter Diablo II rune names like 'Lo', 'Um', 'Ko')
+    are especially prone to false-positive fuzzy matches. difflib's ratio is 2*M/(lenA+lenB) -
+    for a long name like "FULL REJUVENATION POTION", one stray mismatched letter barely moves
+    the ratio, so a fixed cutoff works well; for a 2-3 letter name, a single shared letter with
+    ANY unrelated short OCR misread (stray HUD text, chat, icons) can already clear 0.75. Scale
+    the required cutoff up as the name gets shorter - effectively exact-match at length <= 3,
+    since fuzzy tolerance there causes far more false positives than it saves real misreads.
+    This matters more than usual now that a match can drive real mouse clicks (auto-collect)."""
+    if item_length <= 3:
+        return 1.0
+    if item_length <= 6:
+        return max(base_cutoff, 0.9)
+    return base_cutoff
 
 
 def find_text_matches(frame, target_items, match_cutoff=0.75):
-    """Returns a list of (x, y, w, h, matched_name) for on-screen text matching target_items.
+    """Returns a list of (x, y, w, h, matched_name, to_collect) for on-screen text matching
+    target_items (an {item_name: to_collect} dict from load_target_items()).
 
     Runs exactly one OCR call - see the module docstring for why and which backend."""
     if _tesserocr_api is not None:
@@ -171,11 +201,36 @@ def find_text_matches(frame, target_items, match_cutoff=0.75):
         return []
 
     matches = []
-    for (raw_text, x, y, w, h) in _group_words_into_lines(words):
-        text = _clean_text(raw_text)
-        if not text:
-            continue
-        close = difflib.get_close_matches(text, target_items, n=1, cutoff=match_cutoff)
-        if close:
-            matches.append((x, y, w, h, close[0]))
+    for line_words in _group_words_by_line(words):
+        # Try every contiguous run of words in this line, not just the whole line - matching
+        # (and boxing) only the words that actually make up the item name. Games often render
+        # something else on the same OCR-perceived line right next to/below an item's name
+        # (e.g. D2R's "Rune" suffix under a rune name), and Tesseract's line/paragraph grouping
+        # doesn't consistently include or exclude it between passes. Matching whole-line text
+        # made both detection AND the click point depend on that inconsistent grouping - a short
+        # name like "GUL" would fail to match "GUL RUNE" outright (see _required_cutoff), and
+        # when it did match, the box (and therefore where auto-collect clicks) would jump in
+        # size depending on whatever else got swept into the line that pass.
+        best = None #(name, to_collect, x, y, w, h)
+        best_ratio = 0.0
+        n = len(line_words)
+        for start in range(n):
+            for end in range(start + 1, n + 1):
+                window = line_words[start:end]
+                text = _clean_text(" ".join(w[0] for w in window))
+                if not text:
+                    continue
+                # Not difflib.get_close_matches() - it only takes one cutoff for every
+                # candidate, and a cutoff loose enough for long names is far too loose for
+                # short ones (see _required_cutoff). Each target name needs its own,
+                # length-scaled cutoff instead.
+                for name in target_items:
+                    ratio = difflib.SequenceMatcher(None, text, name).ratio()
+                    if ratio > best_ratio and ratio >= _required_cutoff(len(name), match_cutoff):
+                        x, y, w, h = _padded_box(window)
+                        best = (name, target_items[name], x, y, w, h)
+                        best_ratio = ratio
+        if best:
+            name, to_collect, x, y, w, h = best
+            matches.append((x, y, w, h, name, to_collect))
     return matches

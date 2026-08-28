@@ -26,8 +26,8 @@ It's built on a simple idea with a lot of range: **anything that can be seen can
 
 This project is under active, ongoing development. Planned directions include:
 
-- 🔤 Searching for on-screen **text**, not just images
-- 🖱️ A full automation layer — react to what's detected by moving a mouse, pressing a key, or triggering a custom action
+- 🔤 Searching for on-screen **text**, not just images — done
+- 🖱️ A full automation layer — react to what's detected by moving a mouse, pressing a key, or triggering a custom action. An initial version already exists (auto-click on a detected match); expanding to more action types next
 - 🖼️ A user-friendly GUI so anyone can point the engine at a target without touching code
 - 🤖 Porting the engine into a **robotics project** — using a live camera feed to detect and track real-world objects and people
 - 📦 Packaging as a standalone cross-platform application

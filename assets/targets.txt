@@ -1,5 +1,25 @@
 # One item name per line — this is what Hunter's Eye watches for on screen.
 # Lines starting with # are ignored. Matching is case-insensitive and tolerant
 # of small OCR misreads (fuzzy match), so write names exactly as they appear in-game.
-FULL REJUVENATION POTION
+#
+# A trailing "*" marks an item "to collect": Hunter's Eye will automatically move the
+# mouse to it and click until it disappears (picked up) or 5 seconds pass with it still
+# on the ground (gives up and hands mouse control back to you). Press 'F4' anytime to
+# snooze auto-collect for 10 seconds if you don't want it grabbing your mouse mid-fight.
+FULL REJUVENATION POTION*
 FLAWLESS RUBY
+Lum Rune*
+Ko Rune*
+Lem Rune*
+Pul Rune*
+Um Rune*
+Mal Rune*
+Gul Rune*
+Vex Rune*
+Ohm Rune*
+Lo Rune*
+Sur Rune*
+Ber Rune*
+Jah Rune*
+Cham Rune*
+Zod Rune*

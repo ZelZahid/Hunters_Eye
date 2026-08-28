@@ -37,6 +37,7 @@ class Overlay:
         self.canvas = tk.Canvas(self.root, width=width, height=height,
                                  bg=TRANSPARENT_COLOR, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
+        self._last_rectangles = None #see draw_rectangles()
 
         #WS_EX_TRANSPARENT makes the ENTIRE window click-through, not just the
         #transparent-colored background - guarantees clicks reach the game even
@@ -67,6 +68,14 @@ class Overlay:
         self.canvas.config(width=width, height=height)
 
     def draw_rectangles(self, rectangles):
+        #This gets called every frame (~40-50x/sec) regardless of whether there's anything to
+        #draw or whether it changed - redrawing this always-on-top layered window that often
+        #for no visible change forces Windows to recomposite it constantly, which is a plausible
+        #source of cursor flicker. Skipping the redraw when nothing changed (the common case:
+        #no items on screen, or an item sitting still) avoids that churn for free.
+        if rectangles == self._last_rectangles:
+            return
+        self._last_rectangles = rectangles
         self.canvas.delete("all")
         for (x, y, w, h) in rectangles:
             self.canvas.create_rectangle(x, y, x + w, y + h, outline="#00ff00", width=2)

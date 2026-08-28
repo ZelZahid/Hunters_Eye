@@ -116,3 +116,76 @@ Considered and measured two alternative approaches before picking one:
 - Changed the console FPS line to print once every 5 seconds (average over
   just that window) instead of every single frame, which was flooding the
   console at ~40 lines/second.
+
+------------------------------------------------------------------------------
+Version 0.004 - 2026-08-28
+------------------------------------------------------------------------------
+Added auto-collect: the first concrete use of the "action" seam described in
+CLAUDE.md (move mouse / press key / click), which had only existed as a
+future-plans note until now. Most of this version is a multi-round accuracy
+investigation once real gameplay testing showed the first version wasn't
+good enough - see Error_history.txt #16-#18 for the full root-cause detail
+behind each round below.
+
+- assets/targets.txt: a trailing "*" on an item name now marks it "to
+  collect" - auto-collect moves the mouse to it and clicks until it's picked
+  up or 5 seconds pass with it still on the ground, at which point it backs
+  off and hands mouse control back rather than clicking forever.
+- actions.py (new): a generic, game-agnostic click_until_gone() - knows
+  nothing about item names or OCR, just clicks wherever a caller's position
+  callback reports until that callback returns None or a timeout elapses.
+  main.py's new run_auto_collect() thread is the D2R-specific glue that feeds
+  it OCR-tracked positions.
+- Hotkeys changed: quit moved from 'q' to 'End', and a new 'F4' snoozes
+  auto-collect for 10 seconds (then re-arms itself automatically - not a
+  plain on/off toggle, so it can't be accidentally left disabled). Both are
+  global hotkeys via the `keyboard` package, same as before; 'q' was
+  replaced because it's an ordinary letter pressed constantly during real
+  gameplay.
+- Fixed a false-positive bug in the fuzzy OCR matcher: short target names
+  (2-3 letter Diablo II rune names like "Lo", "Um", "Ko") could match
+  unrelated on-screen noise under the same fixed 0.75 similarity cutoff that
+  works fine for long names - because difflib's ratio math makes short
+  strings far more sensitive to a single shared letter. Now the required
+  cutoff scales with target name length (effectively exact-match at length
+  <= 3). This matters more than it otherwise would now that a match can
+  trigger a real mouse click, not just a wrong overlay box.
+- Fixed unstable detection boxes for short names: matching was done against
+  Tesseract's whole recognized line, but Tesseract doesn't consistently
+  decide whether e.g. a rune's name and the word "Rune" next to/below it
+  belong on the same line between OCR passes - so the box (and therefore
+  where auto-collect clicked) changed size depending on what else got swept
+  onto the line that pass. Matching now tries every contiguous word-run
+  within a line and boxes only the words that actually matched.
+- Auto-collect click accuracy, fixed in stages after each proved
+  insufficient on real gameplay (character moving during detection kept
+  making clicks land where the item used to be, then clicks landing
+  correctly but not registering, then registering but "rushed"):
+  1. Replaced separate moveTo()+click() calls with one click(x, y) call,
+     removing a ~0.1s gap (pyautogui's own default PAUSE) between the
+     cursor arriving and the click actually firing.
+  2. Slowed the actual click-retry cadence from every 0.15s to every 0.8s
+     (while still polling every 0.1s for fast success detection) - D2R
+     treats a click on an item as "walk over and pick it up on arrival," so
+     clicking much faster than that walk takes kept re-issuing the move
+     command and retargeting the character before it ever arrived.
+  3. Replaced pyautogui.click() with manual mouseDown()/sleep/mouseUp():
+     click() sends the press and release combined into one Windows
+     mouse_event() call with zero time held, which some games' per-frame
+     input polling can miss entirely even with the cursor in the right
+     spot.
+  4. Split the move and the press apart with their own settle delay too
+     (not just press-then-release) - mouseDown(x, y) moved the cursor and
+     pressed in the same call, risking the game resolving the click against
+     where the cursor was a frame earlier.
+- Reduced unnecessary overlay redraws (overlay.py's draw_rectangles() now
+  skips repainting when the rectangles haven't changed since last frame) -
+  an attempted fix for a reported mouse-cursor flicker; plausible root cause
+  identified (this always-on-top layered window was being repainted every
+  frame regardless of whether anything visible changed) but not separately
+  re-confirmed by the user after the fact.
+- Gated the OCR loop-rate/scan-gap/call-time diagnostic prints added in
+  v0.002-0.003 behind a new OCR_DEBUG_TIMING flag (default off) - useful for
+  re-tuning OCR_INTERVAL_SECONDS later, but too noisy to leave on by default
+  once auto-collect added its own console output.
+- User-confirmed after all of the above: click accuracy issue resolved.
