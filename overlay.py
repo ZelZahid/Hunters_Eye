@@ -11,6 +11,7 @@ on macOS; that needs a different implementation later (e.g. an NSWindow via
 pyobjc) - see CLAUDE.md.
 """
 import platform
+import time
 import tkinter as tk
 
 #The colour key: every pixel of EXACTLY this colour is invisible and click-through.
@@ -54,8 +55,19 @@ PANEL_BORDER_COLOR = (70, 70, 80)
 #leave the rest as the key colour, which shows the game through. "gray50" is a built-in Tk bitmap
 #and costs nothing to draw. Set to None for a fully solid plate (more readable, hides more game).
 PANEL_BG_STIPPLE = "gray50"
-PANEL_TEXT_OUTLINE = True #ring each glyph in black - required whenever the plate is stippled,
-                           #see _panel_text() for why. Pointless (but harmless) on a solid plate.
+#Ring each glyph in black by drawing it once per offset before the real glyph. NOW EMPTY - i.e.
+#off - and that is a measured change, not a cleanup. It was added to fight MAGENTA fringing: the
+#stipple leaves key-coloured holes behind every glyph and Windows' subpixel smoothing blends the
+#glyph edges into them, so with a magenta key the text rendered visibly pink and the ring of black
+#pixels was what stopped it. TRANSPARENT_COLOR is near-black now, so the smear is already dark -
+#the outline was painting black next to black. Re-measured on real renders over both a dark and a
+#bright backdrop: 8 offsets vs 4 vs none gave glyph contrast 183.7 / 183.6 / 183.4 on dark and
+#181.3 / 181.0 / 180.4 on bright, with an identical count of lit pixels. No visible benefit left.
+#It was not free: it drew every label NINE times, making the panel 1.66ms per repaint against
+#0.605ms without it, and the panel is the overlay's most expensive layer.
+#IF TRANSPARENT_COLOR IS EVER MOVED BACK TO A SATURATED COLOUR, PUT THESE BACK - the eight
+#neighbours are ((-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(-1,1),(0,1),(1,1)).
+PANEL_TEXT_OUTLINE_OFFSETS = ()
 #WHY THE PANEL HAS A SOLID BACKGROUND, when the rest of the overlay deliberately doesn't:
 #the window's transparency is a color KEY, not real alpha - a pixel is either exactly
 #TRANSPARENT_COLOR and fully invisible, or fully opaque. Text drawn straight onto that
@@ -65,6 +77,72 @@ PANEL_TEXT_OUTLINE = True #ring each glyph in black - required whenever the plat
 #Drawing a dark plate first gives the text something sane to blend into. Detection boxes don't
 #need this because a 2px rectangle outline isn't antialiased the same way, and because covering
 #the game where an item is lying would defeat the point of them.
+
+
+#HOW OFTEN THIS WINDOW IS ALLOWED TO REPAINT, which is deliberately NOT how often it is asked to.
+#
+#This is a fullscreen, always-on-top, layered (WS_EX_LAYERED) window, so every repaint makes the
+#desktop compositor redo the whole screen - it is the most expensive kind of window there is to
+#redraw, and the cost lands on the GAME underneath, not on us. The caller redraws once per
+#detection frame, so making detection faster silently made this repaint more often: measured, box
+#repaints went from 34/s to 51/s purely as a side effect of an FPS optimisation, with the compositor
+#work rising in step. That shows up as cursor flicker and as the game feeling a touch less crisp.
+#
+#Nothing is gained by repainting faster. These are DISPLAY rates: nothing reads the screen to make
+#a decision (auto-collect reads shared_text_tracks directly), so a box arriving up to 33ms later
+#changes only how smooth it looks. The panel gets a much lower cap because it is a numeric read-out
+#nobody can read at 30Hz anyway, and because it is by far the more expensive of the two layers:
+#measured 1.17ms per panel repaint against 0.35ms for the boxes, since every label is drawn nine
+#times over to ring it in black (see _panel_text).
+#
+#Measured over the worst case (boxes moving AND a health value ticking), against a ~51Hz caller:
+#  repaint work   73.3 ms/s -> 34.3 ms/s
+#  box repaints   47.6/s    -> 24.6/s
+#  panel repaints 32.0/s    -> 10.0/s
+#
+#BE HONEST ABOUT THE ONE TRADE: because the caller runs at ~51Hz, a 30Hz cap cannot land on 30 -
+#it takes every second call, so boxes actually update ~25/s, slightly LESS often than the ~34/s
+#they managed before the pipeline got faster. A rate cap can only ever land on caller_rate/N. At
+#25Hz a moving box is still perfectly fluid, and it buys back more than half the compositor work,
+#which is the thing that was actually hurting. If boxes ever look choppy this is the knob - but
+#note that raising it to anything above caller_rate/2 jumps straight back to every frame.
+#
+#Both are pure smoothness knobs. Neither can affect detection, tracking, or auto-collect.
+BOX_REDRAW_HZ = 30
+PANEL_REDRAW_HZ = 10
+
+#How far a box must move before it is worth repainting for. Detection runs at CAPTURE_SCALE (0.3),
+#so coordinates are scaled back up by 3.33x on the way here - one pixel of matchTemplate jitter on
+#a completely STATIONARY item becomes a 3-4px jump on screen, which is enough to fail an equality
+#check and force a full repaint of a fullscreen layered window, every frame, forever. That is both
+#wasted compositor work and a visibly restless box.
+#Compared against the last DRAWN position rather than the last one offered, so slow genuine drift
+#accumulates until it crosses the threshold instead of being ignored forever. Verified: a box
+#creeping 2px per frame stays within 4px of truth indefinitely rather than falling steadily behind.
+#
+#THE TRADE, stated because the test caught it: the box does NOT snap to the exact position when
+#movement stops - it settles wherever it last drew, up to this many pixels out, and stays there.
+#That is a cosmetic offset of a few pixels on a box a couple of hundred pixels wide, and it is
+#display-only: auto-collect clicks coordinates from shared_text_tracks, never from what is drawn,
+#so nothing aims at this box. If it ever needs to settle exactly, the fix is a one-shot exact
+#redraw after the content has been unchanged for a beat, not a smaller deadband - jitter at this
+#capture scale is 3.3px by construction (1px at CAPTURE_SCALE 0.3, scaled back up), so anything
+#below 4 stops suppressing it at all.
+BOX_MOVE_DEADBAND_PX = 4
+
+
+def _boxes_look_the_same(new, old):
+    """True if every box is within BOX_MOVE_DEADBAND_PX of the one already drawn - same count,
+    same colours, same order. Anything else (a box appearing, disappearing, or changing colour)
+    is a real change and must be drawn."""
+    if old is None or len(new) != len(old):
+        return False
+    for (x1, y1, w1, h1, c1), (x2, y2, w2, h2, c2) in zip(new, old):
+        if c1 != c2:
+            return False
+        if max(abs(x1 - x2), abs(y1 - y2), abs(w1 - w2), abs(h1 - h2)) > BOX_MOVE_DEADBAND_PX:
+            return False
+    return True
 
 
 def _hex(color):
@@ -95,6 +173,11 @@ class Overlay:
         self._height = height #panel position is a fraction of this - see draw_panel()
         self._last_rectangles = None #see draw_rectangles()
         self._last_panel = None      #see draw_panel()
+        #Timestamps of the last ACTUAL repaint of each layer, for the rate caps above. Separate
+        #per layer, since the two change on completely different cadences and have very
+        #different costs.
+        self._last_box_draw = 0.0
+        self._last_panel_draw = 0.0
 
         #WS_EX_TRANSPARENT makes the ENTIRE window click-through, not just the
         #transparent-colored background - guarantees clicks reach the game even
@@ -133,8 +216,19 @@ class Overlay:
         #for no visible change forces Windows to recomposite it constantly, which is a plausible
         #source of cursor flicker. Skipping the redraw when nothing changed (the common case:
         #no items on screen, or an item sitting still) avoids that churn for free.
-        if rectangles == self._last_rectangles:
+        #Not just equality: a box that has only jittered by a pixel or two is not worth a
+        #fullscreen repaint. See BOX_MOVE_DEADBAND_PX.
+        if _boxes_look_the_same(rectangles, self._last_rectangles):
             return
+        #Content changed, but cap how often that actually reaches the screen (see BOX_REDRAW_HZ).
+        #Note what is NOT done here: _last_rectangles is deliberately left alone when a redraw is
+        #skipped, so the next call still sees a difference and draws the newer content. Recording
+        #it as drawn would strand the boxes at a stale position whenever an item stopped moving
+        #right after a skipped frame.
+        now = time.monotonic()
+        if now - self._last_box_draw < 1.0 / BOX_REDRAW_HZ:
+            return
+        self._last_box_draw = now
         self._last_rectangles = rectangles
         #delete("boxes"), not delete("all") - the debug panel shares this canvas and updates on a
         #completely different cadence, so the two must be able to redraw without erasing each other.
@@ -145,16 +239,12 @@ class Overlay:
     def _panel_text(self, x, y, text, color, font):
         """One line of panel text, ringed in black before it is drawn.
 
-        The ring is not decoration. With a stippled plate, half the pixels directly behind each
-        glyph are the transparent key colour, and Windows' subpixel font smoothing blends the
-        glyph's edges into whatever is under them - so the strokes pick up the key's magenta and
-        the text renders visibly pink (measured: a grey (220,220,220) label came out averaging
-        (208,159,207) RGB). Painting the eight neighbouring offsets in black first fills exactly
-        the ring of pixels the antialiasing will use, so the edges blend into black instead."""
-        if PANEL_TEXT_OUTLINE:
-            for dx, dy in ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)):
-                self.canvas.create_text(x + dx, y + dy, text=text, fill="#000000", font=font,
-                                         anchor="nw", tags="panel")
+        The ring was not decoration when the key colour was magenta - see
+        PANEL_TEXT_OUTLINE_OFFSETS for why it earned its place then, why it no longer does now
+        that the key is near-black, and what to restore if the key colour ever changes back."""
+        for dx, dy in PANEL_TEXT_OUTLINE_OFFSETS:
+            self.canvas.create_text(x + dx, y + dy, text=text, fill="#000000", font=font,
+                                     anchor="nw", tags="panel")
         self.canvas.create_text(x, y, text=text, fill=_hex(color), font=font, anchor="nw", tags="panel")
 
     def draw_panel(self, title, rows, origin=None):
@@ -172,6 +262,12 @@ class Overlay:
         bars and numbers, so the same panel can display anything a caller wants to watch."""
         if (title, rows, origin) == self._last_panel:
             return
+        #Same rate cap and the same skip-without-recording as draw_rectangles, at a lower rate -
+        #this is a numeric read-out, and it is the expensive layer. See PANEL_REDRAW_HZ.
+        now = time.monotonic()
+        if now - self._last_panel_draw < 1.0 / PANEL_REDRAW_HZ:
+            return
+        self._last_panel_draw = now
         self._last_panel = (title, rows, origin)
         self.canvas.delete("panel")
         if title is None:

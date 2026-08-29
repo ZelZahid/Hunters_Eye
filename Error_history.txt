@@ -1084,3 +1084,133 @@ Lesson: A colour-keyed measurement encodes an assumption that the thing being
   which points at the filter's definition rather than at its geometry or
   thresholds - the opposite conclusion from #28, where the reading was noisy
   and the region was at fault.
+
+------------------------------------------------------------------------------
+35. Three-channel template matching cost 5x for zero extra discrimination
+------------------------------------------------------------------------------
+Where: main.py, detect_objects() and _relocalize_track()
+Symptom: Average FPS drifted to ~34. matchTemplate measured 17.5ms/frame at
+  CAPTURE_SCALE 0.3, and relocalization 27-33ms PER TRACKED ITEM - the single
+  largest costs in the pipeline.
+Cause: Both ran on BGR frames, on the reasonable-sounding assumption that
+  matching in colour is stricter than matching in grey. It is not, for this
+  metric. TM_CCOEFF_NORMED subtracts the mean and normalises across the entire
+  patch, and on a multi-channel image it does that over all channels together -
+  which makes it very nearly invariant to exactly the transforms colour is
+  supposed to catch. Measured against the real needle: a FULLY DESATURATED copy
+  scored 1.000, and copies hue-rotated by 30, 60, 90 and 120 degrees all scored
+  1.000. The matcher had been colour-blind the whole time; the extra two
+  channels were pure cost.
+Fix: Convert frame and template to grey once and match on one channel. 17.5ms ->
+  3.2ms for detection, 27-33ms -> 5.7ms per track. Verified rather than assumed:
+  false-positive headroom on real screen content is unchanged (best non-match
+  0.365 grey vs 0.353 colour, both far under the 0.60 threshold); an end-to-end
+  test boxes all three planted needles at the exact expected pixel and fires
+  zero boxes on a needle-free frame; and over 20 perturbed relocalizations
+  (drift, dimming, added noise) grey localised correctly 20/20 against colour's
+  18/20, at equal or higher confidence every time.
+Lesson: "More channels must mean stricter matching" is an assumption about the
+  METRIC, not about the data, and it is worth actually testing - build the
+  adversarial input (a desaturated and a hue-rotated copy) and see whether the
+  score moves at all. If it does not, the channels are costing you nothing but
+  time. Where a detector genuinely must key on colour, that belongs in an
+  explicit HSV pre-mask (see legacy/vision.py), which can express it; normalised
+  cross-correlation cannot.
+
+------------------------------------------------------------------------------
+36. The OCR thread captured a full-resolution frame it then threw away, ~45x/sec
+------------------------------------------------------------------------------
+Where: main.py, detect_text()
+Symptom: An apparently idle OCR thread held a CPU core at 100% with nothing on
+  screen to detect, and overall pipeline FPS was well below what the capture and
+  matching threads could sustain on their own.
+Cause: The loop grabbed a frame unconditionally at the top of every iteration,
+  before deciding what to do with it. When there were no tracks to relocalize
+  and no scan yet due - the normal case, since most of the time nothing is lying
+  on the ground - every branch below was a no-op and the frame was discarded
+  untouched. That "nothing happened" iteration still cost a full 1920x1080 grab
+  plus conversion (~21ms) and ran about 45 times a second, so the thread spent a
+  whole core and roughly 400MB/s of memory bandwidth in direct competition with
+  the two threads that actually determine FPS. It looked free because the
+  wasted work was in the part of the loop that did nothing.
+  Compounding it: cv.resize at fx=1.0 is NOT a no-op. It is a full-resolution
+  copy, and it ran on every one of those captures for ~3.7ms to produce an
+  array identical to its input.
+Fix: Work out whether the iteration has anything to do BEFORE capturing, and
+  sleep instead when it does not. Skip the resize entirely when the scale is 1.0.
+  Grab straight to one channel (BGRA->GRAY) when only relocalization needs the
+  frame, instead of building a 3-channel full-resolution intermediate first.
+  Idle pipeline throughput went 35.6 -> 51.8 FPS.
+Lesson: Fetching input at the top of a loop "so it is ready" hides its cost in
+  the branch that does nothing, which is the branch nobody profiles. Acquire
+  expensive input only once you know it will be used. And treat any resize,
+  convert or copy with identity parameters as real work until measured -
+  libraries very rarely short-circuit them.
+
+------------------------------------------------------------------------------
+37. np.array() on an mss capture duplicated 8MB per frame, per capture thread
+------------------------------------------------------------------------------
+Where: main.py, get_screenshot() and detect_text()'s frame grab
+Symptom: Screen capture measured ~21ms/frame against a ~17ms floor for the grab
+  itself, on two separate threads.
+Cause: np.array(screenshot) goes through mss's array interface and copies the
+  entire 1920x1080x4 buffer (~8MB) into a fresh allocation every frame. The
+  pixels were then immediately downscaled, so the copy existed only to be read
+  once and freed.
+Fix: np.frombuffer(img.raw, ...).reshape(...) wraps mss's existing buffer with
+  no copy. Verified byte-identical to np.array(img) on the same capture. ~4ms
+  per frame on each of the two capture threads. Because it is a VIEW over a
+  buffer the library may reuse, it must be consumed before the next grab() -
+  here the immediately-following resize/convert copies the pixels out, and
+  nothing keeps a reference past that.
+  Separately: downscaling now happens BEFORE the alpha channel is stripped
+  rather than after. The output is bit-for-bit identical (max difference 0 over
+  a full frame) because INTER_LINEAR mixes each channel independently and alpha
+  is discarded either way - but the colour conversion then runs over 576x324
+  pixels instead of 1920x1080.
+Lesson: In a per-frame path, know which of your calls copy. Two that look like
+  free reinterpretations (np.array over a buffer protocol; a channel conversion)
+  are full-frame copies, and at 50 FPS an 8MB copy is 400MB/s of memory
+  bandwidth that every other thread then has to share. Relatedly, when two cheap
+  operations commute, do the one that SHRINKS the data first - the ordering is
+  free and the saving is proportional.
+
+------------------------------------------------------------------------------
+38. A pure FPS optimisation silently made cursor flicker worse
+------------------------------------------------------------------------------
+Where: overlay.py, draw_rectangles() / draw_panel(); main.py, run_overlay()
+Symptom: Reported right after the v0.008 performance pass - extra flicker on the
+  mouse cursor, and clicking/right-clicking on items feeling slightly delayed.
+  Nothing in the overlay had been touched.
+Cause: run_overlay() redraws the overlay once per detection frame, so the
+  overlay's repaint rate is bolted to detection throughput. Raising FPS from ~34
+  to ~51 therefore raised box repaints from 34/s to 51/s without anyone asking
+  for it. This is a fullscreen, always-on-top, WS_EX_LAYERED window - the single
+  most expensive kind to repaint, because each repaint makes the desktop
+  compositor redo the whole screen - and that cost is paid by the GAME
+  underneath, not by us, so it never showed up in our own FPS number. The debug
+  panel made it worse than the boxes did: 1.17ms per panel repaint against
+  0.35ms for boxes, because every label is drawn nine times over to ring it in
+  black, and it redraws on every 1% change in health or mana.
+Fix: Cap each layer's repaint rate independently in overlay.py (BOX_REDRAW_HZ
+  30, PANEL_REDRAW_HZ 10), decoupled from how often the caller asks. These are
+  display-only rates - nothing reads the screen to make a decision, since
+  auto-collect reads shared_text_tracks directly - so detection, tracking and
+  actions are untouched. Worst case measured 73.3 -> 34.3 ms/s of repaint work.
+  Two things had to be got right: a skipped repaint must NOT record its content
+  as drawn (otherwise a box that stops moving right after a skipped frame is
+  stranded at a stale position forever - tested explicitly), and a cap can only
+  land on caller_rate/N, so 30Hz against a 51Hz caller really means ~25Hz.
+Also measured, and NOT the cause: the overlay does not delay clicks. End-to-end
+  (click issued -> a window underneath actually handling it, with the overlay
+  repainting concurrently) it costs ~0.1ms, which is noise - no overlay 0.7ms
+  median, repainting at 51Hz 0.8ms, both mouse buttons. Worth recording so the
+  next person does not go hunting there.
+Lesson: An optimisation's effects are not confined to the thing it optimised.
+  Anything downstream that runs "once per iteration" silently speeds up too, and
+  if that downstream thing costs someone ELSE resources - a compositor, a GPU, a
+  disk, a rate-limited API - the new cost is invisible in your own numbers by
+  construction. After changing a loop's rate, list what else is keyed to that
+  loop and decide deliberately whether each one should follow. Display rates in
+  particular should be pinned to what a human can perceive, never to how fast
+  the machine happens to be able to go.

@@ -355,3 +355,133 @@ No new dependencies. window_region.py uses pywin32, already required on Windows
 and already optional, and degrades to "no anchor" everywhere else.
 
 Fourteen entries added to Error_history.txt (#21-#34) covering the above.
+
+------------------------------------------------------------------------------
+Version 0.008 - 2026-08-29
+------------------------------------------------------------------------------
+Pure performance release. Average FPS had drifted down to ~34; this took it to
+~51 idle and ~43 with three items being tracked, measured A/B against v0.007 on
+the same machine with the same harness. Nothing was traded away to get there -
+every change below is either bit-identical output or was measured to be equally
+or MORE accurate than what it replaced. No behaviour, no tuning constants, and
+no detector logic changed.
+
+The theme: almost all of it was work the pipeline was doing and then throwing
+away. Very little was the actual detection.
+
+TEMPLATE MATCHING NOW RUNS ON ONE CHANNEL, NOT THREE (17.5ms -> 3.2ms/frame).
+- The three-channel matching was already colour-blind and nobody had checked.
+  TM_CCOEFF_NORMED subtracts the mean and normalises across the whole patch, so
+  measured against the real needle, a FULLY DESATURATED copy and copies
+  hue-rotated by 30/60/90/120 degrees all still scored 1.000 in colour. The two
+  extra channels were buying no discrimination at all for 14ms a frame.
+- False-positive headroom on real screen content is unchanged (best non-match
+  0.365 grey vs 0.353 colour, both far below the 0.60 threshold), and an
+  end-to-end test boxes all three planted needles at the exact expected pixel
+  while firing zero boxes on a needle-free frame.
+
+TRACK RELOCALIZATION LIKEWISE (27-33ms -> 5.7ms PER TRACKED ITEM).
+- Same reasoning, but this was the bigger absolute cost: at OCR_CAPTURE_SCALE
+  1.0 the search window is ~700x530 native pixels, so three items on the ground
+  cost the OCR thread ~100ms every loop iteration - it saturated a core exactly
+  when something was worth tracking.
+- Accuracy went UP, not down. Over 20 perturbed relocalizations (drift, dimming,
+  added noise) grey found the correct position 20/20 against colour's 18/20 and
+  scored equal or higher confidence on every single one.
+
+THE OCR THREAD NO LONGER CAPTURES FRAMES IT WILL NOT LOOK AT.
+- It ran a full-resolution capture every loop iteration unconditionally, ~45
+  times a second. With no tracks to relocalize and no scan due - the normal
+  case, since most of the time nothing is on the ground - that frame was
+  discarded untouched. An idle thread was burning a whole CPU core and roughly
+  400MB/s of memory bandwidth against the two threads that actually set the FPS.
+  It now checks first and sleeps instead.
+- Also: cv.resize at fx=1.0 is NOT a no-op, it is a full-resolution copy, and it
+  was running on every one of those captures. ~3.7ms each, for an identical
+  array.
+
+CAPTURE STOPPED COPYING 8MB PER FRAME, TWICE.
+- np.frombuffer over mss's own buffer instead of np.array(img), which goes
+  through the array interface and duplicates the whole 1920x1080x4 grab. Both
+  capture sites. Verified byte-identical on the same capture; ~4ms/frame.
+- Downscale now happens BEFORE the alpha channel is stripped rather than after.
+  Bit-for-bit identical output (verified: max difference 0 over a full frame) -
+  INTER_LINEAR mixes channels independently and alpha is discarded either way -
+  but the colour conversion then runs over 576x324 pixels instead of 1920x1080.
+- Dropped a per-frame .copy() of the detection frame that nothing needed.
+
+MEASURED AND REJECTED, so it does not get re-tried:
+- Grabbing small sub-regions around each track instead of the whole screen, for
+  relocalization. One 700x530 grab is 6.3ms against 17.3ms for the full screen,
+  but THREE of them cost 22ms - more than the full-screen grab they would
+  replace. Per-call overhead dominates; it would only pay off at one track.
+- Capping OpenCV's thread count to leave more CPU for the game. matchTemplate
+  barely parallelises here at all (3.12ms at 16 threads vs 3.26ms at 1), so
+  there is nothing to reclaim.
+
+OVERLAY REPAINT RATE, decoupled from detection FPS - a follow-up to the above.
+- Making detection faster silently made the overlay repaint more often, because it
+  redraws once per detection frame. Measured, box repaints went 34/s -> 51/s purely
+  as a side effect. This is a fullscreen always-on-top LAYERED window, so every
+  repaint makes the compositor redo the whole screen and the cost lands on the game,
+  not on us - it shows up as cursor flicker and as the game feeling less crisp.
+- overlay.py now caps the two layers independently: BOX_REDRAW_HZ 30, PANEL_REDRAW_HZ
+  10. Purely display rates - nothing reads the screen to make a decision (auto-collect
+  reads shared_text_tracks directly), so detection, tracking and actions are untouched.
+- Measured, worst case (boxes moving AND health ticking) against a ~51Hz caller:
+  repaint work 73.3 -> 34.3 ms/s, box repaints 47.6 -> 24.6/s, panel 32.0 -> 10.0/s.
+- The one trade, stated plainly: a rate cap can only land on caller_rate/N, so a 30Hz
+  cap against a 51Hz caller takes every second call - boxes update ~25/s, slightly
+  less often than the ~34/s before. Still fluid; it buys back over half the
+  compositor work.
+- Verified a skipped repaint cannot strand a stale box: the pending content is
+  deliberately NOT recorded as drawn, so the next call still sees a difference. Tested
+  explicitly - after movement stops the box lands on its true final position.
+
+FLICKER, ROUND TWO - after testing confirmed the click delay was gone and the
+flicker was much improved but not fully.
+- The panel's black text outline is off. It drew every label NINE times and was
+  the single most expensive thing the overlay did. It existed to fight MAGENTA
+  fringing, and TRANSPARENT_COLOR became near-black in v0.007 - so it had been
+  painting black next to black ever since. Re-measured over both a dark and a
+  bright backdrop: 8 offsets vs 4 vs none gave glyph contrast 183.7/183.6/183.4
+  and 181.3/181.0/180.4, identical lit-pixel counts. Panel repaint 1.66ms ->
+  0.605ms. The two settings are coupled: if the key colour ever goes back to
+  something saturated, the outline has to come back with it.
+- Boxes are no longer repainted for jitter (BOX_MOVE_DEADBAND_PX, 4px). At
+  CAPTURE_SCALE 0.3 coordinates are scaled back up 3.33x, so ONE pixel of
+  matchTemplate jitter on a completely stationary item becomes a 3-4px jump on
+  screen and forced a fullscreen repaint every single frame, forever. Measured,
+  a stationary-but-jittering item went from ~25 repaints/s to 0.3/s - the
+  common case of standing still with an item on the ground is now free.
+- Cumulative worst case since v0.007: repaint work 73.3 -> 31.5 ms/s. Stationary
+  item with jitter: ~25 repaints/s -> 0.3/s, 2.5 ms/s.
+- Verified the deadband cannot strand a box: compared against the last DRAWN
+  position, so a box creeping 2px/frame stays within 4px of truth instead of
+  falling behind. Appearing, disappearing and recolouring are never suppressed.
+  Known trade: a box settles up to 4px from its true position when movement
+  stops rather than snapping exactly. Display-only - auto-collect clicks
+  coordinates from shared_text_tracks, never the drawn box.
+
+ALSO MEASURED AND REJECTED:
+- Updating canvas items in place with coords() instead of delete-and-recreate,
+  on the theory that clear-then-redraw is what flickers. It is not faster:
+  0.381ms vs 0.391ms for three boxes. Not worth the extra state.
+
+WHAT WAS MEASURED AND FOUND *NOT* TO BE A PROBLEM:
+- The overlay does not delay clicks. Measured end-to-end (click issued -> the handler
+  of a window underneath actually running, real clicks, overlay repainting concurrently
+  on its own thread): no overlay 0.7ms median, overlay idle 0.7ms, repainting at 34Hz
+  0.9ms, repainting at 51Hz 0.8ms. Left and right button both. The overlay's
+  WS_EX_TRANSPARENT routing costs ~0.1ms - noise. Any perceived click delay is NOT
+  input routing; the mechanism to suspect is compositor load (addressed above) or
+  auto-collect physically taking the mouse (17 items in targets.txt are marked "*",
+  and while one is on the ground auto-collect moves the cursor and clicks every 0.8s
+  for up to 5s - press F4 to snooze it for 10s).
+- Re-verified both fragile overlay properties after touching this file, since they
+  regress independently: see-through (0.76% of screen is the key colour, stddev 42.6 -
+  desktop clearly visible through it) and click-through (4/4 clicks reached the window
+  underneath, including over a drawn box).
+
+No new dependencies. No new files.
+Four entries added to Error_history.txt (#35-#38).
