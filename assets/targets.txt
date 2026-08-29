@@ -13,7 +13,7 @@
 # falls back to the default green. If both "*" and "[color]" apply to one item, "*" comes
 # first, e.g. "ITEM NAME* [purple]".
 Full Rejuvenation Potion* [purple]
-Flawless Ruby*
+Flawless Amethyst*
 Lum Rune* [darkorange]
 Ko Rune* [darkorange]
 Lem Rune* [darkorange]
