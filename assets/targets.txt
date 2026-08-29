@@ -12,8 +12,8 @@
 # red, blue, yellow, cyan, pink, gold, white). Omit it, or misspell it, and the box just
 # falls back to the default green. If both "*" and "[color]" apply to one item, "*" comes
 # first, e.g. "ITEM NAME* [purple]".
-FULL REJUVENATION POTION* [purple]
-FLAWLESS RUBY
+Full Rejuvenation Potion* [purple]
+Flawless Ruby*
 Lum Rune* [darkorange]
 Ko Rune* [darkorange]
 Lem Rune* [darkorange]
@@ -29,3 +29,37 @@ Ber Rune* [darkorange]
 Jah Rune* [darkorange]
 Cham Rune* [darkorange]
 Zod Rune* [darkorange]
+# NOTE: Fal and Ist sit inside the Lum-to-Zod range you collect but were missing from the
+# list, so they were never detected. Added below as detect-only (no "*"): add the "*" if
+# you want them auto-collected too.
+Fal Rune* [darkorange]
+Ist Rune* [darkorange]
+
+# --- Look-alikes -------------------------------------------------------------------------
+# A leading "-" means: match this, then throw it away. No box, no collect.
+# These are here so they can LOSE nothing and WIN their own match. Fuzzy matching always
+# returns the closest listed name, so before these lines existed a "Ral Rune" on the ground
+# had no entry of its own and got attributed to whichever listed rune it resembled most
+# ("Jah Rune", "Lem Rune") - and then auto-collect clicked on it. Now "Ral Rune" matches
+# itself exactly, outscores every neighbour, and is discarded. Deleting these lines brings
+# the false positives back, so keep them even though nothing is ever reported for them.
+# Fal and Ist are NOT here - see the note above.
+# "Rejuvenation Potion" is the small one. Confirmed against a real frame: without this
+# line it scores 0.900 against "Full Rejuvenation Potion" and gets auto-collected.
+-Rejuvenation Potion
+-El Rune
+-Eld Rune
+-Tir Rune
+-Nef Rune
+-Eth Rune
+-Ith Rune
+-Tal Rune
+-Ral Rune
+-Ort Rune
+-Thul Rune
+-Amn Rune
+-Sol Rune
+-Shael Rune
+-Dol Rune
+-Hel Rune
+-Io Rune

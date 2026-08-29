@@ -278,3 +278,80 @@ a number off the screen before this.
   casual testing and fail at exactly the moment the number matters.
 
 No new dependencies - this uses OpenCV, numpy and mss, all already required.
+
+------------------------------------------------------------------------------
+Version 0.007 - 2026-08-28
+------------------------------------------------------------------------------
+OCR that actually reads the game, item matching that can tell similar names
+apart, and HUD meters that survive windowed mode. Mostly a correctness release:
+several things that appeared to work were working by luck, and the ones that
+were plainly broken turned out to share root causes with them.
+
+OCR INPUT PREPARATION - the largest single win in the project so far.
+- Frames are now binarized before reaching Tesseract (text_detection._preprocess).
+  Tesseract expects a scanned page: dark text, light background, no texture. A
+  game frame is the opposite. Measured on a real frame containing FIVE plainly
+  legible rune labels, Tesseract read ZERO of them and returned 57 junk
+  fragments scraped off the terrain; binarizing read four of the five.
+- It is also much FASTER, which is not the usual direction for an accuracy fix:
+  Tesseract's cost scales with how much candidate text it believes it can see,
+  and thresholding deletes the texture generating the false candidates.
+  Measured: 362ms -> 51ms per OCR call, 83 words -> 7; a full
+  find_text_matches() call went 374ms -> 67ms.
+- Three modes with PREPROCESS_AUTO choosing per frame from its own brightness,
+  so the detector still works on a document or a light-themed window. Verified
+  on a white page, a light-grey page, a dark terminal and a black game screen.
+
+ITEM MATCHING - telling similar names apart.
+- Names are matched word by word, not as one string. "RAL RUNE" scored exactly
+  0.75 against "JAH RUNE", "LEM RUNE" and "GUL RUNE" because the shared " RUNE"
+  is 5 of 8 characters, so an unlisted rune was being picked up and clicked on.
+- Short words are compared by character POSITION rather than by difflib, which
+  counts how many characters match but not where. "KE" scored 0.5 against both
+  "KO" (a real misread) and "EL" (unrelated); positionally that is 0.5 and 0.0.
+- targets.txt gained a leading "-" ("look-alike") marker: matched, then
+  discarded. Fuzzy matching always returns the CLOSEST LISTED name, so an
+  incomplete vocabulary misattributes rather than reporting nothing. All 16 low
+  runes and the small Rejuvenation Potion are listed this way.
+- Candidate spans are ranked longest-match-first, ratio only breaking ties.
+  Ratio-first suppressed every clean read of "Full Rejuvenation Potion",
+  because its own tail matched the look-alike entry equally well - a bug that
+  got WORSE as OCR quality improved.
+- Ties between different targets report nothing rather than guessing.
+- diagnose_ocr.py: shows what Tesseract actually read and why each line did or
+  did not match. Written because three fixes were attempted before anyone
+  looked at the OCR output itself.
+
+HUD METERS - windowed mode, multiple resolutions, status colours.
+- window_region.py: meter regions can anchor to a window's client area instead
+  of the screen. A detection box is screen-absolute and does not care where the
+  game is; a meter region is a statement about a window's layout and is
+  meaningless without it. Meters calibrated fullscreen read 0% once the game
+  was windowed at 1280x800.
+- One calibration profile per window shape, selected automatically by size then
+  aspect ratio. Calibrating at a new size adds a profile; the same size
+  replaces. A shape with no profile reads nothing and says NOT CALIBRATED,
+  rather than reusing a profile that does not fit.
+- A meter can now be several colours. Diablo II turns the health globe green
+  while poisoned, which made it read 0% at every real fill level - "you are
+  dead" at 90% health, during the one situation where the number matters most.
+- calibrate_meters.py: shrinks the hand-drawn box to the meter's own colour
+  (43% of a real hand-drawn box was animated scenery, which made the reading
+  track torchlight rather than health), captures the same region main.py does,
+  and opens its windows topmost so they are not hidden behind the game.
+
+OVERLAY.
+- Game-state debug panel on the overlay, toggled with 'F5', drawn as an
+  independent layer so it never disturbs the detection boxes. Follows the
+  anchored window. Preserves the None/0.0 distinction visually: a failed read
+  shows "no read" with no bar, an empty meter shows 0% with a bar at zero.
+- Panel plate is ~50% transparent (measured 47%), and TRANSPARENT_COLOR moved
+  from magenta to near-black. The key colour is what antialiasing smears around
+  every glyph, and magenta produced a visible red glow around each word;
+  measured tint went from +36.8 to +0.5. The constraint on box colours inverts:
+  magenta is now usable, near-blacks are not.
+
+No new dependencies. window_region.py uses pywin32, already required on Windows
+and already optional, and degrades to "no anchor" everywhere else.
+
+Fourteen entries added to Error_history.txt (#21-#34) covering the above.

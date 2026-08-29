@@ -537,3 +537,550 @@ Lesson: A wrong measurement that happens to be exactly right at the midpoint is
   matters most. When measuring a fill level, check what shape the container is
   and what the game is actually varying (height, angle, area), and test at the
   extremes, not just in the middle.
+
+------------------------------------------------------------------------------
+21. Auto-collect clicked on unlisted runes: any "<X> Rune" matched every other
+    "<Y> Rune" in targets.txt
+------------------------------------------------------------------------------
+Where: text_detection.py, find_text_matches() / _required_cutoff()
+Symptom: A "Ral Rune" (not in targets.txt at all) dropped, and the program boxed
+  it and auto-collected it - reported once as "Jah Rune" and once as "Lem Rune".
+  It looked like "the program matches anything containing the word Rune", and
+  that reading was essentially correct.
+Cause: Matching used one whole-string difflib ratio against a 0.75 cutoff.
+  difflib's ratio is 2*matched/(lenA+lenB), so a word shared by many target
+  names counts toward every one of them. Measured: "RAL RUNE" scores exactly
+  0.75 against "JAH RUNE", "LEM RUNE" and "GUL RUNE" - the shared " RUNE" is 5
+  of the 8 characters and clears the cutoff by itself, regardless of the other
+  word. The same flaw had targets in the list cross-matching each other:
+  "KO RUNE" vs "LO RUNE" = 0.857, "OHM RUNE" vs "LO RUNE" = 0.80.
+  _required_cutoff() was written to prevent exactly this and did nothing here,
+  because it scaled off len(name) and every name in targets.txt is "Lo Rune"
+  (7 chars), not "Lo" (2). The generic suffix pushed every rune out of the
+  strict short-name bracket and into the loose one. Note this made the guard
+  useless precisely BECAUSE the names were written the way the game shows them,
+  which is what targets.txt tells the user to do.
+Fix: Match word by word (new _match_ratio()) instead of over the whole string;
+  every word of the target name must clear its own length-scaled cutoff, so the
+  3-letter word that actually identifies the item can no longer ride in on the
+  generic one. _required_cutoff() now takes a word rather than a whole name, so
+  its existing ladder (exact at <= 3, 0.9 at <= 6, base above) finally applies
+  to the part that carries the identity. Differing word counts fall back to a
+  space-stripped whole-string compare at the strictest of the name's per-word
+  cutoffs, so Tesseract merging or splitting a word ("JAHRUNE") doesn't lose a
+  real detection. Verified: all eight low runes now match nothing, every listed
+  target still matches, and the pass is 5.9ms vs 6.4ms before - slightly FASTER,
+  because a failed 3-letter word compare short-circuits before the full-string
+  SequenceMatcher is ever built.
+Lesson: Two lessons. Specific: a whole-string similarity score is the wrong tool
+  when the candidates share a common word - the score is dominated by the part
+  that carries no information, and no cutoff can recover what the metric threw
+  away ("RAL RUNE" and "JAH RUNE" really are 75% identical; the fact that the
+  DIFFERING word is the identifying one is only visible word by word). Compare
+  at the granularity where the meaning lives. General: a guard that is written
+  against the right threat can still be wired to the wrong input and silently
+  never fire. _required_cutoff()'s docstring named "Lo", "Um", "Ko" exactly -
+  the threat model was right, but it was fed len("LO RUNE") instead of len("LO")
+  and so returned the loose cutoff every single time. When a defensive check
+  never seems to trigger, check what it is actually measuring before trusting
+  that the case just hasn't come up.
+
+------------------------------------------------------------------------------
+22. Overlay panel text rendered pink instead of grey (color-key transparency +
+    subpixel font antialiasing)
+------------------------------------------------------------------------------
+Where: overlay.py, draw_panel() / _panel_text() - found during development of
+  the game-state debug panel, before it ever shipped
+Symptom: Panel labels asked for a neutral grey (220,220,220) and rendered as
+  saturated pink/magenta on screen. The colored value text (green/amber/red)
+  looked roughly right, which made it look like a color-constant typo in the
+  greys specifically.
+Cause: Not a wrong constant - measuring the actual rendered pixels showed the
+  glyph CORES were exactly (220,220,220) and (170,170,170) as requested, but
+  the mean lit pixel was (204,140,201). The overlay's transparency is a color
+  KEY, not real alpha: every pixel is either exactly TRANSPARENT_COLOR
+  (#ff00ff) and fully invisible, or fully opaque. Windows' subpixel font
+  smoothing therefore antialiased the text against MAGENTA, and on thin 11px
+  bold glyphs the fringe pixels outnumber the core pixels, so the fringe color
+  is what the eye actually sees. The brighter/more saturated value text
+  survived better only because its core color is further from magenta.
+Fix: Draw a solid dark backing plate behind the panel first (Tk canvas draws in
+  insertion order), so the text antialiases against dark instead of magenta. A
+  black 1px text shadow was tried first and was not enough - it outlines the
+  glyph but does not change what the glyph itself blends into. Accepted the
+  tradeoff that the plate is opaque over the game, since the panel is a debug
+  surface with an 'F5' toggle. Detection boxes deliberately keep no backing:
+  a 2px rectangle outline does not antialias the same way, and covering the
+  game exactly where an item is lying would defeat their purpose.
+  Because the plate is the first fully opaque thing this overlay has ever
+  drawn, click-through was re-verified specifically over it (button-under-the-
+  overlay harness, clicked via pyautogui): WS_EX_TRANSPARENT applies to the
+  whole window regardless of pixel opacity - confirmed, not assumed.
+Lesson: Two lessons. Specific: on a color-key layered window, ANY antialiased
+  content blends toward the key color, so text needs something opaque behind it
+  or it picks up the key's hue - a trap that will recur for any future text on
+  this overlay. General: "the color constant must be wrong" was the obvious
+  diagnosis and it was wrong. Measuring the rendered pixels (core color vs mean
+  color) took one command and pointed straight at antialiasing instead, because
+  the two hypotheses predict different things: a bad constant makes the cores
+  wrong, while a blending problem leaves the cores exactly right. When a color
+  renders wrong, check whether the CORE is wrong before assuming the value is.
+
+------------------------------------------------------------------------------
+23. Per-word exact matching killed nearly all item detection against the real
+    game font (regression introduced by the fix for #21)
+------------------------------------------------------------------------------
+Where: text_detection.py, _required_cutoff() / _match_ratio()
+Symptom: After fixing #21, runes and Full Rejuvenation Potions stopped being
+  detected almost entirely. Two rounds of loosening the cutoff didn't fix it,
+  which was itself the clue: the problem was not the cutoff VALUE.
+Cause: #21's fix required every word of a target name to clear its own cutoff,
+  with words of 3 or fewer characters needing an EXACT match. That reasoning was
+  sound but rested on an unexamined assumption: that Tesseract reads the text
+  correctly, so an exact match is achievable. It isn't. Diablo II renders item
+  labels in a stylized Exocet-derived display face, and Tesseract is trained on
+  conventional print fonts, so a systematic one-character misread is the NORMAL
+  case: "GUL"->"GU1", "BER"->"8ER", "VEX"->"V3X". The old whole-string cutoff
+  had been absorbing all of this invisibly, because the shared " RUNE" suffix
+  contributed 5 of 8 characters and carried a misread name over 0.75 - the very
+  same property that caused bug #21. So #21 and #23 are the same mechanism seen
+  from opposite sides: the suffix was simultaneously hiding real misreads (good)
+  and admitting wrong items (bad). Removing it fixed one and broke the other.
+  The project owner suggested the font as the cause, which was correct and was
+  what turned this from threshold-guessing into a diagnosis.
+Fix: Two mechanisms that only work as a pair. (a) Tolerance: a 3-letter word may
+  now differ by one character (0.65); 2-letter and shorter must still be exact.
+  (b) Completeness: targets.txt gained a leading "-" ("ignore") marker - matched
+  normally, then discarded - and all 16 unlisted low runes were added with it.
+  A correctly-read "Ral Rune" now scores 1.000 against its own entry, beating
+  the 0.875 it scores against "Mal Rune", and is then dropped. Tolerance alone
+  would re-admit #21; completeness alone would still miss every misread rune.
+  Verified across four groups: 10 font-style misreads of collectibles now
+  detected, all 16 low runes still not clicked, misread LOW runes still resolve
+  to a low rune rather than stealing a collectible, and unrelated screen text
+  ("Antidote Potion", "Scroll of Town Portal", "Healing Potion") still matches
+  nothing. Also added diagnose_ocr.py, because this took three attempts purely
+  from not knowing what Tesseract actually read off a real frame.
+Lesson: Three. (1) When two successive threshold adjustments both fail to fix a
+  detection problem, stop adjusting the threshold - the model of the input is
+  wrong, not the number. (2) Synthetic test strings encode the same assumption
+  the code does. Every test string used to validate #21 was spelled correctly,
+  so the tests agreed with the bug; only the real font disproved it. Test data
+  for a recognition system must come from the recognizer, not from the author.
+  (3) A fuzzy matcher always returns the closest LISTED name, so an incomplete
+  vocabulary silently misattributes rather than reporting nothing - which means
+  completeness of the target list is a correctness property, not a convenience.
+
+------------------------------------------------------------------------------
+24. The real cause of "it stopped detecting": Tesseract was never reading the
+    labels at all (raw game frames are not OCR-able input)
+------------------------------------------------------------------------------
+Where: text_detection.py, find_text_matches() - no preprocessing before the
+  OCR call. This had been true since the module was written; entries #21 and
+  #23 were both chasing symptoms of it.
+Symptom: Items plainly visible on screen were not detected. Two successive
+  matching-cutoff changes (#21's fix, then #23's) failed to fix it. That double
+  failure was the real clue and it was not acted on soon enough.
+Cause: Tesseract expects a scanned page - dark text on a light background, no
+  texture. A game frame is the opposite: thin bright glyphs over dark, noisy,
+  high-detail art. Ground truth came from diagnose_ocr.py, which saves the
+  actual captured viewport: a frame containing FIVE plainly legible rune labels
+  (Amn, Sol, Fal, Ko, Gul) produced ZERO of them from Tesseract, along with 57
+  junk "words" scraped off the terrain texture. Every matching-cutoff theory
+  was therefore operating on lines that never existed. No cutoff can rescue a
+  line that was never read.
+Fix: Binarize before the OCR call - threshold at BRIGHT_TEXT_THRESHOLD (150),
+  then invert so it looks like dark-on-light. Same frame: 4 of the 5 labels now
+  read. It is also much FASTER, which is not the usual direction for an accuracy
+  fix - Tesseract's cost scales with how much candidate text it believes it can
+  see, and thresholding deletes the texture that was generating all the false
+  candidates: 362ms -> 51ms, 83 words -> 7; a full find_text_matches() call
+  374ms -> 67ms. Kept general rather than hardcoded, per the detector-
+  independence rule: three modes with PREPROCESS_AUTO choosing per frame from
+  its median brightness, verified on a white document, a light-grey document, a
+  dark terminal and a black game screen - auto picks correctly on all four.
+  Never rescales, so box coordinates need no translation.
+  A second frame (two potions on the ground) then exposed a follow-on: with OCR
+  suddenly working, the small "Rejuvenation Potion" was read correctly for the
+  first time and scored 0.900 against "Full Rejuvenation Potion", so it got
+  auto-collected. Fixed with a look-alike entry, the same mechanism as #23.
+Lesson: Four. (1) When two successive threshold adjustments both fail, the
+  model of the INPUT is wrong, not the number - stop tuning and go look at the
+  input. (2) Verify the pipeline stage-by-stage from the front. Everything from
+  #21 onward assumed OCR output existed and only the matching of it was in
+  question; one look at what Tesseract actually returned would have ended it
+  immediately. (3) Save the real intermediate artifact. The whole thing turned
+  on diagnose_ocr.py writing the captured viewport to disk, which made "five
+  labels, zero read" visible in seconds after days of inference. (4) Fixing a
+  recognition stage makes DOWNSTREAM matching stricter-needing, not looser -
+  better OCR surfaced a false positive that bad OCR had been accidentally
+  hiding, so recheck the next stage after improving the previous one.
+
+------------------------------------------------------------------------------
+25. difflib's ratio is the wrong similarity metric for short OCR words - it
+    counts matching characters without regard to WHERE they are
+------------------------------------------------------------------------------
+Where: text_detection.py, _word_ratio() (new) - found immediately after #24,
+  once preprocessing made Tesseract actually read the labels
+Symptom: With OCR finally working, a frame containing six readable labels still
+  lost one: "Ko Rune" was read by Tesseract as "Ke RUNE" and reported nothing.
+Cause: difflib.SequenceMatcher's ratio is 2*M/(lenA+lenB) where M counts
+  characters in common as an order-preserving subsequence. On a 2-letter word
+  that is almost no information: "KE" scores 0.5 against "KO" (a real
+  one-character misread, sharing the K in position 0) AND 0.5 against "EL"
+  (sharing only an E, in a different position, and otherwise unrelated). The
+  two tie, so the newly-added ambiguity check - correctly refusing to guess
+  between equally-scoring targets - discarded the line. Note the ambiguity
+  check was not the bug; it was doing exactly its job on a metric that was
+  feeding it a false tie.
+Fix: _word_ratio() compares equal-length words of <= 3 characters position by
+  position instead ("KO" 0.5, "EL" 0.0), and keeps difflib for everything
+  longer. Verified on the real frame: all four collectibles (Ko, Fal, Gul, Full
+  Rejuvenation Potion) now detected, both look-alikes (small Rejuvenation
+  Potion, Hel Rune) still suppressed.
+Lesson: Match the similarity metric to the error process that actually
+  generates the differences. OCR SUBSTITUTES a glyph in place; it does not
+  transpose or shift characters. difflib's subsequence matching is designed for
+  edits that move text around (diffs, patches), so applied to a misread glyph
+  it discards position - the single most informative thing about a substitution
+  - and on a 2-3 character word position is nearly all the information there
+  is. The generic string-similarity function being right there in the standard
+  library is not evidence that it models your errors. Longer words are a
+  different regime and legitimately keep difflib, because a dropped or doubled
+  letter really does shift everything after it.
+
+------------------------------------------------------------------------------
+26. calibrate_meters.py appeared to do nothing - its window opened behind the
+    game and was never visible
+------------------------------------------------------------------------------
+Where: calibrate_meters.py, calibrate() and preview()
+Symptom: "I don't see a box or anything when I run calibrate_meters.py."
+  Reported alongside a reasonable but wrong guess that main.py had to be running
+  first - the tool is standalone, and running both together would in fact be
+  harmful, since main.py's always-on-top overlay would be captured INTO the
+  screenshot being calibrated against.
+Cause: The tool's flow is "switch to the game, wait out a countdown, then
+  interact with a window". By the time cv.selectROI() creates its window, the
+  GAME is the foreground application, so a normally-created OpenCV window opens
+  behind it. Nothing errors; the program just sits there blocking on input for
+  a window the user cannot see.
+Fix: _show_window() creates each window with cv.namedWindow() and immediately
+  sets cv.WND_PROP_TOPMOST, plus one waitKey(1) so it actually paints before
+  selectROI blocks. Verified by screenshotting the desktop with the window up
+  and counting its distinctive background pixels (82k visible = rendering in
+  front), not by assuming the property took effect. Also print, before the
+  countdown, that a window will open on top afterwards and that exclusive-
+  fullscreen has to be switched to Windowed/Borderless since nothing can draw
+  over it.
+Lesson: Any tool that deliberately sends the user to another application and
+  then wants attention back has this problem, and it presents as "the program
+  does nothing" rather than as an error. Worth remembering for diagnose_ocr.py
+  and anything else countdown-driven added later. More generally: a blocking
+  call waiting on an invisible window is indistinguishable from a hang.
+
+------------------------------------------------------------------------------
+27. Calibrator and pipeline captured DIFFERENT screen regions, so every meter
+    region would have pointed at the wrong part of the screen
+------------------------------------------------------------------------------
+Where: calibrate_meters.py grab_screen() vs main.py monitor_area
+Symptom: Noticed by the project owner as a usability complaint - "the window
+  used to select the orb captured all 3 monitors" - and asked whether it even
+  mattered. It mattered a great deal; the cosmetic symptom was hiding a
+  correctness bug that had not been hit yet only because no config had ever
+  been written.
+Cause: grab_screen() used sct.monitors[0], which in mss means the whole VIRTUAL
+  desktop across every monitor (here left=-1920, width=5760). main.py's
+  monitor_area is built from pyautogui.size() and covers only the PRIMARY
+  monitor (left=0, width=1920). A meter's region is stored as FRACTIONS of the
+  captured frame specifically so it survives any capture scale - but that only
+  holds if both sides agree what frame the fractions are OF. An orb at x=500 on
+  the primary screen sits at pixel 2420 within the virtual-desktop capture
+  (because that capture starts at -1920), giving fraction 0.420; main.py would
+  then apply 0.420 to a 1920-wide frame and measure at x=806 - a completely
+  different part of the screen. Nothing raises: game_state returns a
+  plausible-but-wrong percentage or None. The comment on that very line claimed
+  "the whole virtual screen, matching main.py's monitor_area", so the code
+  documented the invariant it was breaking.
+Fix: calibrate_meters.py now imports main.monitor_area and captures exactly
+  that, so the two cannot drift. Verified: calibrator now reports 1920x1080,
+  identical to main.py. Side benefit - the selection window no longer squeezes
+  5760px into a 1500px-wide display, so the orb is drawn at 0.78 scale instead
+  of 0.26 and is roughly 3x easier to box accurately.
+Lesson: This is Error_history #6 again (shared capture-resolution constants
+  drifting) in a new place, which is itself the lesson: when correctness
+  depends on two components agreeing about a value, they must SHARE it, not
+  each derive it. Note the contrast with --fast-scale in this same tool, which
+  is deliberately a duplicated argument rather than an import - that is correct
+  precisely because correctness does NOT depend on it (it only affects a
+  displayed validation number). "Import it" and "pass it explicitly" are both
+  right answers; which one applies depends on whether a mismatch can produce a
+  wrong ANSWER or merely a wrong DISPLAY. Also: a stale comment asserting an
+  invariant is worse than no comment, because it stops the next reader looking.
+
+------------------------------------------------------------------------------
+28. Health orb read 87% at full and 0% after the slightest damage - the
+    calibration box included animated scenery, so the reading was noise
+------------------------------------------------------------------------------
+Where: calibrate_meters.py - the hand-drawn selection box, used as-is
+Symptom: Reported as "mana seems somewhat accurate, but health is inaccurate -
+  the slightest damage takes it to 0%, and at full health it read 87%."
+Cause: NOT the damage, and not game_state's measurement. The box drawn around
+  the health orb was 197x192 while the orb itself is 139x156, so 43% of the box
+  was surrounding artwork and 32% of the measured ellipse fell outside the orb
+  entirely - onto the two statues flanking it, the stone frame, and whatever
+  scene is visible behind. That artwork is ANIMATED (torchlight, the statues,
+  the scene the character walks past), so the fraction of "red" pixels per row
+  moved with the artwork rather than with health. The measured HSV spread
+  inside the health ellipse was H 0-179, S 0-255 - i.e. every colour on the
+  wheel - against mana's clean H 118-120, which is why mana was merely
+  inaccurate while health was pure noise.
+  Confirmed rather than argued: the live orb was captured and drained
+  synthetically from 100% down to 10% in software. The user's region returned
+  0.0% at EVERY level including 100%; a region tightened to the orb returned
+  100.0 / 99.3 / 96.7 / 91.4 / 76.2 / 51.0 / 25.8 / 10.6%. Two captures minutes
+  apart of the same full orb read 87% and then 0%, with nothing but the
+  background art having changed.
+Fix: calibrate_meters.fit_to_content() now shrinks the hand-drawn box to the
+  largest connected blob of the meter's own colour before saving it, so slack
+  around the orb costs nothing and the ornamental frame is excluded
+  automatically. Falls back to the drawn box (with a warning) if no blob is
+  found, and warns when the fit is much wider than tall, which means the meter
+  was not full when the screenshot was taken and its top would be cut off.
+  Instructions changed from "at least partly full" to "as close to FULL as you
+  can", since the fit depends on it. Verified on synthetic orbs: full orb fits
+  within 3-5px of truth, 40%-full orb fits short AND fires the warning, no orb
+  returns None.
+Lesson: Three. (1) When a measurement is noisy rather than merely offset, ask
+  what ELSE is inside the region before touching the measurement code - here
+  game_state was flawless and the region was the bug. (2) A user-drawn region
+  is an input like any other and deserves validation and correction, not
+  trust; "box it accurately" is not something a UI should rely on when it can
+  work out the exact answer itself. (3) The decisive evidence came from
+  simulating the failure on real captured pixels (draining the orb in
+  software), which took one script and settled in seconds a question that
+  eyeballing percentages could not - the reading being wrong at 100% fill was
+  the tell that it was never tracking health at all.
+
+------------------------------------------------------------------------------
+29. A single word off an unlisted item matched a listed one - "Flawless" from
+    "Flawless Diamond" was reported as "Flawless Ruby"
+------------------------------------------------------------------------------
+Where: text_detection.py, _match_ratio()'s differing-word-count fallback
+Symptom: A Flawless Diamond on the ground produced a detection box around just
+  the word "Flawless", reported as the listed Flawless Ruby. Note "FLAWLESS
+  DIAMOND" as a whole correctly did NOT match - the per-word path rejected it
+  ("DIAMOND" vs "RUBY" scores 0.0). The match came from somewhere else.
+Cause: find_text_matches() tries every contiguous RUN of words on a line, so
+  the one-word window ["FLAWLESS"] is tested on its own. Against the two-word
+  "FLAWLESS RUBY" the word counts differ, which routes it to the space-stripped
+  fallback: "FLAWLESS" vs "FLAWLESSRUBY" = 0.8, clearing the 0.75 floor. That
+  fallback exists for OCR merges and splits ("JAHRUNE", "REJUVEN ATION"), where
+  every character is still present and only the spacing moved. A strict prefix
+  is a different thing entirely - an entire word is missing - and was being
+  forgiven as though it were a spacing artifact.
+Fix: MERGED_WORD_CUTOFF = 0.9 as a floor on that path, making it STRICTER than
+  the per-word path rather than looser. A genuine merge/split scores near 1.0
+  so nothing legitimate is lost: verified JAHRUNE, GULRUNE, KORUNE,
+  FLAWLESSRUBY and FULLREJUVENATIONPOTION all still match, while FLAWLESS,
+  FLAWLESS DIAMOND/EMERALD/SAPPHIRE/SKULL, and the bare words FULL, POTION,
+  RUNE, GUL and JAH all now match nothing.
+Lesson: A fallback path taken when the primary check cannot be applied should
+  be stricter than the primary, not more permissive. This one was reached
+  precisely BECAUSE the structure needed to verify a match was absent, and it
+  responded by asking for less evidence rather than more. Worth checking the
+  same instinct anywhere else a "we can't do the careful check here" branch
+  exists. Related to #21: same root shape - a shared word carrying a match it
+  had not earned - surfacing in the one code path that #21's fix did not cover.
+
+------------------------------------------------------------------------------
+30. Pink overlay text came back the moment the panel stopped being solid
+------------------------------------------------------------------------------
+Where: overlay.py, _panel_text() - a recurrence of #22 under a new condition
+Cause: #22 was fixed by drawing a SOLID dark plate so text antialiased against
+  dark rather than against the magenta colour key. Making the plate 50%
+  transparent (a gray50 stipple, since a colour-keyed window has no alpha)
+  necessarily punches key-coloured holes through it - including directly behind
+  every glyph - so the subpixel antialiasing had magenta to blend into again.
+  Measured: a grey (220,220,220) label averaged (208,159,207) RGB, with 20% of
+  its lit pixels magenta-fringed.
+Fix: PANEL_TEXT_OUTLINE draws each string in black at all eight neighbouring
+  offsets before drawing it in colour, which fills exactly the ring of pixels
+  the antialiasing samples. Fringing fell to 2.8% of lit pixels and the mean
+  went back to neutral. Plate measured at 47% see-through, as intended.
+Lesson: The fix for #22 was "put something solid behind the text", and that
+  invariant was quietly broken by a later, unrelated-looking change to make the
+  panel prettier. Both times the text looked acceptable by eye and was provably
+  wrong when the pixels were measured - a two-command check that has now caught
+  this twice. On a colour-keyed surface, ANY change that lets the key show
+  through near text re-opens this, so measure the rendered pixels after every
+  such change rather than trusting a screenshot.
+
+------------------------------------------------------------------------------
+31. Red glow around every word on the overlay panel - and a measurement that
+    said the problem was fixed when it wasn't (supersedes #30's fix)
+------------------------------------------------------------------------------
+Where: overlay.py, TRANSPARENT_COLOR - third appearance of the #22/#30 problem
+Symptom: "There is a redish tint behind all the words in the game-state panel.
+  Even when health is at a healthy 100% there is a red glow behind the 100%."
+  Reported immediately after #30 had been measured as fixed.
+Cause: Two things, and the second is the more useful one.
+  (a) The real defect: #30 blacked out the ring of pixels immediately around
+  each glyph, so the glyph cores stopped picking up the magenta key. But the
+  black outline is itself antialiased, and ITS outer edge then blended into the
+  magenta - moving the glow one pixel further out rather than removing it. Any
+  per-element patch had this shape, because the key colour is what sits beneath
+  everything the overlay draws.
+  (b) The measurement that missed it: the #30 check filtered to pixels with
+  channel sum > 200 - i.e. only the bright glyph cores, exactly the pixels the
+  outline had just fixed. The halo lives in the MID brightness band and was
+  never sampled. Splitting the same pixels into dim/mid/bright bands showed
+  cores at -16 (correctly green) and the mid band at +37 red-and-blue over
+  green. The filter had been chosen to isolate "the text", which silently made
+  the test blind to the only region that still had the fault.
+Fix: Stop the key colour being a colour that shows. TRANSPARENT_COLOR is now
+  near-black #010203 instead of #ff00ff, so whatever antialiasing smears around
+  text reads as an ordinary drop shadow. Fixes it everywhere at once rather
+  than per-element. Measured over a neutral backdrop: whole-label mean tint
+  +36.8 -> +0.5. #010203 rather than #000000 so the black text outline stays
+  visible, since only the exact value is keyed out. Note the constraint on box
+  colours inverts: magenta is now usable, near-blacks are not, and both
+  NAMED_COLORS and CLAUDE.md were corrected rather than left asserting the old
+  rule (see #27 on stale comments). Re-verified see-through, click-through
+  (9 of 10 runs; the one failure reproduced as a race in the test harness, not
+  the mechanism - fixed by settling longer before the first click) and layer
+  independence, since changing the key touches the layered-window state that
+  has now caused four separate bugs.
+Lesson: A metric chosen to isolate "the thing of interest" can define the fault
+  out of the sample. Here "only look at bright pixels" was a reasonable way to
+  find text and a perfect way to miss a dim halo - and it reported success on a
+  bug the user could see plainly. When a measurement disagrees with what someone
+  is looking at, suspect the measurement's FILTER first, and re-measure across
+  the full range before re-measuring the same narrow slice. Second lesson: three
+  fixes in, the pattern is that patching each affected element was always the
+  wrong altitude - the property belonged to the surface, not to the things drawn
+  on it.
+
+------------------------------------------------------------------------------
+32. Better OCR made detection WORSE: a perfectly-read "Full Rejuvenation
+    Potion" was suppressed while a misread one worked
+------------------------------------------------------------------------------
+Where: text_detection.py, find_text_matches() candidate ranking
+Symptom: Reported as "I changed the targets.txt text from all caps to 'Full
+  Rejuvenation Potion' and now it has a tougher time finding the item". The
+  edit was a red herring - load_target_items() uppercases every name and
+  _clean_text() uppercases the OCR text, so the loaded key was byte-identical
+  before and after. Worth confirming that first rather than debugging the
+  change the user happened to notice.
+Cause: find_text_matches() tries every contiguous RUN of words on a line, and
+  ranked candidates by ratio alone. "Rejuvenation Potion" exists as a look-alike
+  entry (added in #24 so the small potion isn't collected as the large one), and
+  it is a strict tail of "Full Rejuvenation Potion". So on a clean read BOTH
+  scored exactly 1.000 - the 3-word span against the real target and the 2-word
+  span against the look-alike - the ambiguity check (added in #25) saw two
+  different targets tied, and correctly-by-its-own-rules suppressed everything.
+  The same fault has a second form: misread as "Fvll Rejuvenation Potion" the
+  full span drops to 0.958 while the tail still scores 1.000, so the look-alike
+  wins outright and the item is reported as the ignored small potion.
+  This is why the OCR preprocessing fix (#24) appeared to cause it: before that,
+  labels were read imperfectly enough that the two spans rarely scored the same,
+  so the tie never happened. Improving recognition quality surfaced it.
+Fix: Rank by (words matched, ratio) instead of (ratio, words matched) - longest
+  match wins, ratio only breaks ties among equal-length spans. A shorter span is
+  not better evidence just because it scores higher on the little it covers, and
+  a long sloppy span cannot win by accident because every span must already
+  clear each per-word cutoff and MERGED_WORD_CUTOFF to be eligible at all.
+  Verified through the real window loop (not whole-string comparisons, which was
+  how this was missed): all 19 collectibles match cleanly, the potion matches
+  clean / mangled / embedded in a longer line, and all 17 look-alikes plus the
+  bare word "Rune" stay suppressed. "LVM RUNE" is still suppressed and that is
+  correct - it is one substitution from both LUM and LEM, so there is no honest
+  answer.
+Lesson: Three. (1) A bug that gets WORSE as an upstream stage gets BETTER is
+  almost always a tie-break or ranking problem, because improving quality is
+  what makes scores collide. Ranking rules only get exercised at the top of
+  their range. (2) Test through the real code path: the earlier regression suite
+  compared whole strings against each target and never built the sub-spans, so
+  it passed on every case that was actually broken. A helper that "does what the
+  function does" is not the function. (3) When a user reports a regression right
+  after a change they made, check whether their change can possibly matter
+  before investigating it - here two minutes confirming the loaded key was
+  identical redirected the whole search.
+
+------------------------------------------------------------------------------
+33. Meters read 0% at full health once the game was windowed - regions were
+    anchored to the screen, not to the game window
+------------------------------------------------------------------------------
+Where: assets/meters.json region semantics; fixed via new window_region.py
+Symptom: Switching Diablo II from fullscreen-borderless to windowed 1280x800
+  made health and mana both read 0% at full, and put the debug panel outside
+  the game window. Item detection and auto-collect were unaffected.
+Cause: Meter regions are stored as fractions, which was designed to survive a
+  change of CAPTURE_SCALE - but fractions OF THE SCREEN. The game window was at
+  (525,150) sized 1280x800 inside a 1920x1080 capture, so the stored fractions
+  pointed at bare desktop. That detection kept working is the useful contrast
+  and explains the split: a detection box is found BY LOOKING AT PIXELS and is
+  therefore screen-absolute and position-independent, whereas a meter region is
+  a statement about a window's layout and is meaningless without knowing where
+  that window is. Two kinds of coordinate that look alike in the config file.
+Fix: window_region.py resolves a window's CLIENT rect (not window rect - the
+  title bar is a 33px offset here, enough to miss an orb) and converts
+  window-relative fractions into frame-relative ones. calibrate_meters.py
+  attributes each hand-drawn selection to the smallest window containing it and
+  records that as "_anchor", so the user never types a title; it snapshots the
+  window list BEFORE drawing its own UI, or its own always-on-top selection
+  window is what the point lands in. main.py re-resolves at most once a second
+  and, when the anchor window is missing, reads no meters so every value becomes
+  None rather than 0.0. Configs with no "_anchor" behave exactly as before.
+  Two bugs caught while building it, both worth remembering:
+  (a) Ranking candidate windows by SIZE picked a browser tab titled "d2r.guide
+  - Diablo II: Resurrected Cheat Sheet - Google Chrome" (1920x1080) over the
+  game itself (1280x800). Fixed by preferring an exact title match first.
+  (b) The refresh cache seeded _anchor_rect with None and compared new results
+  against it - but None is a MEANINGFUL result here ("window not on screen"),
+  so the first lookup of a missing window compared equal to the initial state,
+  skipped the update, and returned the un-rewritten screen-relative meters:
+  reading the wrong pixels at precisely the moment it meant to report "cannot
+  read". Fixed with a distinct _UNRESOLVED sentinel.
+Lesson: Three. (1) "Store it as a fraction so it survives rescaling" solves
+  only one of the two ways a coordinate can move; it says nothing about the
+  origin. Ask what a stored coordinate is measured FROM, not just in what
+  units. (2) When disambiguating by a heuristic like "the biggest one", check
+  what else on a real desktop could satisfy the filter - a title substring
+  match is satisfied by every browser tab, chat window and editor tab that
+  mentions the game. (3) A cache whose "empty" marker is also a valid answer
+  will silently serve a stale value for that answer; give it its own sentinel.
+
+------------------------------------------------------------------------------
+34. Health read 0% while poisoned - the game recolours the orb, and the colour
+    range only knew about red
+------------------------------------------------------------------------------
+Where: assets/meters.json hsv_ranges for health; preset in calibrate_meters.py
+Symptom: "When I am poisoned in-game my health circle turns green, and Game
+  State thinks I died - reading 0% when I was really at 90% and ticking down."
+Cause: Diablo II turns the health globe green while poison is active. The
+  configured ranges covered red and red-wrapped-around-H=0 only, so once the
+  liquid turned green NOTHING inside the region matched, every row failed
+  ROW_FILL_RATIO, and _fill_fraction correctly returned 0.0 for "no liquid
+  anywhere". The measurement was right; the description of what liquid LOOKS
+  like was incomplete. Note the timing: this is worst exactly when it matters
+  most - poison means health is actively draining, so a potion-drinking or
+  retreat layer would have been fed "you are dead" during a real emergency.
+  It is also silent: 0.0 is a legitimate value, not an error, so nothing warns.
+Fix: Add green as a third range. hsv_ranges was already a LIST OR-ed together,
+  so no code change was needed - the data model already supported "this meter
+  can be several colours", it just had not been filled in. Verified on
+  synthetic orbs at 100/90/50/25% fill: red-only reads 0.0% at every level for
+  a green orb (reproducing the report exactly), red+green reads
+  94.9/87.2/50.3/27.2% for BOTH a red and a green orb - so the healthy reading
+  is unchanged. The chosen green band (H 35-85, same S/V floors as red) is
+  generous rather than measured from a real poisoned frame; confirm it by
+  getting poisoned with the panel open.
+Lesson: A colour-keyed measurement encodes an assumption that the thing being
+  measured has ONE appearance, and games routinely break that to convey state -
+  poisoned, cursed, shielded, overhealed, low-battery. Enumerate the states a
+  meter can be in when calibrating it, not just the state it happens to be in
+  at that moment. More generally: when a reading collapses to a clean 0 rather
+  than becoming noisy, the input probably stopped matching the filter entirely,
+  which points at the filter's definition rather than at its geometry or
+  thresholds - the opposite conclusion from #28, where the reading was noisy
+  and the region was at fault.

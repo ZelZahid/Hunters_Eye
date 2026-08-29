@@ -15,20 +15,11 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 
 ## Now
 
-- [ ] **Validate `game_state.py` against the real game.**
-
-  ```
-  python calibrate_meters.py
-  ```
-
-  Box the health and mana orbs, then watch the live preview and check:
-  - the yellow line sits exactly on top of the liquid
-  - the middle panel shows liquid and nothing else
-  - "full-res" and "fast-path" numbers agree within ~2%
-  - the percentage tracks correctly while taking damage / drinking a potion
-  - no "less than half the selection matched" warning during calibration
-
-  Everything downstream (potions, Pindle, combat) reads this number, so it has to be trusted before anything is built on it. Ten synthetic tests pass, but **no real orb has ever been measured.**
+- [ ] **Potion drinking.** The smallest possible consumer of `game_state`, and the right first one: read health, press a belt key below a threshold. Proves the whole sensor → decision → action loop end to end with almost no new code.
+  - needs: a key-press action in `actions.py` (currently mouse-click only)
+  - needs: a cooldown, so it can't spam the whole belt in one second
+  - watch out: drinking doesn't refill instantly, so the threshold check must wait out the heal before re-triggering
+  - the `F5` panel is now the way to watch this happen live — health bar drops, potion fires, bar climbs
 
 ---
 
@@ -36,10 +27,10 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 
 *In order — each depends on the one above it.*
 
-- [ ] **Potion drinking.** The smallest possible consumer of `game_state`, and the right first one: read health, press a belt key below a threshold. Proves the whole sensor → decision → action loop end to end with almost no new code. Do this **before** Pindle — if the health number is subtly wrong, this surfaces it immediately and cheaply.
-  - needs: a key-press action in `actions.py` (currently mouse-click only)
-  - needs: a cooldown, so it can't spam the whole belt in one second
-  - watch out: drinking doesn't refill instantly, so the threshold check must wait out the heal before re-triggering
+- [ ] **Guard against acting while the game isn't on screen.** Nothing currently checks this. When you alt-tab, meters read whatever is behind the game (typically 0%) and `run_auto_collect` has only the `F4` snooze — no check that its clicks are landing in the game at all. A potion layer would see 0% health the moment you tab out and dump the belt; auto-collect could click into a browser. Noticed 2026-08-28 while verifying meter readings, where several samples were accidentally taken against a browser window.
+  - `window_region.is_foreground(title)`, then: meters report `None` (not `0.0`), actions pause
+  - open question: a *windowed* game that is visible but unfocused can still be read correctly, so focus is a proxy for visibility, not the same thing — decide whether the guard is a hard stop or a panel indicator
+  - **do this before potion drinking**, since it is the difference between "drinks when low" and "drinks the whole belt when you tab out"
 
 - [ ] **Pindle scripted run.** Waypoint → red portal → clear → collect → return.
   - sequence steps on **detection, not `sleep()`** — "wait until the portal is on screen," not "wait 3 seconds." Timing-based scripts break on any lag spike.
@@ -82,7 +73,10 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 *Unvetted ideas — cheap to write down, may never happen.*
 
 - [ ] **Two-pane Zellij reading surface**: left pane = Claude working, right pane = `tail -f` on a file that gets the prose/findings only, without tool-call noise. Claude Code writes to one stdout stream so it can't be split directly, but a `Stop` hook could extract the last assistant message to a file. Partially investigated 2026-08-28, paused before implementing.
+- [ ] **Re-tune `BRIGHT_TEXT_THRESHOLD`** (`text_detection.py`, currently 150) if labels get missed in bright areas — it was tuned 2026-08-28 on two dark dungeon/town frames only. A single global threshold may not hold in snow, desert or lava zones; adaptive thresholding is the fallback if it doesn't, at some speed cost.
+- [ ] **Watch for more look-alikes.** `targets.txt` now lists 17 (16 low runes + small Rejuvenation Potion). Better OCR will keep surfacing items that were previously too garbled to false-match — anything sharing a suffix with a target is a candidate. `diagnose_ocr.py` shows them as `MATCH + AUTO-COLLECT` on a line you didn't expect.
 - [ ] **Use Tesseract's per-word confidence score.** Already read and then discarded in `_get_words_tesserocr` / `_get_words_pytesseract`. The next lever against short-name false positives — a 2–3 letter rune name Tesseract genuinely misreads out of unrelated pixels, which no fuzzy-match tuning can catch since the string really is there.
+- [ ] **Leptonica stderr noise** (`Error in pixScanForForeground: invalid box` / `Error in boxClipToRectangle: box outside rectangle`). Seen 2026-08-28 during a live run. Printed straight to fd 2 from Tesseract's C imaging library, so Python's `try/except` around the OCR call cannot see it and it does not raise — benign, one skipped layout region per occurrence. Could not reproduce: silent across a real 874-word screen grab, edge-clipped text, 1x1 through 300x1 frames, noise, and blank frames. Only worth chasing if detections are actually being missed. **Do not "fix" it by redirecting stderr around the OCR call** — fd 2 is process-wide, and four threads print to it, so that would swallow the FPS and track logging too.
 - [ ] **Belt potion counting** — how many potions are left in each slot. Template matching per slot, or color detection. Needed for "go restock" logic.
 - [ ] **Town vs. combat detection.** Probably a template match on a UI element that only appears in one context. Would make scripted routes much more robust.
 - [ ] **Chicken / panic exit** — leave the game instantly below a health threshold. Trivial once potion drinking works, and it's the difference between a survivable mistake and a dead character.
@@ -118,6 +112,7 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 
 ## Done
 
+- [x] **2026-08-28 — `game_state.py` validated against the real game.** Health and mana both calibrated and tracking live. Full-res vs fast-path agreement: health 1.4 pts, mana 0.5 pts — both inside the ~2 pt bar, so `main.py` can safely keep reading meters off the downscaled detection frame. Took four bugs to get there: the calibrator captured all three monitors while `main.py` captured one (`Error_history.txt` #27), its windows opened behind the game (#26), and the hand-drawn box included animated scenery, making the reading noise rather than health (#28). `game_state.py`'s own measurement code needed no changes — it was right all along.
 - [x] **2026-08-28 — v0.006** — `game_state.py`: read health/mana orbs as a 0.0–1.0 value. Generic meter reading (region + color + fill direction), config in `assets/meters.json`, `calibrate_meters.py` for setup and live validation, `test_game_state.py` for verification. Two bugs caught before going live — see `Error_history.txt` #19 and #20.
 - [x] **2026-08-28 — v0.005** — per-item detection box colors via `targets.txt` `[color]` tags.
 - [x] **2026-08-28 — v0.004** — auto-collect action layer (`actions.py`) + click-accuracy fixes.

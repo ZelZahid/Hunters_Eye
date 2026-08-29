@@ -19,6 +19,7 @@ from queue import Queue, Empty
 import actions
 import game_state
 import text_detection
+import window_region
 from overlay import Overlay
 
 #Globals
@@ -37,7 +38,119 @@ target_items = text_detection.load_target_items(ASSETS_DIR / "targets.txt") #ite
 #HUD meters (health/mana orbs) to read a 0.0-1.0 fill level from - see game_state.py. Empty if
 #assets/meters.json doesn't exist yet, which just means no game-state awareness, not a failure.
 #Run 'python calibrate_meters.py' to create it.
-meters = game_state.load_meters(ASSETS_DIR / "meters.json")
+#One calibration profile per window shape - a game re-lays out its HUD at a different resolution
+#or aspect ratio, so the right regions depend on how the game is currently displayed. See
+#game_state.Profile and window_region.py.
+meter_profiles = game_state.load_profiles(ASSETS_DIR / "meters.json")
+meters = list(meter_profiles[0].meters) if meter_profiles else []  #names only, for the panel
+meter_anchor = meter_profiles[0].anchor if meter_profiles else None
+CAPTURE_RECT = (monitor_area["left"], monitor_area["top"], monitor_area["width"], monitor_area["height"])
+#How often to re-locate the anchor window. It only moves when the user drags or resizes it, so
+#this does not need to be per-frame - and EnumWindows is far too expensive to run at 45 FPS.
+ANCHOR_REFRESH_SECONDS = 1.0
+#Meter regions are fractions of the anchor window, which survives the window being moved or
+#resized. It does NOT survive the GAME changing resolution or aspect ratio, because the game
+#re-lays out its HUD: measured on D2R, 1920x1080 -> 1280x800 held the orbs' vertical position and
+#height to within 0.001 of the same fraction but moved them horizontally by 0.033 - 42px against
+#a 104px orb, i.e. half off. Compare the live aspect against the calibrated one and say so,
+#because the failure is a plausible-but-wrong percentage rather than an error.
+ANCHOR_ASPECT_TOLERANCE = 0.02
+_anchor_aspect_warned = False
+
+_anchor_lock = threading.Lock()
+#A distinct "never resolved" sentinel, NOT None: None is a real, meaningful result here ("the
+#window isn't on screen"), so seeding _anchor_rect with it made the first lookup of a missing
+#window compare equal to the initial state, skip the update, and hand back the un-rewritten
+#screen-relative meters - reading the wrong pixels at exactly the moment we meant to report
+#"cannot read". A cache keyed on a value that is itself a valid answer needs its own empty state.
+_UNRESOLVED = object()
+_anchor_rect = _UNRESOLVED #last known client rect of the anchor window, in screen pixels
+_active_profile = None     #the calibration profile matching the current window shape
+_anchor_meters = meters    #meters with regions rewritten against the captured frame
+_anchor_checked = 0.0
+
+
+def _refresh_anchor(now):
+    """Re-locates the anchor window and rewrites the meter regions against the captured frame.
+
+    Returns the meters to actually read this frame. When an anchor is configured but its window
+    cannot be found (game closed, minimised, or dragged onto a monitor we do not capture) this
+    returns NO meters, so every reading becomes None - "cannot read" - rather than 0%. Reporting
+    a full health orb as empty because the window moved is precisely the confusion game_state.py
+    is built to prevent, and it would drive a potion or a retreat.
+    """
+    global _anchor_rect, _anchor_meters, _anchor_checked, _active_profile
+    if not meter_profiles or not meter_anchor:
+        return meters
+
+    with _anchor_lock:
+        if now - _anchor_checked < ANCHOR_REFRESH_SECONDS:
+            return _anchor_meters
+        _anchor_checked = now
+
+    rect = window_region.find_client_rect(meter_anchor.get("window_title", ""))
+    with _anchor_lock:
+        if rect == _anchor_rect:
+            return _anchor_meters
+        _anchor_rect = rect
+        if rect is None:
+            _active_profile = None
+            _anchor_meters = []
+            return _anchor_meters
+
+        #Pick the profile calibrated for this window shape. select_profile returns None rather
+        #than a near-enough match on purpose: measuring the wrong pixels and reporting a
+        #confident number is worse than reporting nothing.
+        _active_profile = game_state.select_profile(meter_profiles, (rect[2], rect[3]))
+        if _active_profile is None:
+            _warn_no_profile(rect)
+            _anchor_meters = []
+            return _anchor_meters
+
+        rebuilt = []
+        for m in _active_profile.meters:
+            region = window_region.to_frame_fractions(rect, CAPTURE_RECT, m.region)
+            if region is not None:
+                rebuilt.append(game_state.Meter(m.name, region, m.hsv_ranges, m.shape, m.fill_from))
+        _anchor_meters = rebuilt
+        return _anchor_meters
+
+
+def unprofiled_size():
+    """(w, h) of the anchor window when NO calibration profile matches its shape, else None.
+
+    Surfaced ON THE PANEL, not just the console: the console scrolls and nobody watching a game
+    is reading it, so a console-only warning about a silently wrong reading is a warning nobody
+    receives. Observed exactly that way - the warning fired, went unseen, and the readings looked
+    confidently wrong on screen."""
+    rect = anchor_rect()
+    if rect is None or not meter_profiles:
+        return None
+    return None if _active_profile is not None else (rect[2], rect[3])
+
+
+def known_profile_sizes():
+    return [p.client_size for p in meter_profiles if p.client_size]
+
+
+def _warn_no_profile(rect):
+    """One-time console warning that this window shape has never been calibrated."""
+    global _anchor_aspect_warned
+    if _anchor_aspect_warned:
+        return
+    _anchor_aspect_warned = True
+    have = ", ".join(f"{w}x{h}" for (w, h) in known_profile_sizes()) or "none"
+    print(f"WARNING: no meter profile for a {rect[2]}x{rect[3]} window (calibrated: {have}).")
+    print("         A game re-lays out its HUD at a different aspect ratio, so an existing "
+          "profile cannot be reused.")
+    print("         Run 'python calibrate_meters.py' at this size - it ADDS a profile, it does "
+          "not replace the ones you have.")
+
+
+def anchor_rect():
+    """Last known client rect of the anchor window, or None. Used to place the debug panel."""
+    with _anchor_lock:
+        return None if _anchor_rect is _UNRESOLVED else _anchor_rect
 
 #Queues for thread-safe comms
 screenshot_queue = Queue(maxsize = 3)
@@ -58,6 +171,8 @@ shared_text_tracks = [] #list of (x, y, w, h, matched_name, to_collect, color), 
 #must never treat a failed read as an empty health orb.
 game_state_lock = threading.Lock()
 shared_game_state = {}
+shared_game_state_time = 0.0 #time.time() of the last publish - lets a reader tell "the meter reads 0%"
+                              #from "nothing has updated this in seconds because the reader stopped"
 GAME_STATE_DEBUG = False #prints the current readings periodically - useful when tuning meters.json
 GAME_STATE_PRINT_INTERVAL_SECONDS = 2.0
 
@@ -68,6 +183,17 @@ def current_game_state():
     decision layer (potion drinking, the Pindle run, combat) reads from."""
     with game_state_lock:
         return dict(shared_game_state)
+
+
+def current_game_state_age():
+    """Seconds since the HUD readings were last refreshed, or None if they never have been.
+
+    A value on its own cannot distinguish "health really is 12%" from "the reader stopped
+    updating three seconds ago and 12% is just what it last saw". That matters for anything
+    that acts on the number, and it is exactly what the debug panel has to be able to show."""
+    with game_state_lock:
+        stamped = shared_game_state_time
+    return None if stamped == 0.0 else time.time() - stamped
 
 #Thread 1
 def get_screenshot():
@@ -86,7 +212,7 @@ def get_screenshot():
 
 #Thread 2
 def detect_objects():
-    global shared_game_state
+    global shared_game_state, shared_game_state_time
     print("Detecting Objects...")
     meter_smoother = game_state.Smoother()
     last_state_print = 0.0
@@ -96,10 +222,15 @@ def detect_objects():
 
         #Read the HUD meters off this same frame before anything else touches it. Costs a few
         #tenths of a millisecond, so it does not meaningfully affect this loop's FPS.
+        active_meters = _refresh_anchor(time.time())
         if meters:
-            readings = meter_smoother.update(game_state.read_all(screenshot, meters))
+            #Anchor lost -> every configured meter reports None, never 0.0 (see _refresh_anchor).
+            raw = (game_state.read_all(screenshot, active_meters) if active_meters
+                   else {m.name: None for m in meters})
+            readings = meter_smoother.update(raw)
             with game_state_lock:
                 shared_game_state = readings
+                shared_game_state_time = time.time()
             if GAME_STATE_DEBUG and time.time() - last_state_print >= GAME_STATE_PRINT_INTERVAL_SECONDS:
                 last_state_print = time.time()
                 print("[game state: " + ", ".join(
@@ -464,6 +595,90 @@ def run_debug_window():
     print(f"Average FPS: {average_FPS:.2f}")
 
 
+#--- Game-state debug panel --------------------------------------------------------------------
+#A read-out of what game_state.py is currently measuring, drawn on the SAME overlay window as the
+#detection boxes but as a separate, independently-redrawn layer (see Overlay.draw_panel). Sharing
+#that window rather than opening a second one is deliberate: the overlay's see-through +
+#click-through behaviour depends on a pair of fragile Win32 details that have already caused two
+#bugs (see CLAUDE.md / Error_history.txt #7, #10), and a second window would be a second copy of
+#them to get right and keep right, for no visual difference on screen.
+DEBUG_PANEL_STALE_SECONDS = 1.0 #older than this and the panel says so instead of showing a number
+DEBUG_PANEL_LOW = 0.25          #at or below this a value is drawn red...
+DEBUG_PANEL_MID = 0.50          #...amber up to here, green above
+DEBUG_PANEL_BAD_COLOR = (255, 70, 70)
+PANEL_INSET_X = 24              #panel position inside the anchor window, in pixels...
+PANEL_INSET_Y_FRACTION = 0.30   #...and as a fraction of its height, so it sits sensibly at any size
+debug_panel_visible = True #toggled by 'F5'; starts on, since the panel exists to be watched
+
+
+def _toggle_debug_panel():
+    global debug_panel_visible
+    debug_panel_visible = not debug_panel_visible
+    print(f"Game-state panel {'shown' if debug_panel_visible else 'hidden'} ('F5' to toggle)")
+
+
+def _value_color(value):
+    """Green/amber/red by how low the value is. Colouring by VALUE rather than by meter NAME is
+    what keeps this game-agnostic: "low is bad" is equally true of a health orb, a mana globe and
+    a robot's battery gauge, whereas "health is red" would only ever be true of Diablo II."""
+    if value <= DEBUG_PANEL_LOW:
+        return DEBUG_PANEL_BAD_COLOR
+    if value <= DEBUG_PANEL_MID:
+        return (255, 200, 0)
+    return (60, 230, 90)
+
+
+def _debug_panel():
+    """Returns (title, rows) for Overlay.draw_panel(), or (None, None) when the panel is off.
+
+    Builds one row per meter actually present in meters.json rather than hardcoding health and
+    mana, so calibrating a third meter later makes it show up here with no code change."""
+    if not debug_panel_visible:
+        return None, None
+    if not meters:
+        return "GAME STATE", [("no meters", "run calibrate_meters.py", None, DEBUG_PANEL_BAD_COLOR)]
+    if meter_anchor and anchor_rect() is None:
+        #Distinct from "no read": the window itself is gone, so say that rather than showing
+        #every meter as unreadable and leaving the cause to be guessed at.
+        safe = meter_anchor.get("window_title", "?").encode("ascii", "replace").decode("ascii")
+        return "GAME STATE  window not found", [(safe[:22], "not on screen", None, DEBUG_PANEL_BAD_COLOR)]
+
+    age = current_game_state_age()
+    if age is None:
+        title = "GAME STATE  (waiting)"
+    elif age >= DEBUG_PANEL_STALE_SECONDS:
+        #Frozen numbers look exactly like correct ones, so say so rather than presenting a stale
+        #value as if it were live.
+        title = f"GAME STATE  STALE {age:.0f}s"
+    else:
+        title = "GAME STATE"
+
+    unknown = unprofiled_size()
+    if unknown:
+        #No profile for this window shape. Say so instead of showing a confident number measured
+        #from the wrong pixels - the failure this whole calibration flow exists to make visible.
+        have = ", ".join(f"{w}x{h}" for (w, h) in known_profile_sizes()) or "none"
+        return "GAME STATE  NOT CALIBRATED", [
+            (f"{unknown[0]}x{unknown[1]}", "no profile", None, DEBUG_PANEL_BAD_COLOR),
+            ("have", have[:20], None, DEBUG_PANEL_BAD_COLOR)]
+
+    readings = current_game_state()
+    rows = []
+    for meter in meters:
+        value = readings.get(meter.name)
+        if value is None:
+            #None is NOT 0% - a failed read must never be shown as an empty orb (see game_state.py).
+            rows.append((meter.name, "no read", None, DEBUG_PANEL_BAD_COLOR))
+            continue
+        #Rounded to whole percent before it reaches the overlay: the panel only redraws when its
+        #content actually changes, and an unrounded float would differ on nearly every frame,
+        #forcing a constant recomposite of an always-on-top layered window for sub-pixel bar
+        #movement. Same reasoning as draw_rectangles' skip-if-unchanged check.
+        value = round(value, 2)
+        rows.append((meter.name, f"{value * 100:3.0f}%", value, _value_color(value)))
+    return title, rows
+
+
 def run_overlay():
     """Draws detection boxes as a transparent, click-through layer directly on top of the
     game - no mirrored window. Runs on the main thread: Tk's event loop must own whichever
@@ -476,7 +691,10 @@ def run_overlay():
     #the overlay is click-through and can never take keyboard focus, so quitting needs a
     #global hotkey (same pattern legacy/pindle.py already uses) instead of a window keypress
     keyboard.add_hotkey("end", quit_requested.set)
-    print("Overlay running - press 'End' anytime to quit.")
+    #Kept entirely separate from the detection path: 'F5' only changes what gets DRAWN, so
+    #toggling the panel can never disturb item detection, the boxes, or auto-collect.
+    keyboard.add_hotkey("f5", _toggle_debug_panel)
+    print("Overlay running - press 'End' anytime to quit, 'F5' to toggle the game-state panel.")
 
     t0 = time.time()
     n_frames = 1
@@ -487,6 +705,16 @@ def run_overlay():
         if current_size != displayed_size:
             overlay.resize(current_size.width, current_size.height)
             displayed_size = current_size
+
+        #Drawn before the queue read, so the panel keeps updating (and keeps reporting staleness)
+        #even through a stretch where no detection frames are arriving at all.
+        #Anchored to the watched window when there is one, so the panel travels with the game
+        #instead of sitting on bare desktop beside it when the game is windowed.
+        rect = anchor_rect()
+        panel_origin = None
+        if rect is not None:
+            panel_origin = (rect[0] + PANEL_INSET_X, rect[1] + int(rect[3] * PANEL_INSET_Y_FRACTION))
+        overlay.draw_panel(*_debug_panel(), origin=panel_origin)
 
         try:
             _, rectangles = detection_queue.get(timeout=0.1)

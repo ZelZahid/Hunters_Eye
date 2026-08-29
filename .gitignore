@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 venv/
 .venv/
+ocr_diagnostic_*.png
+ocr_diagnostic_*_prepared.png
