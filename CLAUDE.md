@@ -29,9 +29,23 @@ In order, because they can conflict and the tradeoff should always be made delib
 
    None of this needs formal plugin interfaces today, but avoid choices that would be painful to walk back later — e.g. don't assume `win32gui` is always importable, and don't hardcode game-specific window titles, item images, or key bindings into files outside of an obviously example/integration area.
 
+### Detector independence — a hard rule, not a preference
+
+Every detector (template matching, OCR, HUD meter reading, and any future one — a trained model, color/HSV blob detection, motion detection) is a **separate, self-contained way of finding things, and they must stay that way.** They exist because each is the right tool in a different situation, and the project needs all of them available at once, permanently. Concretely:
+
+- **Detector modules must not import each other.** `text_detection.py` and `game_state.py` know nothing about one another today. Keep it that way. If two detectors need something in common, that shared thing belongs in a neutral module both can import, never in one detector reaching into another.
+- **Never delete, gut, or let rot a detector because it isn't the current focus.** A stretch of work concentrating on template matching must leave OCR exactly as capable as it was — OCR is not "the item-name feature," it is *the ability to read text on a screen*, which will be needed again for menus, dialogue, timers, counters, subtitles, license plates, signage. The same holds in reverse, and for meter reading. If a refactor would make an out-of-focus detector worse, it is the wrong refactor.
+- **Removing or rewriting one detector must not require touching any other.** If it does, they've become entangled and that coupling is the bug — fix the coupling, don't work around it.
+- **Every detector must work on non-game input.** A browser window, a desktop, a document, a webcam frame. A detector is handed a BGR frame and returns matches; it must never assume the frame came from a game, or from a screen at all.
+- **Diablo II specifics never live inside a detector.** Item names live in `assets/targets.txt`, meter positions in `assets/meters.json`, click sequences in integration code. `text_detection.py` doesn't know what a rune is; it matches strings from a file. `game_state.py` doesn't know what a health orb is; it measures a colored region. Preserve that split when adding anything new.
+
+**The litmus test for any change:** *could this still work pointed at a security camera, or at a browser window, with only a different config file?* If the answer is no, the game-specific part is in the wrong place. This applies to new detectors as much as existing ones — a monster detector should be a general object detector that happens to be loaded with monster classes, not a Diablo-shaped thing.
+
 ## Versioning
 
 `updates.txt` is the changelog and the source of truth for version numbers — read it before assuming what "the current version" means. Versioning starts at `0.001` and increments by `0.001` per significant update, working toward `1.000` ("Hunter's Eye complete," which is intentionally far off). Each version has a matching git tag (`v0.001`, `v0.002`, ...) on the exact commit for that state — **when asked to roll back to a known-working version, check out that tag; don't guess from raw commit history.** When cutting a new version: append an entry to `updates.txt` (date + a short description of what changed, in the same style as existing entries), commit, then create an annotated tag (`git tag -a v0.XXX -m "..."`) on that commit.
+
+`todolist.md` is the project's working memory — what to do next and why, plus ideas, open questions, known limitations, and decisions already made. **Read it at the start of a session and check it before proposing what to work on**, rather than inferring priorities from the code. Keep it current as work happens: move the finished item to DONE, promote the next thing into NOW (which holds exactly one item), and add anything raised in conversation that isn't being acted on immediately — a parked idea belongs in PARKING LOT, not lost in a transcript. It also records decisions that are already settled, so they don't get re-litigated months later.
 
 `Error_history.txt` logs significant bugs hit during development with root cause + fix + a one-line lesson each — **check it before debugging something that feels familiar** (e.g. anything touching `overlay.py`'s Win32 layered-window code, OCR/Tesseract error handling, or shared capture-resolution constants); it may already be documented there with the fix ready to reapply. Append a new entry there (same format as existing ones) any time a bug takes real effort to track down, not just quick typo fixes.
 
@@ -181,11 +195,13 @@ game_state.py        # HUD meter reading — health/mana as a 0.0-1.0 number (se
 overlay.py           # transparent click-through output layer, Windows-only (see above)
 actions.py           # generic mouse-click action layer (see above)
 calibrate_meters.py  # one-time setup tool: defines + live-validates the HUD meters
+test_game_state.py   # synthetic tests for game_state.py's fill measurement (no game needed)
 assets/               # reference ("needle") images + targets.txt (OCR target item names + auto-collect/color tags)
                       # + meters.json (HUD meter regions/colors, written by calibrate_meters.py)
 legacy/               # earlier, incompatible prototype (see above) — reference only
   legacy/assets/       # unused leftover test images from that prototype
 requirements.txt
+todolist.md          # what to work on next, ideas, open questions, settled decisions
 README.md / LICENSE / CLAUDE.md
 ```
 
