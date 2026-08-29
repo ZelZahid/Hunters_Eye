@@ -51,9 +51,17 @@ Run the current (root-level) version:
 python main.py
 ```
 
-Press `q` in the OpenCV display window to stop; final average FPS is printed on exit.
+Press `End` to quit the overlay (or `q` in the fallback debug window); final average FPS is printed on exit.
 
-There are no tests, linter configs, or CI in this repo.
+One-time setup for HUD meter reading (health/mana), needed before `game_state.py` reports anything:
+
+```
+python calibrate_meters.py
+```
+
+This is a setup/validation tool, not a second pipeline — the rule that there's exactly one `main.py` still holds, and this is the "distinctly-named new file" case that rule allows for. Re-run it after any resolution or UI-scale change, since the meter regions are tied to where the orbs appear on screen.
+
+There is no linter config or CI in this repo. There is one test file, `test_game_state.py` (`python test_game_state.py`) — synthetic, no game required, covering `game_state.py`'s fill measurement. It exists because that measurement drives automatic actions and fails silently with a plausible-but-wrong number rather than an error; its adversarial cases caught two real bugs (`Error_history.txt` #19, #20). Other modules have no tests.
 
 ## Architecture
 
@@ -62,7 +70,7 @@ There are no tests, linter configs, or CI in this repo.
 Four background daemon threads plus a main-thread output loop, connected by two bounded `queue.Queue`s (maxsize 3, drop-oldest-when-full) plus a lock-protected shared variable:
 
 1. `get_screenshot()` — grabs the full virtual screen via `mss`, converts BGRA→BGR, downscales by `CAPTURE_SCALE`, pushes to `screenshot_queue`.
-2. `detect_objects()` — the fast path. Pulls from `screenshot_queue`, runs `cv.matchTemplate` against a single hardcoded needle image (`assets/image1.png`), collapses overlapping matches via `cv.dnn.NMSBoxes` (**not** `cv.groupRectangles` — OpenCV 5 removed that from its Python bindings), reads whatever `detect_text()` last published from `shared_text_tracks` (behind `text_tracks_lock`, never blocks waiting on it), merges both rectangle sets, and pushes `(frame, rectangles)` to `detection_queue`. This thread's speed is governed only by capture + `matchTemplate` cost — OCR never touches it. Every rectangle now carries its own `(r, g, b)` draw color (image-template matches always use `text_detection.DEFAULT_BOX_COLOR`; OCR matches carry whatever `detect_text()` resolved for that item — see below).
+2. `detect_objects()` — the fast path. Pulls from `screenshot_queue`, runs `cv.matchTemplate` against a single hardcoded needle image (`assets/image1.png`), collapses overlapping matches via `cv.dnn.NMSBoxes` (**not** `cv.groupRectangles` — OpenCV 5 removed that from its Python bindings), reads whatever `detect_text()` last published from `shared_text_tracks` (behind `text_tracks_lock`, never blocks waiting on it), merges both rectangle sets, and pushes `(frame, rectangles)` to `detection_queue`. This thread's speed is governed only by capture + `matchTemplate` cost — OCR never touches it. Every rectangle now carries its own `(r, g, b)` draw color (image-template matches always use `text_detection.DEFAULT_BOX_COLOR`; OCR matches carry whatever `detect_text()` resolved for that item — see below). It also reads the HUD meters (`game_state.read_all()`) off this same frame and publishes them to `shared_game_state` — that piggybacks here rather than getting its own thread because it costs ~0.15ms/frame while a dedicated thread would need its own ~17-20ms capture; see `game_state.py` below.
 3. `detect_text()` — the slow path, fully decoupled from thread 2 on purpose (see "Why OCR has its own thread" below). Runs its **own independent `mss` capture loop** at `OCR_CAPTURE_SCALE` (not `CAPTURE_SCALE` — see "Why OCR needs its own capture resolution" below), runs a full OCR pass via `text_detection.find_text_matches()` at most every `OCR_INTERVAL_SECONDS`, and in between re-localizes each already-found match every loop iteration via `_relocalize_track()` (a small local `cv.matchTemplate` search around the item's last position) so the box tracks the item smoothly instead of jumping only when OCR refreshes. Converts match coordinates from `OCR_CAPTURE_SCALE` space to `CAPTURE_SCALE` space before publishing to `shared_text_tracks` (consumers only ever deal in `CAPTURE_SCALE` coordinates). New matches are logged to the console (`Found '<name>' at center (x, y)`).
 4. `run_auto_collect()` — the first concrete use of the "action" seam (move mouse / press key / click) described in Design Priorities above; see `actions.py` below for the generic click-driving code it calls into. Polls `shared_text_tracks` (same never-block-on-OCR read as thread 2) for any track whose item was marked `to_collect` in `assets/targets.txt`, and drives `actions.click_until_gone()` to click the nearest-to-cursor one until it's picked up or `COLLECT_TIMEOUT_SECONDS` (5s) passes with it still on the ground. `'F4'` is a global hotkey (same `keyboard`-package mechanism as the overlay's quit hotkey) that snoozes this thread for `SNOOZE_SECONDS` (10s) rather than toggling it off outright — a snooze re-arms itself automatically, so it can't be accidentally left disabled for an entire session the way a plain toggle could.
 5. `run_overlay()` — **runs on the main thread, not a spawned one** (Tk's event loop must own whichever thread created its window). Pulls from `detection_queue`, rescales rectangles from `CAPTURE_SCALE` coordinates back to real screen pixels (`SCALE_TO_NATIVE = 1 / CAPTURE_SCALE`), and draws them via `overlay.Overlay` — see below. `main()` calls this and falls back to `run_debug_window()` (the old plain OpenCV window, kept for platforms the overlay doesn't support) if `Overlay` raises `NotImplementedError`.
@@ -128,6 +136,30 @@ Tesseract itself is a separate program, not a pip package (see `requirements.txt
 
 Call-site throttling (how often `find_text_matches()` gets called at all) is `main.py`'s job via `OCR_INTERVAL_SECONDS`, not this module's — see `detect_text()` above.
 
+### `game_state.py` — HUD meter reading (health/mana orbs)
+
+The third instance of the "detector" seam, but a **different shape of answer** from the other two. Template matching and OCR both answer *"where is this thing?"* (box + center point). This answers *"how full is this thing?"* — a single `0.0`–`1.0` reading. That's the input a decision layer actually acts on (drink a potion below 40%, disengage below 25%), and nothing in the project could read a number off the screen before this.
+
+Deliberately game-agnostic: a `Meter` is a screen region + a color + a fill direction, which describes a health orb, a mana bar, a stamina strip, or a robot's battery gauge equally well. All the game-specific knowledge (where the orbs are, what color they are) lives in `assets/meters.json`, generated by `calibrate_meters.py` — same "edit data, not code" philosophy as `targets.txt`. `region` is stored as **fractions of the screen, not pixels**, specifically so one config stays correct at any capture scale — that's what keeps this from becoming another shared-resolution-constant trap (`Error_history.txt` #6).
+
+**It reads off the frame `detect_objects()` already captured, and does not get its own thread.** This is the opposite call from OCR, and for a concrete measured reason: reading two orb meters costs **0.15ms/frame** (about 0.7% of the frame budget at 45 FPS), whereas a dedicated thread would have to spend ~17-20ms on its own `mss` capture to perform a ~0.3ms measurement. OCR earned its own thread because a single call costs ~100-260ms; this doesn't come close to that bar. Results are published to `shared_game_state` behind a lock and read via `current_game_state()`.
+
+**`None` and `0.0` are different answers and must stay different.** `None` means "couldn't read the region"; `0.0` means "the orb is empty." A consumer that conflates them will treat a failed read as "you are about to die" and act on it. The `Smoother` preserves this too — a failed read never enters the median history, it reports the last good value instead.
+
+Readings are **median**-smoothed over 5 frames, not averaged: the failure mode is one frame being wildly wrong (a tooltip drawn over the orb on hover, a spell effect flashing the same color across the HUD), and a median discards such a sample outright while an average absorbs part of it into the result.
+
+Two traps in the measurement itself, both caught by synthetic testing before this ever ran live, both documented at length in `Error_history.txt` #19 and #20 — **read those before touching `_fill_fraction()`**, because both are the kind of bug that looks correct under casual testing:
+- **Measure fill by HEIGHT, never by pixel count.** A pixel count measures *area*, and for a circle area equals height only at 0%, 50% and 100%. A 25%-full circle is 19.5% full by area. The error is therefore largest exactly when a health reading matters most, and zero at the midpoint where you'd casually test it.
+- **Find the liquid surface with a global consistency test, not a local walk up from the bottom.** Games draw a specular highlight streak across a globe; where it crosses the liquid it blanks out a run of rows, and a local walk stops dead there and reports the streak's height (a 65% orb read as 25%). The surface is instead the highest row that is itself filled *and* has ≥ `SURFACE_CONSISTENCY` of the rows below it filled.
+
+### `calibrate_meters.py` — one-time setup + live validation tool
+
+`python calibrate_meters.py` — waits out a countdown so you can switch to the game, grabs a screenshot, lets you drag a box around each orb, and writes `assets/meters.json`. `--preview` skips straight to the preview against the saved config; `--delay` changes the countdown.
+
+The **live preview matters more than the box-dragging does**, and is why this is an interactive tool rather than a set of constants. A mistuned color range fails by returning a plausible-but-wrong percentage rather than by raising an error, so it has to be validated by eye: the preview shows the raw region with the detected liquid surface drawn across it, the exact pixels being counted, and the live percentage. It also reports the measured hue/saturation/value of the pixels you selected and warns when they don't match the preset's expected range, which is the signal to widen `hsv_ranges` in the JSON.
+
+It shows each meter at **both** full resolution and the fast path's downscale (`--fast-scale`, default `0.3` to match `main.py`'s `CAPTURE_SCALE`). Those two should agree within a couple of percent; if they don't, the meter is too small to measure reliably at that downscale and `main.py` should read it from a higher-resolution frame instead. `--fast-scale` is an explicit argument rather than an imported constant on purpose — correctness doesn't depend on it (regions are stored as fractions), it's purely a validation readout, so there's no second copy of a resolution constant that can silently drift out of sync.
+
 ### `legacy/` — earlier, more modular prototype (kept for reference, not run by default)
 
 This is a different, incompatible architecture built for automating a specific game (Diablo II: Resurrected) rather than generic screen detection:
@@ -145,9 +177,12 @@ This is a different, incompatible architecture built for automating a specific g
 ```
 main.py              # the one entry point — real-time detection pipeline
 text_detection.py    # OCR-based detector (see above)
+game_state.py        # HUD meter reading — health/mana as a 0.0-1.0 number (see above)
 overlay.py           # transparent click-through output layer, Windows-only (see above)
 actions.py           # generic mouse-click action layer (see above)
+calibrate_meters.py  # one-time setup tool: defines + live-validates the HUD meters
 assets/               # reference ("needle") images + targets.txt (OCR target item names + auto-collect/color tags)
+                      # + meters.json (HUD meter regions/colors, written by calibrate_meters.py)
 legacy/               # earlier, incompatible prototype (see above) — reference only
   legacy/assets/       # unused leftover test images from that prototype
 requirements.txt

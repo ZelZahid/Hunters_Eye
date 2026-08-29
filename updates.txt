@@ -226,3 +226,55 @@ code:
   the auto-collect thread and actions.py added in v0.004 were never
   actually documented in the Architecture section (only referenced in
   passing from other sections) - added proper subsections for both.
+
+------------------------------------------------------------------------------
+Version 0.006 - 2026-08-28
+------------------------------------------------------------------------------
+Game-state reading: the engine can now answer "how full is that?" as well as
+"where is that?". This is the groundwork for a decision layer (drink a potion,
+retreat, run a scripted route) - the first thing any of that needs is to know
+the character's current health and mana, and nothing in the project could read
+a number off the screen before this.
+
+- New game_state.py: a third detector alongside template matching and OCR, but
+  a different shape of answer - it returns a single 0.0-1.0 fill fraction for a
+  HUD meter rather than a bounding box. Deliberately generic: a "meter" is a
+  screen region, a color, and a fill direction, which describes a health orb, a
+  mana bar, a stamina strip or a robot's battery gauge equally well. No Diablo
+  II knowledge in the module at all.
+- New assets/meters.json (written by the calibrator on first run): where the
+  meters actually
+  are and what color they are, as fractions of the screen. Same philosophy as
+  targets.txt - adding or moving a meter needs no code change. Stored as
+  fractions specifically so one config stays correct at any capture scale,
+  which is what keeps this from becoming another shared-resolution-constant
+  trap (see Error_history #6).
+- New calibrate_meters.py: drag a box around each orb once, and it writes the
+  config. Then it runs a live preview showing the exact pixels being counted,
+  the detected liquid surface drawn as a line, and the resulting percentage
+  updating in real time. The preview exists because a mistuned color range
+  fails by returning a plausible-but-wrong number rather than by raising an
+  error, so it has to be checked by eye before anything acts on it. It also
+  reports the measured hue/saturation of the pixels you selected and warns if
+  they don't match the expected preset.
+- main.py reads the meters off the frame detect_objects() already captured,
+  rather than in a thread of its own. Measured 0.15ms/frame for two orbs -
+  about 0.7% of the frame budget at 45 FPS - whereas a dedicated thread would
+  have had to spend ~17-20ms on its own mss capture to do a ~0.3ms measurement.
+  Readings are published to shared_game_state behind a lock and exposed via
+  current_game_state(), following the same never-block-on-a-slow-producer
+  pattern the OCR thread already uses.
+- Readings are median-smoothed over 5 frames. Median rather than average
+  because the failure mode is one frame being wildly wrong (a tooltip drawn
+  over the orb on hover, a spell effect flashing across the HUD), and a median
+  discards such a sample outright while an average absorbs part of it.
+- A failed read reports None, not 0.0, and the two are kept distinct all the
+  way through - a consumer must never mistake "couldn't read the orb" for
+  "you have no health left". Missing config degrades to "no game-state
+  awareness" with a warning rather than preventing startup.
+- Verified with a 10-case synthetic test before any live testing, which caught
+  two real bugs in the process - see Error_history #19 and #20. Both were in
+  the fill measurement itself, and both were the kind that look correct under
+  casual testing and fail at exactly the moment the number matters.
+
+No new dependencies - this uses OpenCV, numpy and mss, all already required.

@@ -17,6 +17,7 @@ from pathlib import Path
 from queue import Queue, Empty
 
 import actions
+import game_state
 import text_detection
 from overlay import Overlay
 
@@ -33,6 +34,10 @@ needle_image = cv.resize(needle_image, (0,0) , fx=CAPTURE_SCALE, fy=CAPTURE_SCAL
 needle_w = needle_image.shape[1]
 needle_h = needle_image.shape[0]
 target_items = text_detection.load_target_items(ASSETS_DIR / "targets.txt") #item names to watch for via OCR
+#HUD meters (health/mana orbs) to read a 0.0-1.0 fill level from - see game_state.py. Empty if
+#assets/meters.json doesn't exist yet, which just means no game-state awareness, not a failure.
+#Run 'python calibrate_meters.py' to create it.
+meters = game_state.load_meters(ASSETS_DIR / "meters.json")
 
 #Queues for thread-safe comms
 screenshot_queue = Queue(maxsize = 3)
@@ -44,6 +49,25 @@ detection_queue = Queue(maxsize = 3)
 #loop just reads whatever's most recent without ever waiting on OCR.
 text_tracks_lock = threading.Lock()
 shared_text_tracks = [] #list of (x, y, w, h, matched_name, to_collect, color), in CAPTURE_SCALE coordinates - written by detect_text(), read by detect_objects() and run_auto_collect()
+
+#Latest HUD meter readings as {name: 0.0-1.0 or None}. Unlike OCR, this does NOT need its own
+#thread or its own capture: reading a meter is an HSV threshold over a ~50x50 region, a few
+#tenths of a millisecond, so it rides along on the frame detect_objects() already has. A
+#dedicated thread would have to grab its own frame (~17-20ms) to do a ~0.3ms measurement.
+#None means "could not read", which is deliberately distinct from 0.0 ("empty") - a consumer
+#must never treat a failed read as an empty health orb.
+game_state_lock = threading.Lock()
+shared_game_state = {}
+GAME_STATE_DEBUG = False #prints the current readings periodically - useful when tuning meters.json
+GAME_STATE_PRINT_INTERVAL_SECONDS = 2.0
+
+
+def current_game_state():
+    """Latest HUD readings, e.g. {'health': 0.82, 'mana': 0.44}. Returns a copy, so a caller
+    can't be surprised by values changing mid-decision. This is the accessor the coming
+    decision layer (potion drinking, the Pindle run, combat) reads from."""
+    with game_state_lock:
+        return dict(shared_game_state)
 
 #Thread 1
 def get_screenshot():
@@ -62,9 +86,26 @@ def get_screenshot():
 
 #Thread 2
 def detect_objects():
+    global shared_game_state
     print("Detecting Objects...")
+    meter_smoother = game_state.Smoother()
+    last_state_print = 0.0
+
     while True:
         screenshot = screenshot_queue.get()
+
+        #Read the HUD meters off this same frame before anything else touches it. Costs a few
+        #tenths of a millisecond, so it does not meaningfully affect this loop's FPS.
+        if meters:
+            readings = meter_smoother.update(game_state.read_all(screenshot, meters))
+            with game_state_lock:
+                shared_game_state = readings
+            if GAME_STATE_DEBUG and time.time() - last_state_print >= GAME_STATE_PRINT_INTERVAL_SECONDS:
+                last_state_print = time.time()
+                print("[game state: " + ", ".join(
+                    f"{name}={'--' if value is None else format(value * 100, '.0f') + '%'}"
+                    for name, value in readings.items()) + "]")
+
         #detection code-----------
 
         result = cv.matchTemplate(screenshot, needle_image, method=cv.TM_CCOEFF_NORMED) #returns confidence score

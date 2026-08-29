@@ -473,3 +473,67 @@ Lesson: A physical input action (mouse click, key press) synthesized via an
   removed the dominant error source and exposed the next smaller one
   underneath it - a "still broken" report after a real fix often means a
   different, smaller bug, not that the fix didn't work.
+
+------------------------------------------------------------------------------
+19. Meter fill percentage read badly wrong when a highlight crossed the liquid
+------------------------------------------------------------------------------
+Where: game_state.py, _fill_fraction() (caught by synthetic testing during
+  development, before this ever ran against the real game)
+Cause: The first implementation found the liquid surface by walking up from the
+  bottom of the orb and stopping at the first run of non-matching rows, with a
+  small tolerance (MAX_SURFACE_GAP_ROWS = 3) for the rippling surface. Games
+  draw a bright specular highlight streak across a globe, and where that streak
+  crosses the liquid it blanks out a run of rows wider than the tolerance. The
+  walk stopped dead at the streak and reported the STREAK's height as the fill
+  level: a 65%-full orb read as 25%. Widening the tolerance only moves the
+  failure, because the streak's thickness in rows is not a fixed number - it
+  depends on resolution, the streak's angle, and where it crosses the globe.
+Fix: Replaced the local walk with a global consistency test - the surface is the
+  highest row that is itself filled AND has at least SURFACE_CONSISTENCY (0.7)
+  of the rows below it filled as well. A blocked run of rows in the middle of
+  the liquid barely moves that ratio, so the streak stops mattering. Requiring
+  the surface row itself to be filled keeps the answer pinned to a real row of
+  liquid rather than drifting up into the empty space above it, and the same
+  test independently fixed a second failure mode that was in the original
+  design's comments as a known weakness: a stray patch of the meter's own color
+  floating above an empty meter (a spell effect, or a badly-tuned hsv_range
+  catching nearby UI art) used to inflate the reading, and now fails the
+  ratio test because almost nothing is filled beneath it.
+Lesson: Two lessons, one specific and one general. Specific: a local scan that
+  stops at the first anomaly is fragile against rendering artifacts drawn OVER
+  the thing being measured; a global test that weighs all the evidence below a
+  candidate is both simpler and far more robust, and it cost nothing in speed
+  (it is two numpy cumulative sums). General: this was found only because the
+  synthetic test deliberately included an adversarial case - noise plus a gloss
+  streak - rather than only clean, ideal inputs. A test that just renders a
+  perfect orb passes against both the broken and the fixed implementation. Also
+  worth noting the direction of the error: it under-reported health, which
+  would have triggered emergency behaviour at full health, and the mirror-image
+  case (a streak above the liquid) would have MISSED a real emergency. Any
+  reading that will drive an automatic action deserves an adversarial test
+  before it drives anything.
+
+------------------------------------------------------------------------------
+20. A pixel-count fill measurement is exactly right at 50% and wrong everywhere
+    else (design trap, avoided rather than hit)
+------------------------------------------------------------------------------
+Where: game_state.py, _fill_fraction() - recorded because the obvious
+  implementation is the wrong one and someone will reach for it again later
+Cause: The natural way to measure "how full is this orb" is to count matching
+  pixels and divide by the orb's total pixels. That measures AREA, but a game
+  fills a globe by HEIGHT, and for a circle the two are only equal at 0%, 50%
+  and 100%. A circle filled to 25% of its height is 19.5% full by area - the
+  bottom of a circle is narrow, so those rows hold fewer pixels than average.
+Fix: Measure the height of the liquid surface directly via a row scan and never
+  convert through area at all (this is why game_state.py scans rows instead of
+  doing the much shorter mask.sum() / total.sum()). Verified numerically: the
+  synthetic test measures 19.7% by pixel count against the analytic 19.5%,
+  confirming the row scan's 24.6% is the correct answer and the pixel count is
+  the wrong one.
+Lesson: A wrong measurement that happens to be exactly right at the midpoint is
+  a genuinely nasty bug, because casual testing at "about half health" confirms
+  it works. The error grows precisely as the value approaches its extremes -
+  which for a health orb means it is least accurate exactly when the reading
+  matters most. When measuring a fill level, check what shape the container is
+  and what the game is actually varying (height, angle, area), and test at the
+  extremes, not just in the middle.
