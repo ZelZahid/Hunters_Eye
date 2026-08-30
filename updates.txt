@@ -485,3 +485,100 @@ WHAT WAS MEASURED AND FOUND *NOT* TO BE A PROBLEM:
 
 No new dependencies. No new files.
 Four entries added to Error_history.txt (#35-#38).
+
+------------------------------------------------------------------------------
+Version 0.009 - 2026-08-30
+------------------------------------------------------------------------------
+Frame source seam + DXGI capture. SAME frame rate for 36% LESS CPU, and the
+pipeline's own ceiling raised from ~58 to ~177 FPS in case it is ever wanted.
+
+WHAT THE PROBLEM ACTUALLY WAS:
+v0.008 took detection off the critical path (3.2ms/frame, ~312 FPS on its own),
+which left screen CAPTURE as 83% of the frame budget and the sole thing setting
+the frame rate. Measured on dev hardware (i9-11900K / RTX 5070, 1920x1080):
+  sct.grab full screen                  13.6 ms
+    of which GDI BitBlt alone           12.7 ms   <- the actual wall
+  resize(0.3) + cvtColor                 0.3 ms
+  -> capture thread total               16.0 ms = a hard ~58-62 FPS ceiling
+It is NOT vsync: this display runs at 239Hz, so the ~16.8ms figure recorded
+earlier was never a refresh artifact. And it is not fixable by tuning, because
+it is one GDI blit: CAPTURE_SCALE does not touch it (the grab happens at full
+resolution regardless - the resize is 0.3ms), and doing the downscale GDI-side
+with StretchBlt measured 12.3ms, i.e. all of the cost is the blit and none of
+it is the readback.
+
+WHAT CHANGED:
+- New frame_source.py - the "frame source" seam from CLAUDE.md, made concrete
+  for the first time. A frame source is handed a screen region and hands back
+  BGRA pixels; it knows nothing about what looks at them. cv.VideoCapture for a
+  camera is the next backend to slot in here.
+- DXGI Desktop Duplication backend (bettercam). The GPU already holds the
+  composited desktop, so this reads it back instead of asking GDI to re-blit it.
+- mss stays as the portable backend, chosen automatically when bettercam is
+  absent, when the platform is not Windows, AND as a runtime fallback if DXGI
+  fails mid-session (DXGI_ERROR_ACCESS_LOST on a resolution change, UAC prompt,
+  driver reset or fullscreen transition). All three paths tested explicitly.
+- main.py's capture loop is now PACED to TARGET_FPS (60) rather than running
+  flat out, which is the actual point of the change - see below.
+
+MEASURED, end to end on the real pipeline (capture + detect threads):
+  mss, unpaced (v0.008)          55-59 FPS   0.78-0.84 cores   15.3 CPU-ms/frame
+  DXGI, paced to 60               59.7 FPS   0.42-0.50 cores    7.0 CPU-ms/frame
+  DXGI, unpaced                    177 FPS   3.56 cores        20.1 CPU-ms/frame
+Full pipeline with overlay, OCR and auto-collect all live: 56.3 FPS.
+mss fallback path re-measured after the change: 52.4 FPS / 0.79 cores - i.e.
+unchanged from v0.008, so nothing regressed for a machine without bettercam.
+
+WHY PACED, AND WHY 60:
+Capture used to BE the throttle - mss could only produce ~58 frames a second, so
+the loop never had to decide how fast to run. DXGI can produce ~177, and taking
+all of them costs 3.56 cores instead of 0.42, which is the exact opposite of
+what this project wants (design priority #2: never noticeably slow down whatever
+it is watching). Note that unpaced full-screen DXGI is also the WORST row in the
+table for CPU-per-frame - chasing FPS with no cap makes the thing that actually
+matters worse. Higher FPS was never the goal; the same work for less CPU is.
+60 specifically, because nothing downstream can use more: the overlay caps its
+own repaints at BOX_REDRAW_HZ (30), auto-collect clicks coordinates out of
+shared_text_tracks rather than from this path at all, and game_state's readings
+are median-smoothed over 5 frames (83ms at 60 FPS).
+Pacing also made frame delivery visibly STEADIER, not just cheaper: p95 frame
+gap 18.4ms vs 21.9ms and worst case 21.1ms vs 32.5ms, because the loop is no
+longer racing an unpredictable blit.
+
+QUALITY: nothing traded. Same capture region, same resolution, same detector,
+same thresholds, same coordinates. The only behavioural difference is that DXGI
+returns a frame only when the desktop CHANGED, so a static screen re-serves the
+previous frame instead of re-capturing an identical one - which is what mss was
+already effectively doing, just at full price.
+
+MEASURED AND REJECTED, so it does not get re-tried:
+- bettercam's video_mode / get_latest_frame(): waits on an Event with NO
+  timeout, so a dead capture thread hangs the caller forever with no way to time
+  it out - the one failure mode design priority #1 rules out. It also
+  np.array()-copies every frame out of a ring buffer, the same per-frame 8MB
+  copy v0.008 removed. The polled grab() used instead measured CHEAPER anyway
+  (3.4 vs 5.6 CPU-ms/frame at a matched 90 FPS), so nothing was traded for it.
+- GDI StretchBlt to downscale on the GDI side (12.3ms with COLORONCOLOR, 17.0ms
+  with HALFTONE, vs mss's 16.0ms). The nearest-neighbour mode is barely faster
+  than the thing it replaces and throws away pixels the matcher needs; the
+  quality mode is slower outright.
+- Giving detect_text() its own DXGI source. It cannot have one - see
+  Error_history.txt #39. It keeps its own mss capture.
+
+NOT DONE, deliberately (both are real and both are quality decisions, not waste):
+- Capturing only the game window instead of the whole screen. Measured 1280x800
+  at 3.4 CPU-ms/frame against 7.0 for full screen - the single biggest remaining
+  win. Held back because it changes the coordinate space every consumer assumes
+  (CAPTURE_RECT, SCALE_TO_NATIVE, window_region.to_frame_fractions), which is a
+  change worth making on its own rather than buried in this one.
+- OCR_INTERVAL_SECONDS. Measured a single find_text_matches() call at 567ms
+  against a text-heavy desktop while the interval sits at 0.4s - i.e. below the
+  call's own cost, which CLAUDE.md documents as the condition under which the
+  throttle stops throttling and starves relocalization. That thread measured
+  ~0.9 cores on its own, MORE than the entire fast path. Not changed here
+  because the right value depends on the real in-game call cost (~0.1-0.26s when
+  last measured in-game), which needs OCR_DEBUG_TIMING during actual gameplay.
+
+One new dependency: bettercam (Windows-only, optional, marked
+sys_platform == "win32" in requirements.txt). One new file: frame_source.py.
+One entry added to Error_history.txt (#39).

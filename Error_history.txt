@@ -1214,3 +1214,41 @@ Lesson: An optimisation's effects are not confined to the thing it optimised.
   loop and decide deliberately whether each one should follow. Display rates in
   particular should be pinned to what a human can perceive, never to how fast
   the machine happens to be able to go.
+
+------------------------------------------------------------------------------
+39. A second DXGI capture source is silently the FIRST one, and steals its frames
+------------------------------------------------------------------------------
+Where: frame_source.py; would have hit main.py's detect_text() thread.
+Symptom: Found while designing the DXGI frame source, before it could ship - the
+  obvious next step after speeding up the fast path's capture was to give the
+  OCR thread the same treatment, since it does its own independent full-
+  resolution grab. That would have broken OCR completely, silently.
+Root cause: bettercam.create() is a per-output SINGLETON. Asking for a camera on
+  an output that already has one does not raise and does not create a second
+  one - it prints a note to stdout and hands back the SAME object. Two threads
+  then share one DXGI duplicator. Verified directly: with camera A and camera B
+  (the same object) in one process, A.grab() returned a full (1080,1920,4)
+  frame and B.grab() returned None on the very next line, because DXGI hands
+  over a frame only when the desktop CHANGED since the last acquire, and A had
+  just consumed it. In the pipeline that means whichever thread polls faster
+  starves the other, intermittently and at random - the OCR thread would appear
+  to just stop finding items sometimes.
+Fix: frame_source.py takes an explicit backend argument, the DXGI path is
+  documented as single-consumer, and detect_text() deliberately keeps its own
+  independent mss capture. mss and DXGI coexist fine - they are different APIs
+  against different parts of the stack.
+Also found in the same file, and avoided rather than debugged: bettercam's
+  video_mode / get_latest_frame() path waits on a threading.Event with NO
+  timeout, so if its internal capture thread dies the caller blocks forever with
+  no way to time it out from outside - a silent hang, which is exactly what this
+  project's first design priority rules out. It also np.array()-copies every
+  frame out of a ring buffer, the same per-frame 8MB copy removed in v0.008.
+  The polled grab() path avoids both and measured cheaper anyway (3.4 vs 5.6
+  CPU-ms per frame at a matched 90 FPS), so nothing was traded to avoid it.
+Lesson: A factory function that returns an EXISTING object instead of a new one
+  breaks the assumption every caller makes about ownership, and it does it
+  without an exception, a None, or a distinct type - the only signal here was a
+  line printed to stdout, which nothing reads. Before giving a second consumer
+  its own handle to a scarce OS resource (a capture device, a duplicator, an
+  exclusive-mode audio endpoint), verify you actually GOT a second one, by
+  checking identity - not by checking that the call succeeded.

@@ -20,6 +20,7 @@ import actions
 import game_state
 import text_detection
 import window_region
+import frame_source
 from overlay import Overlay
 
 #Globals
@@ -205,31 +206,65 @@ def current_game_state_age():
         stamped = shared_game_state_time
     return None if stamped == 0.0 else time.time() - stamped
 
+#The pipeline is PACED, not run flat out, and that is the whole point of the frame source change.
+#Capture used to BE the throttle: mss could only produce ~58 frames a second, so the loop never
+#had to decide how fast to run. DXGI can produce ~177, and taking all of them costs 3.56 CPU
+#cores instead of 0.42 - which is the exact opposite of what this project wants, since design
+#priority #2 is "must never noticeably slow down whatever it is watching". Higher FPS is not the
+#goal; the same work for less CPU is. Measured end to end on the real pipeline:
+#    mss, unpaced (what this was)   55-59 FPS   0.78-0.84 cores   15.3 CPU-ms/frame
+#    DXGI, paced to 60              59.7 FPS    0.42 cores         7.0 CPU-ms/frame
+#    DXGI, unpaced                   177 FPS    3.56 cores        20.1 CPU-ms/frame
+#Frame pacing is also visibly steadier, not just cheaper: p95 frame gap 18.4ms vs 21.9ms and
+#worst case 21.1ms vs 32.5ms, because the loop is no longer racing an unpredictable blit.
+#60 is chosen rather than higher because nothing downstream can use more: the overlay caps its
+#own repaints at BOX_REDRAW_HZ (30), auto-collect clicks coordinates from shared_text_tracks
+#rather than from this path at all, and game_state's readings are median-smoothed over 5 frames
+#(83ms at 60 FPS). Raise it only if a future consumer genuinely needs lower detection latency,
+#and re-measure the CPU cost when you do.
+TARGET_FPS = 60
+_FRAME_PERIOD = 1.0 / TARGET_FPS
+
 #Thread 1
 def get_screenshot():
-    with mss.mss() as sct:
-        while True:
-            img = sct.grab(monitor_area)
-            #np.frombuffer wraps mss's own capture buffer instead of copying it - np.array(img)
-            #goes through the array interface and duplicates a full 1920x1080x4 (~8MB) buffer on
-            #every single frame. Verified byte-identical to np.array(img) on the same capture;
-            #measured ~4ms/frame cheaper, which at this frame rate is most of the remaining
-            #headroom. It is a VIEW, so it must be consumed before the next grab() - the resize
-            #immediately below copies the pixels out, and nothing keeps a reference past that.
-            screenshot = np.frombuffer(img.raw, dtype=np.uint8).reshape(img.height, img.width, 4)
-            #Downscale FIRST, then strip the alpha channel - not the other way round. The result is
-            #bit-for-bit identical (verified over a full frame: max difference 0), because
-            #INTER_LINEAR mixes each channel independently and alpha is discarded either way. The
-            #only thing that changes is how much data the colour conversion has to touch: 576x324
-            #pixels instead of 1920x1080. Measured 19.8ms -> 17.8ms per captured frame.
-            screenshot = cv.resize(screenshot, (0,0) ,fx=CAPTURE_SCALE, fy=CAPTURE_SCALE) #resizing image for better performance
-            if screenshot.shape[2] == 4:
-                screenshot = cv.cvtColor(screenshot, cv.COLOR_BGRA2BGR) #changes from BGRA to BGR [ stripping alpha val]
+    #See frame_source.py. This is the ONLY DXGI consumer in the process on purpose - a DXGI
+    #duplicator is a per-output singleton, so detect_text() asking for a second one would not get
+    #a second one, it would get this one and start stealing frames out from under this thread.
+    source = frame_source.FrameSource(monitor_area)
+    while True:
+        started = time.perf_counter()
+        #A VIEW over the backend's own buffer, not a copy - np.array() on it would duplicate a
+        #full 1920x1080x4 (~8MB) buffer every single frame (~4ms, plus 400MB/s of memory
+        #bandwidth every other thread then shares). It must be consumed before the next grab():
+        #the resize immediately below copies the pixels out, and nothing keeps a reference past
+        #that point.
+        screenshot = source.grab()
+        if screenshot is None:
+            #DXGI has produced nothing at all yet. Not an error and not a stall - just wait for
+            #the first frame rather than spinning on it.
+            time.sleep(0.001)
+            continue
+        #Downscale FIRST, then strip the alpha channel - not the other way round. The result is
+        #bit-for-bit identical (verified over a full frame: max difference 0), because
+        #INTER_LINEAR mixes each channel independently and alpha is discarded either way. The
+        #only thing that changes is how much data the colour conversion has to touch: 576x324
+        #pixels instead of 1920x1080.
+        screenshot = cv.resize(screenshot, (0,0) ,fx=CAPTURE_SCALE, fy=CAPTURE_SCALE) #resizing image for better performance
+        if screenshot.shape[2] == 4:
+            screenshot = cv.cvtColor(screenshot, cv.COLOR_BGRA2BGR) #changes from BGRA to BGR [ stripping alpha val]
 
-            #if detection is falling behind, dropping old frams lets pipeline tay real-time and not delayed
-            if screenshot_queue.full():
-                screenshot_queue.get_nowait() #remove and return an item without waiting, drops oldest screenshot
-            screenshot_queue.put(screenshot) #thread-safe put
+        #if detection is falling behind, dropping old frams lets pipeline tay real-time and not delayed
+        if screenshot_queue.full():
+            screenshot_queue.get_nowait() #remove and return an item without waiting, drops oldest screenshot
+        screenshot_queue.put(screenshot) #thread-safe put
+
+        #Sleep out the REMAINDER of the frame, timed from when this iteration started - not a
+        #fixed sleep after the work. A fixed sleep would make the real period "period + however
+        #long the work took", the same off-by-a-call-duration mistake documented for
+        #last_ocr_time in detect_text().
+        remaining = _FRAME_PERIOD - (time.perf_counter() - started)
+        if remaining > 0:
+            time.sleep(remaining)
 
 #Thread 2
 def detect_objects():

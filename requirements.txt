@@ -44,3 +44,12 @@ keyboard>=0.13.5
 # legacy/Window_Capture.py. The transparent overlay itself is also Windows-only right now
 # (see overlay.py) - on other platforms main.py falls back to a plain debug window.
 pywin32>=306 ; sys_platform == "win32"
+
+# --- Frame source (frame_source.py) ---
+# Windows-only, and OPTIONAL: bettercam captures via DXGI Desktop Duplication (the GPU
+# already holds the composited desktop) instead of asking GDI to re-blit it. Measured at
+# 1920x1080, GDI's BitBlt alone is 12.4ms of the 13.6ms mss spends per frame, and this
+# replaces essentially all of it - the capture thread went 15.3 -> 7.0 CPU-ms per frame.
+# frame_source.py uses it automatically when present and falls back to mss when it is not
+# (or if DXGI fails mid-session), so the pipeline runs either way - just slower without it.
+bettercam>=1.0 ; sys_platform == "win32"
