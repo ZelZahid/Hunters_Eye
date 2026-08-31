@@ -232,5 +232,45 @@ for fill in (0.05, 0.10, 0.20):
     print(f"  {'ok  ' if ok else 'FAIL'} a real {fill:.0%} orb still reads {shown} - low health must stay actionable")
     failures += not ok
 
+print("\n13. A single row of stray colour is not a reading - the lobby 2% bug")
+#The surface test asks "are the rows below this one filled too?", which a row at the very BOTTOM
+#of the band passes vacuously: there are no rows below it, so 0 of 0 is 100%. One stray row
+#therefore produced a real-looking value, and at CAPTURE_SCALE 0.3 an orb is only ~43 rows tall,
+#so that value was 2% - below every potion threshold. Seen live in the Diablo II lobby, where red
+#character names sit where the health orb would be: the panel read "health 2%" and the emergency
+#tier fired. See game_state.MIN_SURFACE_SUPPORT_ROWS.
+bx, by, bw, bh = ORB_BOX
+for rows_from_bottom in (1, 2, 3):
+    frame = np.full((FRAME_H, FRAME_W, 3), 18, dtype=np.uint8)
+    row = by + bh - rows_from_bottom
+    frame[row:row + 1, bx:bx + bw] = (30, 30, 200)      # one full-width row of the meter's colour
+    value = game_state.read_meter(frame, health)
+    ok = value is None
+    shown = "None" if value is None else format(value * 100, ".1f") + "%"
+    print(f"  {'ok  ' if ok else 'FAIL'} a single red row {rows_from_bottom} up from the bottom "
+          f"-> {shown}, not a low reading")
+    failures += not ok
+
+#The floor is measured, not guessed: at MIN_SURFACE_SUPPORT_ROWS = 1 the FULL-RESOLUTION reading
+#is completely unchanged, which is what makes this affordable. Raising it to 2 would start
+#costing real low-health readings at the fast path's downscale for no extra protection.
+for fill in (0.02, 0.03, 0.05, 0.10):
+    value = game_state.read_meter(make_frame(fill), health)
+    ok = value is not None and abs(value - fill) < 0.02
+    shown = "None" if value is None else format(value * 100, ".1f") + "%"
+    print(f"  {'ok  ' if ok else 'FAIL'} full resolution still reads a real {fill:.0%} orb as {shown}")
+    failures += not ok
+
+#At the downscale main.py actually uses, the floor is real and worth stating out loud: an orb
+#below ~7% reads "unknown". That is affordable only because a meter does not teleport - health
+#falls THROUGH 20%, 15% and 10% on the way down at ~50 samples a second.
+small = cv.resize(make_frame(0.15), (0, 0), fx=0.3, fy=0.3)
+value = game_state.read_meter(small, health)
+ok = value is not None and abs(value - 0.15) < 0.05
+shown = "None" if value is None else format(value * 100, ".1f") + "%"
+print(f"  {'ok  ' if ok else 'FAIL'} at 0.3x a real 15% orb still reads {shown} - the thresholds "
+      f"that matter stay measurable")
+failures += not ok
+
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

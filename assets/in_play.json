@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "Reference art proving the game HUD is on screen, i.e. that we are actually in play.",
+    "Cropped from a real in-game frame (the right-hand orb's stone frame - fixed art that is",
+    "always drawn during play and absent in the lobby / character select).",
+    "region and search_region are fractions of the ANCHOR WINDOW (see window_region.py), not",
+    "of the screen, so they survive the game being windowed, moved or resized.",
+    "search_region is deliberately much larger than the art itself: a wider search costs",
+    "almost nothing here but tolerates small HUD layout shifts. A FULL-frame search measured",
+    "3.0ms/frame against 0.2ms restricted, which is why it is restricted at all.",
+    "threshold separates in-play from lobby by a wide margin - measured 0.951 in game and",
+    "0.835 with the ESC menu open (HUD still drawn), against 0.343 and 0.329 in two lobbies."
+  ],
+  "template": "in_play.png",
+  "source_size": [
+    1920,
+    1080
+  ],
+  "search_region": [
+    0.62,
+    0.7,
+    0.38,
+    0.3
+  ],
+  "threshold": 0.6
+}

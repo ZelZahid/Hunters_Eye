@@ -50,6 +50,20 @@ MIN_ROW_WIDTH_RATIO = 0.25
 # fraction of the rows below it filled too. See _fill_fraction() for why this global test beats
 # the more obvious "walk up from the bottom until you hit an empty row" approach.
 SURFACE_CONSISTENCY = 0.7
+# ...and the surface must have at least this many rows beneath it for that test to have MEANT
+# anything. The consistency check is "are the rows below this one filled too?", which a row at
+# the very bottom of the band passes vacuously - there are no rows below it, so 0 of 0 is 100%.
+# One stray row of matching colour therefore produced a reading, and at the scale the fast path
+# actually runs (CAPTURE_SCALE 0.3 leaves an orb ~43 rows tall, so one row is 2.3% of the meter)
+# that reading was 2% - which is below every potion threshold. Seen live: the Diablo II lobby,
+# where red character names sit where the health orb would be, read 2% health and triggered an
+# emergency potion. See _fill_fraction().
+# Tuned by measurement, not picked: at 1 the full-resolution reading is COMPLETELY unchanged
+# (a real 2% orb still reads 2%) while the one-row artifact is gone, and at CAPTURE_SCALE 0.3 the
+# floor lands at ~7% of real fill. Raising it to 2 additionally loses a real 7% orb at 0.3 for no
+# extra protection against a single stray row, which is the wrong trade - a missed low-health
+# reading kills a character, while a spurious one in a lobby just presses a key that does nothing.
+MIN_SURFACE_SUPPORT_ROWS = 1
 # Two window shapes count as the same layout within this much aspect-ratio difference,
 # so one profile serves 1280x800 and 1600x1000 but not 1280x800 and 1920x1080.
 ASPECT_TOLERANCE = 0.02
@@ -191,6 +205,18 @@ def _fill_fraction(color_mask, shape_mask):
     filled_below = np.cumsum(band[::-1])[::-1]          # filled_below[i] = filled rows in band[i:]
     rows_below = np.arange(height, 0, -1)               # rows_below[i]   = total rows in band[i:]
     consistent = band & (filled_below >= rows_below * SURFACE_CONSISTENCY)
+
+    # Only rows with enough beneath them to actually test count as candidate surfaces. Without
+    # this the test is vacuous at the bottom of the band and one stray row reads as a real (tiny)
+    # value - see MIN_SURFACE_SUPPORT_ROWS. The cost is a floor on what can be reported: about
+    # 1.3% at full resolution and 4.7% at CAPTURE_SCALE 0.3, below which this says "unknown"
+    # rather than a number. That is affordable because a meter does not teleport - health falls
+    # THROUGH 20%, 15% and 10% on its way to 2%, at ~50 samples a second, so a consumer watching
+    # for "below 20%" has already acted long before the reading gets down into the noise floor.
+    # `> 0` guards a real slicing trap: consistent[-0:] is the WHOLE array, so a support of 0
+    # would silently reject every candidate and make every meter unreadable.
+    if MIN_SURFACE_SUPPORT_ROWS > 0 and height > MIN_SURFACE_SUPPORT_ROWS:
+        consistent[-MIN_SURFACE_SUPPORT_ROWS:] = False
 
     candidates = np.flatnonzero(consistent)
     if candidates.size == 0:

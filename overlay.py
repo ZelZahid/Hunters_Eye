@@ -13,6 +13,7 @@ pyobjc) - see CLAUDE.md.
 import platform
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 
 #The colour key: every pixel of EXACTLY this colour is invisible and click-through.
 #
@@ -39,13 +40,16 @@ PANEL_ROW_HEIGHT = 22
 PANEL_TITLE_GAP = 26
 PANEL_BAR_OFFSET = 90 #x offset of the bar from the label, in pixels
 PANEL_BAR_WIDTH = 130
+PANEL_VALUE_OFFSET = PANEL_BAR_OFFSET + PANEL_BAR_WIDTH + 12 #x offset of a row's value text
 PANEL_BAR_HEIGHT = 10
 PANEL_FONT = ("Consolas", 11, "bold")   #monospace, so a changing number doesn't shift the text
 PANEL_TITLE_FONT = ("Consolas", 11, "bold")
 PANEL_TITLE_COLOR = (170, 170, 170)
 PANEL_LABEL_COLOR = (220, 220, 220)
 PANEL_BAR_TRACK_COLOR = (90, 90, 90)
-PANEL_WIDTH = 300
+PANEL_WIDTH = 300 #MINIMUM plate width; it grows to fit anything wider - see draw_panel(). A
+                   #minimum rather than a fixed size so the plate does not visibly resize as an
+                   #ordinary reading goes "9%" -> "100%", while a long status message still fits.
 PANEL_PAD = 10
 PANEL_BG_COLOR = (16, 16, 20)
 PANEL_BORDER_COLOR = (70, 70, 80)
@@ -178,6 +182,7 @@ class Overlay:
         #different costs.
         self._last_box_draw = 0.0
         self._last_panel_draw = 0.0
+        self._fonts = {}  #font spec -> tkfont.Font, for measuring text (see _text_width)
 
         #WS_EX_TRANSPARENT makes the ENTIRE window click-through, not just the
         #transparent-colored background - guarantees clicks reach the game even
@@ -236,6 +241,25 @@ class Overlay:
         for (x, y, w, h, color) in rectangles:
             self.canvas.create_rectangle(x, y, x + w, y + h, outline=_hex(color), width=2, tags="boxes")
 
+    def _text_width(self, text, font):
+        """Rendered width of `text` in `font`, in pixels.
+
+        Tk font objects are cached per font spec: constructing one asks the font system for
+        metrics, which is not something to redo for every label on every repaint of the panel -
+        this is already the overlay's most expensive layer.
+        """
+        if not text:
+            return 0
+        measurer = self._fonts.get(font)
+        if measurer is None:
+            try:
+                measurer = tkfont.Font(root=self.root, font=font)
+            except tk.TclError:
+                #Never let a font lookup take the overlay down; fall back to a monospace estimate.
+                return int(len(text) * font[1] * 0.62)
+            self._fonts[font] = measurer
+        return measurer.measure(text)
+
     def _panel_text(self, x, y, text, color, font):
         """One line of panel text, ringed in black before it is drawn.
 
@@ -278,10 +302,23 @@ class Overlay:
         else:
             x, top = int(origin[0]), int(origin[1])
         #Backing plate first, so everything else lands on top of it (Tk canvas draws in
-        #insertion order). Sized from the row count so it always fits the content exactly.
+        #insertion order). Sized from the row count AND from the measured width of what is about
+        #to be drawn, so text can never spill outside the plate onto the bare game.
+        #
+        #It used to be a fixed PANEL_WIDTH, which was fine while every value was a percentage
+        #("45%") but broke the moment a row carried a status message instead: the value column
+        #starts at PANEL_VALUE_OFFSET (232px), so anything past about seven characters hung off
+        #the right-hand edge. "not on screen (0.30)" did exactly that, in red, over the game.
+        #Measuring is the fix rather than a bigger constant, because the next long string would
+        #simply overflow the bigger constant too.
         height = PANEL_TITLE_GAP + PANEL_ROW_HEIGHT * len(rows or [])
+        width = max(PANEL_WIDTH, self._text_width(title, PANEL_TITLE_FONT))
+        for (label, value_text, _fraction, _color) in rows or []:
+            width = max(width,
+                        self._text_width(label, PANEL_FONT),
+                        PANEL_VALUE_OFFSET + self._text_width(value_text, PANEL_FONT))
         self.canvas.create_rectangle(x - PANEL_PAD, top - PANEL_PAD,
-                                      x + PANEL_WIDTH + PANEL_PAD, top + height + PANEL_PAD,
+                                      x + width + PANEL_PAD, top + height + PANEL_PAD,
                                       fill=_hex(PANEL_BG_COLOR), outline=_hex(PANEL_BORDER_COLOR),
                                       width=1, stipple=PANEL_BG_STIPPLE or "", tags="panel")
 
@@ -299,7 +336,7 @@ class Overlay:
                 if filled > 0:
                     self.canvas.create_rectangle(bar_x, bar_y, bar_x + filled, bar_y + PANEL_BAR_HEIGHT,
                                                   fill=_hex(color), outline="", tags="panel")
-            self._panel_text(x + PANEL_BAR_OFFSET + PANEL_BAR_WIDTH + 12, y, value_text, color, PANEL_FONT)
+            self._panel_text(x + PANEL_VALUE_OFFSET, y, value_text, color, PANEL_FONT)
             y += PANEL_ROW_HEIGHT
 
     def pump(self):

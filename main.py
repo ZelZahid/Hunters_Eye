@@ -21,6 +21,8 @@ import actions
 import game_state
 import text_detection
 import window_region
+import presence
+import user_config
 import frame_source
 from overlay import Overlay
 
@@ -172,6 +174,65 @@ def anchor_rect():
         return None if _anchor_rect is _UNRESOLVED else _anchor_rect
 
 
+#--- "Are we actually in play?" ------------------------------------------------------------------
+#A SECOND, INDEPENDENT PIECE OF EVIDENCE, and the only thing that can settle what colour cannot.
+#The health meter reads red; the Diablo II lobby renders other players' names and red armour
+#exactly where the health orb belongs (measured: 7.3% red pixels in that region), and periodically
+#enough of them line up to read as a real 2-4% health. That fired an emergency potion, and because
+#a lobby has a text field focused, the keypresses were typed into the game name. No tuning of a
+#colour test fixes that - red text and red liquid are the same colour. Matching fixed HUD art is
+#evidence of a completely different kind, so it does not fail the same way.
+#Measured separation on real frames: 0.951 in game and 0.835 with the ESC menu open (HUD still
+#drawn, correctly still "in play") against 0.343 and 0.329 in two different lobbies.
+in_play_check = presence.load(ASSETS_DIR / "in_play.json")
+_in_play_lock = threading.Lock()
+_in_play = None      #True/False/None-cannot-tell - see anchor_focused() for why None is a third answer
+_in_play_score = None
+
+
+def _update_in_play(frame_gray):
+    """Runs the in-play check against this frame and publishes the result. Returns True/False/None.
+
+    Runs EVERY frame rather than on a timer: it costs 0.198ms restricted to its search region
+    (against 3.0ms searching the whole frame, which is why the region exists at all), and a stale
+    "yes" is exactly the window in which the wrong keys get typed into a lobby.
+    """
+    global _in_play, _in_play_score
+    if in_play_check is None:
+        return None
+
+    rect = anchor_rect()
+    if rect is not None:
+        #Same routing the HUD meters use: the art is at a fixed place in the WINDOW, not on the
+        #screen, so a windowed or moved game would otherwise search the wrong pixels.
+        region = window_region.to_frame_fractions(rect, CAPTURE_RECT, in_play_check.search_region)
+        hud_width = rect[2] * CAPTURE_SCALE
+    else:
+        region = None
+        hud_width = frame_gray.shape[1]
+
+    found, score = in_play_check.check(frame_gray, hud_width, region=region)
+    with _in_play_lock:
+        _in_play, _in_play_score = found, score
+    return found
+
+
+def in_play():
+    """True/False/None - is the game's HUD actually on screen?
+
+    None means "cannot tell" and is NOT False, for the same reasons spelled out on
+    anchor_focused(): no assets/in_play.json, no template, or a frame it could not judge. On any
+    of those the pipeline must behave exactly as it did before this check existed.
+    """
+    with _in_play_lock:
+        return _in_play
+
+
+def in_play_score():
+    with _in_play_lock:
+        return _in_play_score
+
+
 def anchor_focused():
     """True/False/None - is the anchor window the one the user is actually interacting with?
 
@@ -191,10 +252,16 @@ def anchor_focused():
 def actions_allowed():
     """Whether it is safe to drive the real mouse/keyboard right now.
 
-    Allowed unless we POSITIVELY know the anchor window is not focused. The asymmetry is the
-    point: an unguarded setup keeps working as before, while a setup that can check gets stopped.
+    Two independent guards, and an action needs BOTH to not say no: the window must be focused,
+    and the game's HUD must be on screen. Allowed unless one of them POSITIVELY says otherwise -
+    the asymmetry is the point, since an unguarded setup keeps working as before while a setup
+    that can check gets stopped.
+
+    They fail differently, which is why both exist. Focus catches "these keys are going to another
+    program". In-play catches "these keys are going to THIS program, which is showing a lobby with
+    a text field focused" - the case that typed a potion sequence into a game name.
     """
-    return anchor_focused() is not False
+    return anchor_focused() is not False and in_play() is not False
 
 
 #Queues for thread-safe comms
@@ -313,6 +380,14 @@ def detect_objects():
         #Read the HUD meters off this same frame before anything else touches it. Costs a few
         #tenths of a millisecond, so it does not meaningfully affect this loop's FPS.
         active_meters = _refresh_anchor(time.time())
+        #Converted ONCE per frame and used twice - by the in-play check here and by matchTemplate
+        #below. It is derived from `screenshot` rather than replacing it, so the colour frame the
+        #meters need is untouched; only the ORDER of this line moved, not what reads what.
+        frame_gray = cv.cvtColor(screenshot, cv.COLOR_BGR2GRAY) #0.03ms at CAPTURE_SCALE
+        #Cheap enough to run per frame (0.198ms) - see _update_in_play.
+        if _update_in_play(frame_gray) is False:
+            #The HUD is not on screen, so whatever sits where the orbs belong is not the orbs.
+            active_meters = []
         if anchor_focused() is False:
             #Not the foreground window -> the pixels where the orbs should be belong to whatever
             #the user alt-tabbed to, so there is nothing here to measure. Checked per frame, not
@@ -337,9 +412,9 @@ def detect_objects():
 
         #detection code-----------
 
-        #Grayscale, and only AFTER game_state has read the frame above - meter reading is an HSV
-        #threshold and genuinely needs the colour. See needle_gray for why matching does not.
-        frame_gray = cv.cvtColor(screenshot, cv.COLOR_BGR2GRAY) #0.03ms at CAPTURE_SCALE
+        #frame_gray was converted once at the top of this loop and is reused here - see there.
+        #`screenshot` itself is still the untouched colour frame, which is what game_state needs
+        #(meter reading is an HSV threshold). See needle_gray for why matching does not need it.
         result = cv.matchTemplate(frame_gray, needle_gray, method=cv.TM_CCOEFF_NORMED) #returns confidence score
         threshold = 0.60
         max_results = 10 #Limiting results #
@@ -720,24 +795,25 @@ def run_auto_collect():
 #The first consumer of game_state that ACTS on what it reads, and the whole sensor -> decision ->
 #action loop end to end: read a number off the screen, decide, press a key.
 #
-#This block is Diablo II INTEGRATION, not engine - same status as run_auto_collect(). The belt
-#layout is one player's key bindings and the thresholds are playstyle, so both live here in data
-#rather than being spread through logic. Nothing below knows what a "potion" is beyond "a key to
-#press when a meter gets low", which is the same shape as a drone landing itself on low battery.
+#The rules below are DEFAULTS ONLY - user_config.txt is what actually drives this at runtime, so
+#thresholds and key bindings can be changed without touching code (see user_config.py). These
+#stay as the fallback for a missing or unusable config file, so the program behaves identically
+#to before that file existed rather than quietly doing nothing.
 #
-#PotionRule: when `meter` reads at or below `at_or_below`, press one of `keys`, then hold off on
-#THIS rule for `cooldown` seconds.
-PotionRule = namedtuple("PotionRule", "meter at_or_below keys cooldown label")
+#A rule: when `meter` reads at or below `at_or_below`, press one of `keys`, then hold off on THIS
+#rule for `cooldown` seconds. Nothing here knows what a "potion" is beyond "a key to press when a
+#meter gets low", which is the same shape as a drone landing itself on low battery.
+PotionRule = user_config.Rule
 
 #Order matters: the FIRST matching rule wins each tick, so more urgent rules come first.
 #Each rule keeps its OWN cooldown, which is what lets the emergency tier fire immediately after
 #an ordinary heal - taking a big hit one second after drinking a healing potion is exactly when
 #a rejuvenation is needed, and a single shared cooldown would swallow it.
-POTION_RULES = (
+DEFAULT_POTION_RULES = (
     #Rejuvenation heals instantly and fully, so it is the emergency tier, not the everyday one.
-    #Keys 2 and 3 are BOTH rejuvenation columns and are used alternately: nothing here can see how
-    #many potions a column has left (belt counting is not built), so alternating means a run of
-    #emergencies drains both columns evenly instead of emptying one and then pressing a dead key.
+    #Two keys are used alternately: nothing here can see how many potions a column has left (belt
+    #counting is not built), so alternating drains both columns evenly instead of emptying one
+    #and then pressing a dead key.
     PotionRule("health", 0.20, ("2", "3"), 1.0, "rejuvenation"),
     #Ordinary healing potion. Heals over several seconds rather than instantly, so the cooldown
     #has to outlast the heal - re-checking before it lands reads a still-low orb and drinks again,
@@ -745,13 +821,29 @@ POTION_RULES = (
     PotionRule("health", 0.35, ("1",), 4.0, "health"),
     PotionRule("mana", 0.25, ("4",), 4.0, "mana"),
 )
-#A floor under EVERY potion press regardless of which rule fired. The per-rule cooldowns above are
-#the tuning knob; this is the safety net, so a mistuned threshold or a misreading orb cannot empty
+
+USER_CONFIG_PATH = Path(__file__).resolve().parent / "user_config.txt"
+#known_meters is passed so a rule naming a meter that was never calibrated is dropped with a
+#warning rather than silently watching nothing - a rule that can never fire is as bad as one that
+#fires wrongly and much harder to notice.
+potion_config = user_config.load(USER_CONFIG_PATH,
+                                 known_meters={m.name for m in meters},
+                                 default_rules=DEFAULT_POTION_RULES)
+POTION_RULES = potion_config.rules
+#A floor under EVERY potion press regardless of which rule fired. The per-rule cooldowns are the
+#tuning knob; this is the safety net, so a mistuned threshold or a misreading orb cannot empty
 #the belt in a second no matter what combination of rules matches.
-POTION_MIN_GAP_SECONDS = 0.6
+POTION_MIN_GAP_SECONDS = potion_config.min_gap
+#Readings below this are treated as unreadable rather than as a real value. A meter does not
+#teleport: health falls THROUGH 20%, 15% and 10% on its way to 2% at ~50 samples a second, so a
+#rule watching for "below 20%" has already fired long before a reading gets this low. What this
+#filters is the other thing that produces a very low number - a stray patch of the right colour
+#where the meter should be, when the meter is not on screen at all. Seen live in the Diablo II
+#lobby, where red character names sit where the health orb would be and read as 2% health.
+POTION_IGNORE_BELOW = potion_config.ignore_below
 POTION_POLL_SECONDS = 0.15
-POTION_SNOOZE_SECONDS = 10.0 #'F6', same re-arming snooze as auto-collect's 'F4' - see SNOOZE_SECONDS
-POTION_DRINKING_ENABLED = True #one edit to turn the whole thing off without deleting anything
+POTION_SNOOZE_SECONDS = potion_config.snooze #'F6', same re-arming snooze as auto-collect's 'F4'
+POTION_DRINKING_ENABLED = potion_config.enabled
 
 potion_snooze_until = 0.0
 
@@ -762,19 +854,28 @@ def _snooze_potions():
     print(f"Potion drinking snoozed for {POTION_SNOOZE_SECONDS:.0f}s")
 
 
-def _potion_due(readings, now, last_fired, last_any):
-    """The first POTION_RULES entry that should fire right now, or None.
+def _potion_due(readings, now, last_fired, last_any, rules=None, ignore_below=None):
+    """The first matching rule that should fire right now, or None.
 
-    Kept PURE - no key presses, no clock of its own, no globals - so the decision can be tested
-    directly. The thing this decides is "press a key into a live game", which is not something to
-    validate by playing and hoping; see test_potions.py.
+    Kept PURE - no key presses, no clock of its own, and `rules`/`ignore_below` are arguments
+    rather than reads of the module globals. That last part matters for more than tidiness: the
+    globals come from user_config.txt, which the user is EXPECTED to retune, so a test written
+    against them would start failing the first time they changed a threshold - reporting their
+    edit as a code defect. The logic and the settings have to be testable apart from each other.
+    Defaults to the loaded configuration, so callers in this file need not pass anything.
     """
+    if rules is None:
+        rules = POTION_RULES
+    if ignore_below is None:
+        ignore_below = POTION_IGNORE_BELOW
     if now - last_any < POTION_MIN_GAP_SECONDS:
         return None
-    for rule in POTION_RULES:
+    for rule in rules:
         value = readings.get(rule.meter)
         if value is None:
             continue  #cannot read it -> cannot act on it. NOT an emergency. See run_potion_drinking.
+        if value < ignore_below:
+            continue  #below the noise floor: far more likely stray colour than a real reading.
         if value > rule.at_or_below:
             continue
         if now - last_fired.get(rule.label, 0.0) < rule.cooldown:
@@ -796,7 +897,9 @@ def run_potion_drinking():
         return
     keyboard.add_hotkey('f6', _snooze_potions)
     rules = ", ".join(f"{r.label} <={r.at_or_below:.0%} -> {'/'.join(r.keys)}" for r in POTION_RULES)
-    print(f"Potion drinking running ({rules}) - press 'F6' to snooze it for {POTION_SNOOZE_SECONDS:.0f}s.")
+    source = "user_config.txt" if potion_config.loaded else "built-in defaults (no user_config.txt)"
+    print(f"Potion drinking running from {source}:")
+    print(f"  {rules}   - press 'F6' to snooze it for {POTION_SNOOZE_SECONDS:.0f}s.")
 
     last_fired = {}       #rule label -> when it last fired, so each rule cools down on its own
     next_key = {}         #rule label -> index into rule.keys, for alternating columns
@@ -934,6 +1037,15 @@ def _debug_panel():
         #every meter as unreadable and leaving the cause to be guessed at.
         safe = meter_anchor.get("window_title", "?").encode("ascii", "replace").decode("ascii")
         return "GAME STATE  window not found", [(safe[:22], "not on screen", None, DEBUG_PANEL_BAD_COLOR)]
+    if in_play() is False:
+        #Distinct from every other reason a meter can be unreadable: the window is right there and
+        #focused, but the game is not showing a HUD (lobby, character select, a loading screen), so
+        #anything measured where the orbs belong is some other artwork entirely.
+        score = in_play_score()
+        detail = "not on screen" if score is None else f"not on screen ({score:.2f})"
+        return "GAME STATE  NOT IN GAME", [
+            ("game HUD", detail, None, DEBUG_PANEL_BAD_COLOR),
+            ("actions", "paused", None, DEBUG_PANEL_BAD_COLOR)]
     if anchor_focused() is False:
         #Distinct again from both "window not found" and "no read": the window is right there, we
         #simply are not looking at it, so the readings are suspended and actions are held. Saying

@@ -755,3 +755,121 @@ of evidence. Note also the direction: the failure value happened to be the most
 alarming number in the domain, so an unreadable sensor read as maximum urgency.
 Where a sensor's failure has to collapse into a number at all, it must fail
 toward "do nothing", never toward "act immediately".
+
+------------------------------------------------------------------------------
+Version 0.012 - 2026-08-30
+------------------------------------------------------------------------------
+Three rounds chasing one symptom - "health reads 0% / 2% / 4% when nothing is
+wrong" - plus the user-editable settings file. Each round fixed something real
+and each was still incomplete, so the whole arc is written down: the first two
+were the right fixes at the sensor, and the third is the one that could not have
+been reached by tuning a colour test at all.
+
+THE SYMPTOM AND WHERE IT ENDED UP. Reported first as 0% in the game lobby and
+with the in-game menu open, then as 2%, then as 4% - each time with potion
+drinking firing on it. The last report came with a screenshot of the game name
+reading "z25pin232321213": the potion layer pressing 2/3/1 into the lobby's
+focused text field. That last detail also corrected an assumption written down
+earlier the same day, that a spurious keypress in a lobby was harmless. It is
+not - it types into whatever has focus.
+
+ROUND 1 (v0.011, recapped): _fill_fraction() reported "cannot read" as 0.0.
+ROUND 2: the surface test was VACUOUS at the bottom of the band. It asks "are
+the rows below this one filled too?", which a row at the very bottom passes
+trivially because there are none. One stray row therefore produced a real-looking
+value, and at CAPTURE_SCALE 0.3 an orb is only ~43 rows tall, so that value was
+2%. MIN_SURFACE_SUPPORT_ROWS requires enough rows beneath a candidate surface for
+the test to have meant anything. Set to 1 by MEASUREMENT, not preference: at 1
+the full-resolution reading is completely unchanged while the artifact is gone;
+at 2 a real 7% orb at 0.3 scale starts reading None for no extra protection,
+which is the wrong trade. Backed up by "ignore_below" in the potion layer.
+
+ROUND 3, and the actual cure: a colour test CANNOT do this job. Measured, the
+health region sits at full-frame y 900..1053, x 410..543 - bottom-left, directly
+over the lobby's character carousel - and holds 7.3% red pixels from other
+players' names and red armour. Mana was unaffected only because its range is
+blue and the lobby has no blue there; not because it is more robust. Red text and
+red liquid are the same colour, so no threshold, floor or consistency test
+separates them. The fix is evidence of a DIFFERENT KIND.
+
+  presence.py - "is this reference art on screen?", a boolean rather than a
+  position or a level. It matches fixed HUD art (the right orb's stone frame).
+  Measured separation on real frames: 0.841 in actual gameplay and 0.886 with the
+  ESC menu open (HUD still drawn, correctly still "in play") against 0.269 and
+  0.325 in two different lobbies. Threshold 0.6, margin 0.516, and that margin is
+  asserted in test_presence.py so eroding the guard fails a test instead of
+  typing into a game name.
+
+  Restricted to a search region, which is a 15x difference and not tidiness: a
+  full-frame matchTemplate costs 3.0ms - as much as the needle match, i.e. it
+  would roughly double the detection thread - against 0.198ms restricted. Cheap
+  enough to run EVERY frame, which matters because a stale "yes" is exactly the
+  window in which the wrong keys get typed.
+
+  Both the search region and the template scale route through the window anchor,
+  the same way HUD meters do, so it survives the game being windowed or moved and
+  compares against a correctly-sized reference at another resolution.
+
+  actions_allowed() now requires BOTH guards to not say no. They fail
+  differently, which is why both exist: focus catches "these keys are going to
+  another program", in-play catches "these keys are going to THIS program, which
+  is showing a lobby with a text field focused".
+
+USER-EDITABLE SETTINGS: user_config.txt at the repo root, read by user_config.py.
+Potion thresholds, belt key bindings, cooldowns, enable/disable and the noise
+floor, all changeable without touching code. Section order is rule priority.
+Every value is validated and every bad one falls back to a named default with a
+warning, because a config file must never be able to stop a program that runs
+unattended - nor let it run with a setting nobody intended, which is worse
+because nothing looks wrong. Two specifics worth keeping: configparser needs
+interpolation=None or a perfectly reasonable "below = 20%" raises
+InterpolationSyntaxError ON ACCESS rather than on read, landing outside any
+file-level try; and a rule naming a meter that does not exist is DROPPED, never
+repointed, since a rule that can never fire is as bad as one that fires wrongly
+and much harder to notice.
+
+ALSO FIXED, reported separately along the way:
+
+- The small Rejuvenation Potion was never detected despite being in targets.txt.
+  It was listed TWICE - as a real target near the top and as a "-" look-alike far
+  below - and load_target_items() does a plain dict assignment, so the look-alike
+  won and the item was matched and thrown away every frame. From outside that is
+  indistinguishable from "OCR cannot read it". It silently dropped the [purple]
+  colour too. The look-alike entry was obsolete anyway: it predated span ranking
+  becoming (words matched, ratio), which already makes a three-word "Full
+  Rejuvenation Potion" line outrank its own two-word tail - verified, both
+  resolve at 1.000 with no tie. The loader now WARNS on a duplicate, naming both
+  line numbers.
+
+- Panel text rendered outside its backing plate. PANEL_WIDTH was a fixed 300px
+  while a row's value column starts at 232px, so anything past about seven
+  characters hung off the edge - in colour, over the game. "not on screen (0.30)"
+  needs 392px. The plate is now sized from the real Tk font metrics, which also
+  revealed that "NOT CALIBRATED" (384px) and "window not found" (336px) had been
+  spilling unnoticed. PANEL_WIDTH is kept as a MINIMUM so the plate does not
+  visibly jitter as an ordinary reading goes 9% -> 100%.
+
+- Smoother carried a stale reading forever (v0.011's fix had a gap): capped at
+  MAX_CARRIED_FAILURES.
+
+- One grayscale conversion per frame instead of two, now that the in-play check
+  and matchTemplate both want it.
+
+TESTING: three new files - test_presence.py, test_targets.py, test_overlay.py -
+joining test_game_state.py, test_potions.py and test_user_config.py. Six suites,
+all green. test_potions.py was also rewritten to test the LOGIC against fixed
+rules of its own rather than against user_config.txt, because the user is
+expected to retune that file and a test written against it reported their edit
+as a code defect the first time they changed a threshold.
+
+Two crashes were caught by tests rather than in a live session: cv.resize raises
+when a scale rounds a dimension to zero (the guard was checking the result's
+shape afterwards, which never runs), and configparser's interpolation on "20%".
+
+New files: presence.py, user_config.py, user_config.txt, assets/in_play.png,
+assets/in_play.json, test_presence.py, test_targets.py, test_overlay.py.
+No new dependencies.
+
+STILL NOT VALIDATED: the potion thresholds themselves. Everything guarding them
+is now confirmed live, but the numbers have never been tested against real
+damage. See todolist.md's NOW.

@@ -1,0 +1,87 @@
+# Hunter's Eye - user settings
+# =============================
+#
+# Edit this file to change WHEN the program drinks and WHICH key it presses.
+# No code changes needed. Save the file and restart the program to apply.
+#
+# If this file is missing, unreadable, or a value is nonsense, the program falls
+# back to its built-in defaults and says so on the console - it will not crash
+# and it will not silently run with a setting you did not intend.
+#
+# See also:
+#   assets/targets.txt  - item names to watch for on the ground
+#   assets/meters.json  - where the health/mana orbs are (run calibrate_meters.py)
+
+
+# -----------------------------------------------------------------------------
+# [settings] - overall behaviour
+# -----------------------------------------------------------------------------
+[settings]
+
+# Turn potion drinking off entirely without deleting your rules below.
+enabled = yes
+
+# Shortest time between ANY two potion presses, in seconds. This is a SAFETY NET,
+# not a tuning knob - it is what stops a mistuned threshold or a misread orb from
+# emptying the whole belt in a second. Tune the per-rule "cooldown" instead.
+min_gap = 0.6
+
+# How long the F6 hotkey suppresses drinking, in seconds. It re-arms itself
+# afterwards on purpose: a snooze you forget about costs you 10 seconds, whereas
+# an on/off toggle you forget to switch back on costs you the rest of the session.
+snooze = 10
+
+# Readings below this fraction are treated as "cannot read" rather than as a real
+# value, and nothing acts on them. A meter does not teleport - health falls
+# THROUGH 20%, 15% and 10% on its way to 2%, at about 50 samples a second, so a
+# rule watching for "below 20%" has already fired long before the reading gets
+# this low. What this filters out is the other thing that produces a very low
+# number: a stray patch of the right colour where the meter should be, when the
+# meter is not actually on screen (the game lobby, a cutscene, a menu). Set to 0
+# to disable and act on any reading at all.
+ignore_below = 0.03
+
+
+# -----------------------------------------------------------------------------
+# Potion rules - one [section] each
+# -----------------------------------------------------------------------------
+# ORDER MATTERS. Rules are checked top to bottom and the FIRST one that matches
+# wins, so put the most urgent one first. That is why "rejuvenation" is above
+# "health": when you are at 10% both rules match, and you want the emergency
+# potion, not the ordinary one.
+#
+# Each rule takes:
+#   meter    - which meter to watch. Must be a name from assets/meters.json
+#              (currently: health, mana).
+#   below    - drink when the meter is at or below this. Percent ("20%") or a
+#              fraction ("0.20") - both mean the same thing.
+#   keys     - the key to press. Several keys separated by commas means "use
+#              these in turn", which spreads the drinking across more than one
+#              belt column - useful when two columns hold the same potion, since
+#              nothing here can see how many you have left in each.
+#   cooldown - seconds to wait before THIS rule may fire again. Each rule has its
+#              own, which is what lets an emergency potion fire immediately after
+#              an ordinary one. Set it longer than the potion takes to work, or
+#              the next check still sees a low orb and drinks again.
+#
+# To move health to key 4 and rejuvenation to key 1, just swap the "keys" lines.
+# To stop drinking mana entirely, delete the [mana] section (or set enabled = no
+# above to stop all of it).
+
+[rejuvenation]
+meter = health
+below = 30%
+keys = 2, 3
+cooldown = 1.0
+
+[health]
+meter = health
+below = 70%
+keys = 1
+cooldown = 4.0
+
+[mana]
+meter = mana
+below = 25%
+keys = 4
+cooldown = 4.0

@@ -177,8 +177,9 @@ def load_target_items(path):
     This is general, not a Diablo II detail: any vocabulary with a shared suffix and a short
     distinguishing part (product codes, license plates, station names) needs the same trick."""
     items = {}
+    seen_on_line = {}  # NAME -> the line number it was first defined on, for the duplicate warning
     with open(path, "r", encoding="utf-8") as f:
-        for line in f:
+        for line_number, line in enumerate(f, start=1):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
@@ -200,7 +201,27 @@ def load_target_items(path):
 
             to_collect = line.endswith("*")
             name = line[:-1].strip() if to_collect else line
-            items[name.upper()] = {"to_collect": to_collect, "ignore": ignore, "color": color}
+            key = name.upper()
+
+            # A DUPLICATE NAME IS ALWAYS A MISTAKE, AND SILENTLY LETTING THE LAST ONE WIN HID A
+            # REAL BUG FOR AN ENTIRE VERSION. "Rejuvenation Potion" was listed twice - once as a
+            # normal target near the top and once as a "-" look-alike further down - so the
+            # look-alike overwrote the target, and the item was matched and then discarded on
+            # every single frame. From outside that is indistinguishable from "OCR cannot read
+            # it", which is a completely different problem to go hunting for. It also silently
+            # dropped the "[purple]" box colour from the first line.
+            # This file is hand-edited, it is long, and the two halves are far apart on screen -
+            # exactly the conditions where a plain dict assignment quietly discards what someone
+            # wrote. Last-one-wins is kept (predictable, and the warning says what happened)
+            # rather than guessing which line was meant.
+            if key in seen_on_line:
+                print(f"WARNING: targets.txt: '{name}' is listed twice "
+                      f"(line {seen_on_line[key]} and line {line_number}); "
+                      f"line {line_number} wins and the earlier one is ignored. "
+                      f"Delete one of them.")
+            seen_on_line[key] = line_number
+
+            items[key] = {"to_collect": to_collect, "ignore": ignore, "color": color}
     return items
 
 
