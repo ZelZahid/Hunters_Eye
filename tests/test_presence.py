@@ -98,12 +98,13 @@ check(f"flat black -> found={found} (score {score if score is None else round(sc
 print("\n5. The template is rescaled to the HUD's size, not assumed")
 #Without this the check would silently start failing the moment the game ran at a resolution
 #other than the one the reference was cut from.
-big = p._template_at(1.0)
-small = p._template_at(0.5)
+first = p.references[0]
+big = first.template_at(1.0)
+small = first.template_at(0.5)
 check("half scale gives a smaller template", small is not None and small.shape[0] < big.shape[0])
-check("the resize is cached, not redone every frame", p._template_at(0.5) is small)
+check("the resize is cached, not redone every frame", first.template_at(0.5) is small)
 check("an absurd scale is refused rather than producing a 1px template",
-      p._template_at(0.0001) is None)
+      first.template_at(0.0001) is None)
 
 shots = sorted(glob.glob(os.path.join(FIXTURES, "*.png")))
 if not shots:
@@ -134,8 +135,11 @@ else:
         margin = scores[True] - scores[False]
         check(f"worst in-play {scores[True]:.3f} is clear of best lobby {scores[False]:.3f} "
               f"(margin {margin:.3f})", margin > 0.2)
-        check(f"the threshold {p.threshold} sits between them",
-              scores[False] < p.threshold < scores[True])
+        #Every reference shares a threshold here; assert against all of them rather than
+        #reaching for a single number that would quietly mean "the first one".
+        check(f"every threshold sits between them "
+              f"({sorted({r.threshold for r in p.references})})",
+              all(scores[False] < r.threshold < scores[True] for r in p.references))
 
 print("\n7. The in-play gate actually stops the potion layer in a lobby")
 import main

@@ -6,8 +6,7 @@ Real frames the tests measure against, committed so the tests always have them.
 space for sharing screenshots during a session; it is gitignored and gets cleared whenever it
 suits them. A test that reads from it does not fail when the file disappears - it *skips*, which
 looks exactly like passing. That happened twice: `test_presence.py`'s whole real-screenshot
-section quietly stopped running, and `test_quit_game.py`'s button tests are still skipping because
-the Esc-menu screenshot they used is gone.
+section quietly stopped running, and `test_quit_game.py`'s button tests skipped for long enough that a refactor broke them unnoticed - the multi-reference change moved an attribute they used, and nothing caught it until `esc_menu.png` was added here and the tests ran again.
 
 If a new test needs a real frame, add it here.
 
@@ -19,13 +18,15 @@ If a new test needs a real frame, add it here.
 | `lobby_name_clash.png` | the same lobby with "A Game Already Exists With That Name" | detecting the clash dialog, and not detecting it when it is absent |
 | `in_game_tooltip.png` | in game, an item tooltip covering the right-hand orb | the occlusion bug: one in-play reference covered, the other still visible |
 | `lobby_form_crop.png` | a close crop of the Create Game form | reading a game name out of the text box |
+| `esc_menu.png` | the in-game Esc menu | finding **Save and Exit** and not the four buttons that share its art |
 
 ## Why they are mostly black
 
 Everything outside the regions the tests actually search is masked out, at the **same frame
 dimensions** - so every fraction, offset and coordinate is unchanged while the files compress to
 roughly half. Rebuilt and verified equivalent to the originals: identical in-play scores
-(0.815 / 0.272 / 0.268), identical row spacing, click points, name read and dialog detection.
+(0.815 / 0.272 / 0.268), identical row spacing, click points, name read and dialog detection, and identical
+Save-and-Exit scores (0.889 right button vs 0.529 wrong).
 
 One thing that took a second pass, and is the rule for adding any fixture: **preserve the numbers
 a test asserts on, not just the answers.** The first attempt masked the orb corners out of the

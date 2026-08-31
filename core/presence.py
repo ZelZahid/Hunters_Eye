@@ -79,21 +79,10 @@ class Presence:
     def __init__(self, references):
         self.references = list(references)
 
-    #Kept so callers written against a single reference still work - both read the FIRST one.
-    @property
-    def threshold(self):
-        return self.references[0].threshold
-
-    @property
-    def search_region(self):
-        return self.references[0].search_region
-
-    @property
-    def template(self):
-        return self.references[0].template
-
-    def _template_at(self, scale):
-        return self.references[0].template_at(scale)
+    #No .threshold / .search_region / .template shortcuts on purpose. They existed briefly and
+    #silently meant "the first reference's", which is fine with one reference and misleading with
+    #several - exactly the kind of quiet wrongness this module exists to avoid. Callers that need
+    #a specific reference say so: `check.references[0].threshold`.
 
     def locate(self, frame_gray, hud_width, region=None, resolve_region=None):
         """(found, score, box) where box is (x, y, w, h) in FRAME pixels, or (None, None, None).

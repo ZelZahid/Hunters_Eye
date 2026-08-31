@@ -42,9 +42,13 @@ b = main.save_and_exit_button
 check("assets/save_and_exit.json loads", b is not None)
 if b is None:
     sys.exit(1)
-check("threshold is set", 0.0 < b.threshold < 1.0)
+#One reference: there is exactly one Save and Exit button to find. (The in-play check has two,
+#for occlusion - see assets/in_play.json.)
+check("exactly one reference", len(b.references) == 1)
+ref = b.references[0]
+check("threshold is set", 0.0 < ref.threshold < 1.0)
 check("the search region is a menu-sized slice, not the whole frame",
-      0 < b.search_region[2] < 1.0 and 0 < b.search_region[3] < 1.0)
+      0 < ref.search_region[2] < 1.0 and 0 < ref.search_region[3] < 1.0)
 
 print("\n2. Nothing on screen -> no position, and never a crash")
 check("a None frame -> None", main._find_save_and_exit(None) is None)
@@ -82,8 +86,8 @@ else:
     #The number that makes this safe. If a change narrows this, the sequence starts clicking
     #whatever else is in the menu, and reports success while doing it.
     gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-    tpl = b._template_at(gray.shape[1] / b.source_width)
-    rx, ry, rw, rh = b.search_region
+    tpl = ref.template_at(gray.shape[1] / ref.source_width)
+    rx, ry, rw, rh = ref.search_region
     H, W = gray.shape
     x0, y0 = int(rx * W), int(ry * H)
     win = gray[y0:int((ry + rh) * H), x0:int((rx + rw) * W)]
@@ -92,13 +96,13 @@ else:
     masked = res.copy()
     masked[max(0, loc[1] - tpl.shape[0]):loc[1] + tpl.shape[0], :] = -1
     _, wrong, _, _ = cv.minMaxLoc(masked)
-    check(f"right button {best:.3f} > threshold {b.threshold} > wrong button {wrong:.3f}",
-          wrong < b.threshold < best)
+    check(f"right button {best:.3f} > threshold {ref.threshold} > wrong button {wrong:.3f}",
+          wrong < ref.threshold < best)
     check(f"margin {best - wrong:.3f} is comfortable (>0.2)", best - wrong > 0.2)
 
     print("\n5. Matching at the fast path's 0.3x would NOT be safe - why it takes its own capture")
     small = cv.cvtColor(cv.resize(img, (0, 0), fx=0.3, fy=0.3), cv.COLOR_BGR2GRAY)
-    tpl_s = b._template_at(small.shape[1] / b.source_width)
+    tpl_s = ref.template_at(small.shape[1] / ref.source_width)
     Hs, Ws = small.shape
     win_s = small[int(ry * Hs):int((ry + rh) * Hs), int(rx * Ws):int((rx + rw) * Ws)]
     res_s = cv.matchTemplate(win_s, tpl_s, cv.TM_CCOEFF_NORMED)
