@@ -56,7 +56,9 @@ def check(label, expected, actual, tolerance=0.04):
 failures = 0
 
 print("1. Accuracy across fill levels (full resolution)")
-for fill in (0.0, 0.15, 0.25, 0.5, 0.75, 0.9, 1.0):
+#0.0 is deliberately absent: an orb with no liquid is indistinguishable from no orb at all, so
+#it reads None rather than 0%. See section 12 and _fill_fraction's docstring.
+for fill in (0.15, 0.25, 0.5, 0.75, 0.9, 1.0):
     failures += not check(f"fill {fill:.2f}", fill, game_state.read_meter(make_frame(fill), health))
 
 print("\n2. Same, but downscaled to main.py's fast-path scale (0.3)")
@@ -83,7 +85,7 @@ print("\n5. Wrong color does not read as full")
 mana_meter = game_state.Meter("mana", REGION, (BLUE,), "ellipse", "bottom")
 value = game_state.read_meter(make_frame(0.8), mana_meter)   # red orb, blue detector
 print(f"  blue detector on a red orb: {value}")
-failures += not (value == 0.0)
+failures += not (value is None)   # None = cannot read, which is the honest answer
 
 print("\n6. A horizontal bar filling from the left")
 bar = game_state.Meter("bar", (0.1, 0.1, 0.5, 0.05), (BLUE,), "rect", "left")
@@ -188,6 +190,47 @@ for _ in range(10):
 ok = out["health"] == 0.5 and out["mana"] is None
 print(f"  {'ok  ' if ok else 'FAIL'} a dead meter goes None without muting a live one (health={out['health']}, mana={out['mana']!r})")
 failures += not ok
+
+print("\n12. An UNREADABLE meter reports None, never 0% - the lobby / dimmed-menu bug")
+#Reporting 0% for a meter that is simply not visible tells a consumer "you are about to die" at
+#the moment nothing is wrong - with an action layer attached that empties a potion belt. Both
+#cases below were seen live in Diablo II.
+
+#(a) the meter is not on screen at all - the game lobby, where the HUD does not exist
+blank = np.full((FRAME_H, FRAME_W, 3), 18, dtype=np.uint8)
+value = game_state.read_meter(blank, health)
+ok = value is None
+print(f"  {'ok  ' if ok else 'FAIL'} no orb present at all -> {value!r}, not 0.0")
+failures += not ok
+
+#(b) the screen is dimmed, as the in-game menu does, dropping V under the hsv_range floor
+for dim in (0.5, 0.35, 0.2):
+    dark = (make_frame(0.9).astype(np.float32) * dim).astype(np.uint8)
+    value = game_state.read_meter(dark, health)
+    ok = value is None or abs(value - 0.9) < 0.06
+    shown = "None" if value is None else format(value * 100, ".0f") + "%"
+    print(f"  {'ok  ' if ok else 'FAIL'} 90% orb dimmed to {dim:.0%} -> {shown} (None or ~90%, never ~0%)")
+    failures += not ok
+
+#(c) stray colour that is not a meter - matching pixels with no coherent surface beneath them
+speckle = np.full((FRAME_H, FRAME_W, 3), 18, dtype=np.uint8)
+rng = np.random.default_rng(7)
+bx, by, bw, bh = ORB_BOX
+patch = speckle[by:by + bh, bx:bx + bw]
+patch[rng.random((bh, bw)) < 0.30] = (30, 30, 200)
+speckle[by:by + bh, bx:bx + bw] = patch
+value = game_state.read_meter(speckle, health)
+ok = value is None
+print(f"  {'ok  ' if ok else 'FAIL'} scattered red speckle over 30% of the region -> {value!r}, not 0.0")
+failures += not ok
+
+#(d) ...but a genuinely low orb still reads a number, because that is when it matters most
+for fill in (0.05, 0.10, 0.20):
+    value = game_state.read_meter(make_frame(fill), health)
+    ok = value is not None and abs(value - fill) < 0.04
+    shown = "None" if value is None else format(value * 100, ".0f") + "%"
+    print(f"  {'ok  ' if ok else 'FAIL'} a real {fill:.0%} orb still reads {shown} - low health must stay actionable")
+    failures += not ok
 
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

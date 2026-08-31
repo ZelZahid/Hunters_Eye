@@ -124,9 +124,26 @@ def _orient(array, fill_from):
 def _fill_fraction(color_mask, shape_mask):
     """Height of the filled portion as a fraction of the meter's measurable height.
 
-    Returns None if the region has no usable rows at all (a degenerate/off-screen region),
-    which callers must treat as "unknown", not as zero - reporting 0% health for a region that
-    simply failed to read would be an extremely bad thing to act on.
+    Returns None whenever no coherent liquid surface can be found - a degenerate/off-screen
+    region, no matching colour at all, or matching colour that does not form a surface with
+    filled rows beneath it. Callers must treat that as "unknown", not as zero.
+
+    THERE IS NO OBSERVATION THAT DISTINGUISHES "THIS METER IS EMPTY" FROM "THIS METER IS NOT
+    THERE", so this never claims the former. Both look identical through a colour mask: no
+    matching pixels. Real cases that produce it, all seen live in Diablo II - sitting in the
+    game lobby where the HUD does not exist at all; opening the in-game menu, which dims the
+    whole screen and drops the orbs' value channel below the configured hsv_range floor so the
+    mask goes patchy; any overlay or cutscene covering the HUD. Reporting 0% for those means
+    telling a consumer "you are about to die" at the precise moment nothing is wrong, and with
+    an action layer attached that empties a potion belt.
+
+    This costs nothing real, which is what makes it the right call rather than a trade: a
+    MEASURED reading can never be exactly 0.0 anyway. The surface row is at most the last row
+    of the band, so the smallest value this can return is 1/height (~0.7% on a 150px orb) -
+    verified across synthetic fills from 0.5% to 100%. Every 0.0 this function ever produced
+    came from one of the failure branches below, never from a measurement, so nothing that was
+    genuinely measured changes behaviour. The only difference is that an orb below ~1% now
+    reads "unknown" instead of "empty", and at that level a potion is not what saves you.
     """
     row_widths = shape_mask.sum(axis=1)
     if row_widths.max(initial=0) == 0:
@@ -146,7 +163,11 @@ def _fill_fraction(color_mask, shape_mask):
 
     band = filled[top:bottom + 1]
     if not band.any():
-        return 0.0  # no liquid anywhere - the meter is empty
+        # No liquid found anywhere in the band. That is NOT "the meter is empty" - it is equally
+        # what an absent meter looks like (the game lobby has no orbs at all), and what a dimmed
+        # one looks like when the value channel falls under the hsv_range floor. See the
+        # docstring: nothing here can tell those apart, so none of them get claimed as 0%.
+        return None
 
     # Find the liquid surface: the HIGHEST row that is itself filled and has at least
     # SURFACE_CONSISTENCY of the rows below it filled as well.
@@ -173,7 +194,12 @@ def _fill_fraction(color_mask, shape_mask):
 
     candidates = np.flatnonzero(consistent)
     if candidates.size == 0:
-        return 0.0
+        # Colour matched somewhere, but never as a surface with filled rows beneath it. The
+        # comment above already names what that means - stray colour that is not this meter -
+        # so the honest answer is "cannot read", not "empty". Measured on a real in-game menu
+        # screenshot: 74 of 147 rows matched, scattered, and this branch reported 0% health at
+        # 1131/1228 life. Returning 0.0 here was the same mistake as the branch above.
+        return None
     surface = candidates[0]
 
     return (height - surface) / height

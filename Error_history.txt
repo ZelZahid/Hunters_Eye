@@ -1252,3 +1252,58 @@ Lesson: A factory function that returns an EXISTING object instead of a new one
   its own handle to a scarce OS resource (a capture device, a duplicator, an
   exclusive-mode audio endpoint), verify you actually GOT a second one, by
   checking identity - not by checking that the call succeeded.
+
+------------------------------------------------------------------------------
+40. An unreadable HUD meter reported 0%, so "I cannot see it" read as "you are
+    about to die" - and the potion layer acted on it
+------------------------------------------------------------------------------
+Where: game_state.py, _fill_fraction(). Reported by the project owner against
+  live gameplay, with two screenshots (assets/zelScreenshots/).
+Symptom: Health and mana both read 0% in two states where nothing is wrong -
+  sitting in the game lobby (where the HUD does not exist at all), and with the
+  in-game menu open (Options / Save and Exit), which dims the whole screen. The
+  screenshot of the menu case shows Life 1131/1228 and Mana 372/372, i.e. both
+  effectively full, while the pipeline reported 0% for each. With v0.010's
+  potion drinking attached, 0% health is the emergency tier's trigger, so this
+  is a belt being emptied at full health.
+Root cause: _fill_fraction() had TWO separate "return 0.0" branches, and both
+  were failure paths mislabelled as measurements:
+    - no filled rows found at all -> return 0.0  ("the meter is empty")
+    - filled rows found but no coherent liquid surface -> return 0.0
+  Neither is a measurement. "No liquid visible" is exactly what an ABSENT meter
+  looks like through a colour mask, and exactly what a DIMMED one looks like:
+  the configured hsv_ranges floor is V >= 40, and measured on the real menu
+  screenshot the orb region's mean V was 34 (max 123), so the mask went patchy.
+  Measured per-row on that screenshot: 74 of 147 rows still passed
+  ROW_FILL_RATIO, scattered rather than stacked, so it cleared the first branch
+  and fell into the second. The lobby screenshot hit the first branch instead
+  (mana matched 0.00% of its region).
+  The second branch's own comment already said what it meant - "the same test
+  rejects stray colour matches floating above an empty meter... since those have
+  almost nothing filled beneath them" - and then returned 0.0 anyway. The code
+  knew the answer was "this is not the meter" and reported it as "the meter is
+  empty".
+Fix: both branches return None. This module's whole contract is that None
+  ("cannot read") and 0.0 ("empty") are different answers that consumers must
+  not conflate - it says so in three docstrings - and this was the one place
+  that broke its own rule, in the function every reading passes through.
+Why this cost nothing: a MEASURED reading can never be exactly 0.0 anyway. The
+  surface row is at most the last row of the band, so the smallest value the
+  measuring path can return is 1/height - about 0.7% on a 150px orb, verified
+  across synthetic fills from 0.5% to 100%. Every 0.0 the system had ever
+  produced came from one of these two branches, never from a measurement, so
+  nothing genuinely measured changed behaviour. The only difference is that an
+  orb below ~1% now reads "unknown" instead of "empty", and a potion is not
+  what saves you at 1% health. Confirmed the fix against both real screenshots:
+  all four readings went 0% -> None, and _potion_due() returns nothing for both.
+Lesson: A sentinel that is also a legitimate value will eventually be returned
+  from an error path, and it will look like data. The tell is a return statement
+  whose COMMENT states an interpretation the function cannot actually support -
+  "the meter is empty" was an inference about the world, from a function that
+  had only observed the absence of evidence. When a measurement fails, say it
+  failed; do not pick the plausible-looking value at the bottom of the range.
+  Note also which direction the mistake ran: the failure value happened to be
+  the most alarming one in the domain, so every consumer treated an unreadable
+  sensor as a maximum-urgency reading. Where a sensor's failure mode has to
+  collapse into a number at all, it must fail toward "do nothing", never toward
+  "act immediately".

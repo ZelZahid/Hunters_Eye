@@ -680,3 +680,78 @@ POTION_DRINKING_ENABLED = False turns it off outright. See todolist.md's NOW.
 
 One new file: test_potions.py. No new dependencies - the keyboard package was
 already required for the existing global hotkeys.
+
+------------------------------------------------------------------------------
+Version 0.011 - 2026-08-30
+------------------------------------------------------------------------------
+Bug fix, reported from live gameplay the same day v0.010 shipped, and exactly
+the kind v0.010 made dangerous: an unreadable HUD meter reported 0% instead of
+"cannot read", so "I cannot see it" arrived at the potion layer as "you are
+about to die".
+
+SYMPTOM. Health and mana both read 0% in two states where nothing is wrong:
+sitting in the game lobby, where the HUD does not exist at all, and with the
+in-game menu open (Options / Save and Exit), which dims the whole screen. The
+menu screenshot shows Life 1131/1228 and Mana 372/372 - both effectively full -
+while the pipeline reported 0% for each. 0% health is the emergency tier's
+trigger, so this is a potion belt emptied at full life.
+
+ROOT CAUSE. game_state.py's _fill_fraction() had TWO separate "return 0.0"
+branches and neither was a measurement:
+  - no filled rows found at all                        -> 0.0 "meter is empty"
+  - filled rows found, but no coherent liquid surface  -> 0.0
+Neither conclusion is available from the evidence. "No liquid visible" is
+exactly what an ABSENT meter looks like through a colour mask, and exactly what
+a DIMMED one looks like: the configured hsv_ranges floor is V >= 40, and
+measured on the real menu screenshot the orb region's mean V was 34 (max 123),
+so the mask went patchy. Per-row on that same screenshot, 74 of 147 rows still
+passed ROW_FILL_RATIO - scattered rather than stacked - which cleared the first
+branch and fell into the second. The lobby screenshot hit the first branch
+instead (mana matched 0.00% of its region).
+
+The second branch's own comment already said what it meant - "the same test
+rejects stray colour matches floating above an empty meter... since those have
+almost nothing filled beneath them" - and then returned 0.0 anyway. The code
+knew the answer was "this is not the meter" and reported it as "the meter is
+empty". This module's entire contract is that None and 0.0 are different
+answers; this was the one place that broke its own rule, in the function every
+reading passes through.
+
+FIX. Both branches return None.
+
+NOTHING WAS TRADED FOR IT, which is what makes this a fix rather than a
+tradeoff: a MEASURED reading can never be exactly 0.0 anyway. The surface row is
+at most the last row of the band, so the smallest value the measuring path can
+return is 1/height - about 0.7% on a 150px orb, verified across synthetic fills
+from 0.5% to 100%. Every 0.0 the system had ever produced came from one of these
+two branches, never from a measurement. The only behavioural change is that an
+orb below ~1% now reads "unknown" instead of "empty", and a potion is not what
+saves you at 1% health. A real 5% orb still reads 5% and still triggers the
+emergency tier - now an explicit test.
+
+VERIFIED against both real screenshots: all four readings went 0% -> None, and
+_potion_due() returns nothing for either state. The debug panel shows "no read"
+rather than 0%. In the in-game menu the reading is now None rather than the true
+~92%, which is correct - the game is paused and "do not act" is the right answer.
+
+- 10 new assertions in test_game_state.py: an absent meter, a meter dimmed to
+  50/35/20%, scattered colour with no coherent surface, and - the other
+  direction - real 5%/10%/20% orbs that must still read a number, because low
+  health has to stay actionable.
+- Two existing assertions changed to match the corrected semantics (a 0.0-fill
+  orb, and a blue detector pointed at a red orb, now both expect None).
+- Error_history.txt #40.
+- assets/zelScreenshots/ added to .gitignore: screenshots dropped in for session
+  context are multi-megabyte and the folder only grows, so they stay out of git
+  history. Anything worth keeping from one belongs in Error_history.txt as
+  measured numbers, which is what happened here.
+
+LESSON, recorded because the shape of it generalises well beyond this bug: a
+sentinel that is also a legitimate value will eventually be returned from an
+error path, and it will look like data. The tell here was a return statement
+whose COMMENT asserted something the function could not support - "the meter is
+empty" is a claim about the world, from code that had only observed an absence
+of evidence. Note also the direction: the failure value happened to be the most
+alarming number in the domain, so an unreadable sensor read as maximum urgency.
+Where a sensor's failure has to collapse into a number at all, it must fail
+toward "do nothing", never toward "act immediately".

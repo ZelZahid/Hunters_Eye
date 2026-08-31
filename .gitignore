@@ -4,3 +4,10 @@ venv/
 .venv/
 ocr_diagnostic_*.png
 ocr_diagnostic_*_prepared.png
+
+# Screenshots dropped in for context during a session (bug reports, "here is what
+# it looks like on screen"). Deliberately NOT committed: they are multi-megabyte
+# PNGs and the folder only grows, so committing them would bloat git history
+# permanently for evidence that is useful for one conversation. Anything worth
+# keeping from a screenshot belongs in Error_history.txt as measured numbers.
+assets/zelScreenshots/
