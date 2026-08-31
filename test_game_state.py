@@ -131,5 +131,63 @@ ok = value is not None and abs(value - 0.30) < 0.06
 print(f"  {'ok  ' if ok else 'FAIL'} 30% orb with a highlight above the surface reads {value * 100:.1f}%")
 failures += not ok
 
+print("\n11. A failed read carries the last good value, but NOT indefinitely")
+#Both a dropped frame and "we are not looking at the game any more" arrive as None. Carrying
+#forever turns the second one into a frozen number that LOOKS live, which a consumer then acts
+#on with full confidence - see Smoother's docstring.
+smoother3 = game_state.Smoother(window=5, max_carried_failures=15)
+for _ in range(5):
+    smoother3.update({"health": 0.85})
+
+carried = smoother3.update({"health": None})["health"]
+ok = carried == 0.85
+print(f"  {'ok  ' if ok else 'FAIL'} 1 failed read still reports the last good value ({carried})")
+failures += not ok
+
+for _ in range(13):      # 14 consecutive failures total - still inside the limit
+    carried = smoother3.update({"health": None})["health"]
+ok = carried == 0.85
+print(f"  {'ok  ' if ok else 'FAIL'} 14 consecutive failures still carry ({carried})")
+failures += not ok
+
+smoother3.update({"health": None})          # 15th
+gone = smoother3.update({"health": None})["health"]   # past the limit
+ok = gone is None
+print(f"  {'ok  ' if ok else 'FAIL'} past the limit it reports {gone!r}, not a stale number")
+failures += not ok
+
+for _ in range(200):
+    gone = smoother3.update({"health": None})["health"]
+ok = gone is None
+print(f"  {'ok  ' if ok else 'FAIL'} and stays {gone!r} indefinitely, never resurrecting the old value")
+failures += not ok
+
+#A good frame after a gap must not be median-blended with samples from before it - whatever
+#happened during a gap of unknown length is not something a median over stale values can model.
+back = smoother3.update({"health": 0.10})["health"]
+ok = back == 0.10
+print(f"  {'ok  ' if ok else 'FAIL'} one good read after the gap reports it exactly ({back}), not blended with the pre-gap 85%")
+failures += not ok
+
+#A brief dropout must NOT reset the history - that is the case the carry exists for.
+smoother4 = game_state.Smoother(window=5, max_carried_failures=15)
+for _ in range(5):
+    smoother4.update({"health": 0.60})
+smoother4.update({"health": None})
+smoother4.update({"health": None})
+out = smoother4.update({"health": 0.62})["health"]
+ok = abs(out - 0.60) < 0.02
+print(f"  {'ok  ' if ok else 'FAIL'} a 2-frame dropout keeps smoothing normally afterwards ({out:.2f})")
+failures += not ok
+
+#Failures are counted per meter and reset by any good read, so one dead meter cannot mute a live one.
+smoother5 = game_state.Smoother(window=5, max_carried_failures=3)
+smoother5.update({"health": 0.5, "mana": 0.9})
+for _ in range(10):
+    out = smoother5.update({"health": 0.5, "mana": None})
+ok = out["health"] == 0.5 and out["mana"] is None
+print(f"  {'ok  ' if ok else 'FAIL'} a dead meter goes None without muting a live one (health={out['health']}, mana={out['mana']!r})")
+failures += not ok
+
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

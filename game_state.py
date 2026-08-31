@@ -208,8 +208,16 @@ def read_all(frame, meters):
     return {meter.name: read_meter(frame, meter) for meter in meters}
 
 
+#How many CONSECUTIVE failed reads a meter may carry on its last good value before the Smoother
+#gives up and reports None. A dropped frame and a screen we are no longer looking at both arrive
+#as None, and they need opposite treatment - see Smoother's docstring. At ~50 FPS this is a
+#little under a third of a second: far longer than any single-frame glitch, far shorter than the
+#reaction time of anything acting on the result.
+MAX_CARRIED_FAILURES = 15
+
+
 class Smoother:
-    """Median of the last N readings, per meter.
+    """Median of the last N readings, per meter, with a limit on how long a stale value carries.
 
     Median rather than a running average on purpose: the failure mode here is a single frame
     reading wildly wrong (a tooltip drawn over the orb on mouse hover, a spell effect flashing
@@ -217,21 +225,53 @@ class Smoother:
     bad sample into the result while a median discards it outright. The cost is a few frames of
     lag, which at 40+ FPS is well under a tenth of a second - irrelevant next to how long a
     potion takes to drink.
+
+    A FAILED READ CARRIES THE LAST GOOD VALUE, BUT NOT FOREVER, AND THE DIFFERENCE IS THE WHOLE
+    POINT. Two very different things both arrive here as None:
+
+      - one frame failed to read (torn capture, a tooltip over the orb). Reporting None for that
+        single frame would make a healthy meter flicker to "unknown" constantly, and a consumer
+        that stops acting on every dropped frame is useless. Carrying the last good value is
+        right.
+      - we are no longer looking at the thing at all (alt-tabbed, window closed, camera
+        unplugged). Here the last good value is a frozen number that LOOKS live, and carrying it
+        is exactly the confusion this module exists to prevent - worse than useless, because a
+        consumer acts on it with full confidence. Reporting None is right.
+
+    Nothing in a single reading distinguishes them; only how LONG it persists does. So the carry
+    is capped at MAX_CARRIED_FAILURES consecutive failures, after which the meter reports None
+    until a real reading arrives. Note that a caller publishing on every frame gives a consumer
+    no other way to notice: a staleness timestamp stays fresh, because the pipeline is still
+    running and still publishing - it is the READING that went stale, not the publishing.
     """
 
-    def __init__(self, window=5):
+    def __init__(self, window=5, max_carried_failures=MAX_CARRIED_FAILURES):
         self._window = window
+        self._max_carried_failures = max_carried_failures
         self._samples = {}
+        self._failures = {}  # consecutive failed reads per meter, reset by any good one
 
     def update(self, readings):
         smoothed = {}
         for name, value in readings.items():
             if value is None:
                 # Do not feed unknowns into the history - a failed read should not drag the
-                # reported value toward zero. Report the last good median instead, if any.
+                # reported value toward zero. Carry the last good median instead, but only for
+                # a bounded number of frames (see the docstring).
+                failures = self._failures.get(name, 0) + 1
+                self._failures[name] = failures
                 history = self._samples.get(name)
-                smoothed[name] = float(np.median(history)) if history else None
+                if not history or failures > self._max_carried_failures:
+                    #Drop the history too: once we have admitted we do not know, a single good
+                    #frame arriving later must not be median-blended with values measured before
+                    #a gap of unknown length. Whatever happened during that gap is not something
+                    #a median over stale samples can represent.
+                    self._samples.pop(name, None)
+                    smoothed[name] = None
+                else:
+                    smoothed[name] = float(np.median(history))
                 continue
+            self._failures[name] = 0
             history = self._samples.setdefault(name, deque(maxlen=self._window))
             history.append(value)
             smoothed[name] = float(np.median(history))

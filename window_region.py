@@ -38,13 +38,18 @@ def available():
     return win32gui is not None
 
 
-def find_client_rect(title_substring):
-    """Screen-coordinate (x, y, w, h) of the CLIENT area of a visible window whose title contains
-    `title_substring` (case-insensitive). Returns None if unsupported, not found, or degenerate.
+def find_window(title_substring):
+    """(handle, (x, y, w, h)) for a visible window whose title contains `title_substring`
+    (case-insensitive), or None if unsupported, not found, or degenerate.
 
-    The client area, not the window rect: the window rect includes the title bar and resize
-    borders, which the game does not draw into. Anchoring a meter to the window rect would offset
-    every region by the height of the title bar - about 30px, comfortably enough to miss an orb.
+    The rect is the CLIENT area, not the window rect: the window rect includes the title bar and
+    resize borders, which the game does not draw into. Anchoring a meter to the window rect would
+    offset every region by the height of the title bar - about 30px, comfortably enough to miss
+    an orb.
+
+    `handle` is OPAQUE to callers - the only thing to do with it is hand it back to
+    is_foreground(). It exists so that the per-frame focus check does not have to re-run the
+    EnumWindows sweep this function performs, which is far too expensive at frame rate.
     """
     if win32gui is None or not title_substring:
         return None
@@ -69,7 +74,7 @@ def find_client_rect(title_substring):
         if cw > 0 and ch > 0:
             # Rank 0 = the title is exactly what was asked for, rank 1 = merely contains it.
             exact = title.casefold().strip() == needle.strip()
-            found.append((0 if exact else 1, -(cw * ch), (left, top, cw, ch)))
+            found.append((0 if exact else 1, -(cw * ch), hwnd, (left, top, cw, ch)))
 
     try:
         win32gui.EnumWindows(visit, None)
@@ -85,7 +90,49 @@ def find_client_rect(title_substring):
     # Anything with the game's name in a page title, a chat window or an editor tab is a
     # candidate, so preferring the exact configured title is what actually disambiguates.
     found.sort()
-    return found[0][2]
+    return (found[0][2], found[0][3])
+
+
+def find_client_rect(title_substring):
+    """Screen-coordinate (x, y, w, h) of the CLIENT area of a matching window, or None.
+
+    Thin wrapper over find_window() for callers that only need geometry.
+    """
+    found = find_window(title_substring)
+    return None if found is None else found[1]
+
+
+def is_foreground(handle):
+    """Whether `handle` (from find_window()) is the window the user is currently interacting with.
+
+    Returns True/False, or None meaning "cannot tell" - no pywin32, or no handle was given.
+    THE THREE ANSWERS ARE NOT TWO: a caller must not collapse None into False. "I could not
+    check" has to leave the pipeline working exactly as it did before this function existed,
+    because on a platform without window lookup there is no guard to enforce and treating that as
+    "the game is not on screen" would disable every reading and every action permanently.
+
+    WHY A CALLER WANTS THIS: a detector reading pixels off the screen cannot tell whether those
+    pixels belong to the thing it was calibrated against or to whatever the user just alt-tabbed
+    to. A HUD meter measured against a browser reads a confident, plausible, completely wrong
+    number, and an action layer clicking at screen coordinates clicks into whatever is now there.
+
+    FOCUS IS A PROXY FOR VISIBILITY, NOT THE SAME THING. A windowed game that is visible but
+    unfocused is still perfectly readable, so this is deliberately conservative and will say False
+    in a case that would in fact have worked. That direction is the safe one: the cost of a false
+    False is a paused action, the cost of a false True is a potion drunk against a browser's
+    pixels. Cheaper and more robust tests (is the window occluded? is it minimised?) do not exist
+    in a usable form on Windows - occlusion in particular requires walking the z-order and
+    intersecting rects, which is both expensive and wrong under transparency.
+
+    This is a raw GetForegroundWindow() comparison, deliberately cheap enough to call per frame -
+    it does no enumeration and no string work, which is why find_window() hands back a handle.
+    """
+    if win32gui is None or handle is None:
+        return None
+    try:
+        return win32gui.GetForegroundWindow() == handle
+    except Exception:
+        return None  # cannot tell, which is not the same as "no"
 
 
 def to_frame_fractions(anchor_rect, capture_rect, region):

@@ -582,3 +582,101 @@ NOT DONE, deliberately (both are real and both are quality decisions, not waste)
 One new dependency: bettercam (Windows-only, optional, marked
 sys_platform == "win32" in requirements.txt). One new file: frame_source.py.
 One entry added to Error_history.txt (#39).
+
+------------------------------------------------------------------------------
+Version 0.010 - 2026-08-30
+------------------------------------------------------------------------------
+Closed the loop the whole project has been building toward: read a number off
+the screen, decide, press a key. Two features, and the second one only exists
+safely because the first went in ahead of it.
+
+FOREGROUND GUARD. Nothing previously checked that the game was still the window
+on screen. Alt-tab away and the HUD meters measured whatever was now in front
+of it - typically 0%, i.e. "you are about to die" - while auto-collect went on
+clicking at screen coordinates that now belonged to a browser.
+
+- window_region.find_window() now returns an OPAQUE HANDLE alongside the rect,
+  so is_foreground() can be a raw GetForegroundWindow() comparison. Measured
+  0.3us/call against 0.151ms for the EnumWindows sweep that finds the window in
+  the first place - about 500x - which is the entire reason it takes a handle
+  and not a title. At 60 FPS the check costs 0.018 ms/s.
+- Wired into three places: meters report None (never 0.0), auto-collect stops,
+  and the panel says GAME STATE / NOT FOCUSED / readings suspended / actions
+  paused. The panel matters more than the console here for the same reason the
+  RECALIBRATE banner does - the person who needs to know why nothing is
+  happening is looking at the game, not at a terminal that already scrolled.
+- Auto-collect is gated MID-ATTEMPT too, via click_until_gone's existing
+  is_paused callback. An attempt clicks repeatedly for up to 5s, so alt-tabbing
+  one click into it would otherwise let the rest land somewhere else entirely.
+- None is a THIRD answer and is not False. No pywin32, no "_anchor" in
+  meters.json, or the window not currently found all return None, and
+  actions_allowed() is "anchor_focused() is not False". A setup that cannot
+  perform the check is never disabled by it - otherwise macOS would have every
+  reading and every action switched off permanently.
+- Resolved a question that had been open in todolist.md: this is a hard stop,
+  not an indicator. Focus is a conservative proxy for visibility and will say
+  no in cases that would in fact have worked. A false no costs a paused pickup;
+  a false yes costs a potion drunk against a browser's pixels.
+- The anchor's handle is refreshed on every lookup even when the rect is
+  unchanged: a game closed and relaunched at the same size and position is a
+  DIFFERENT window with an IDENTICAL rect, and keeping the old handle would
+  leave the check comparing against a window that no longer exists - i.e.
+  permanently False, i.e. the guard stuck on with no way to clear it.
+
+POTION DRINKING. The first thing in the project that acts on a measured NUMBER
+rather than a found position, and the first consumer of game_state.py at all.
+
+- actions.press_key() is the generic half; main.py's POTION_RULES /
+  _potion_due() / run_potion_drinking() is the Diablo II glue. Belt as
+  configured: 1 health, 2 and 3 rejuvenation (emergency tier), 4 mana.
+- Rules are evaluated in order, first match wins, and each keeps its OWN
+  cooldown. That is what lets the emergency tier fire immediately after an
+  ordinary heal - taking a big hit one second after drinking is exactly when a
+  rejuvenation is needed, and one shared cooldown would swallow it.
+- POTION_MIN_GAP_SECONDS is a floor under every press regardless of rule. The
+  per-rule cooldowns are the tuning knob; this is the safety net that makes
+  "empty the belt in one second" impossible even with a mistuned threshold or a
+  misreading orb.
+- A rule with several keys alternates between them. Nothing here can see how
+  many potions a belt column holds, so spreading presses across both
+  rejuvenation columns beats emptying one and then pressing a dead key
+  mid-emergency.
+- _potion_due() is kept pure - no clock of its own, no globals, no key presses
+  - because what it decides is "press a key into a live game", which is not
+  something to validate by playing and hoping. test_potions.py covers it with
+  27 assertions and needs no game.
+
+FOUND WHILE BUILDING IT, and the reason the guard had to go first:
+
+- The guard's meter suspension never reached a consumer. It set the raw
+  readings to all-None, but Smoother converted that straight back into the last
+  good value FOREVER - probed directly, 60 consecutive failed reads still
+  published 0.85 - and current_game_state_age() stayed fresh the whole time,
+  because it is the READING that went stale, not the publishing. A potion layer
+  would have read a frozen, confident, live-looking number. Fixed generically
+  in game_state.py (MAX_CARRIED_FAILURES, 15 frames) rather than as a special
+  case in main.py, since the pre-existing "window not found" path had it too.
+  Past the cap the meter drops its history as well, so a good frame arriving
+  after a gap is not median-blended with values measured before it.
+- pyautogui would have silently done nothing. It hardcodes keybd_event's
+  scancode argument to 0 where the keyboard package passes the real one - read
+  out of both libraries' source, then MEASURED through a raw WH_KEYBOARD_LL
+  hook: press_key('f13') delivers scanCode=100, pyautogui.press('f13')
+  delivers scanCode=0. A game reading the keyboard through DirectInput or Raw
+  Input looks at the scancode, so pyautogui's zero arrives empty and the game
+  does nothing, with no error anywhere to say why. This is the keyboard-side
+  twin of the v0.004 mouse finding, and the pattern is now written down in
+  actions.py: the convenient call from an input library sends something, raises
+  nothing, and is silently ignored by the one program it was aimed at.
+
+TESTING: 34 new synthetic assertions, no game required - test_potions.py (new,
+27) and test_game_state.py (+7 for the Smoother cap). The guard was verified
+against the real Diablo II window with 21 assertions, and confirmed working in
+live play by the project owner.
+
+NOT YET VALIDATED: every threshold in POTION_RULES is a starting point guessed
+at playstyle, not a measurement. F6 snoozes potion drinking for 10s and
+POTION_DRINKING_ENABLED = False turns it off outright. See todolist.md's NOW.
+
+One new file: test_potions.py. No new dependencies - the keyboard package was
+already required for the existing global hotkeys.

@@ -13,6 +13,7 @@ import numpy as np
 import time
 import threading
 import keyboard
+from collections import namedtuple
 from pathlib import Path
 from queue import Queue, Empty
 
@@ -76,6 +77,7 @@ _anchor_lock = threading.Lock()
 #"cannot read". A cache keyed on a value that is itself a valid answer needs its own empty state.
 _UNRESOLVED = object()
 _anchor_rect = _UNRESOLVED #last known client rect of the anchor window, in screen pixels
+_anchor_handle = None      #opaque window handle for the cheap per-frame focus check, see anchor_focused()
 _active_profile = None     #the calibration profile matching the current window shape
 _anchor_meters = meters    #meters with regions rewritten against the captured frame
 _anchor_checked = 0.0
@@ -90,7 +92,7 @@ def _refresh_anchor(now):
     a full health orb as empty because the window moved is precisely the confusion game_state.py
     is built to prevent, and it would drive a potion or a retreat.
     """
-    global _anchor_rect, _anchor_meters, _anchor_checked, _active_profile
+    global _anchor_rect, _anchor_handle, _anchor_meters, _anchor_checked, _active_profile
     if not meter_profiles or not meter_anchor:
         return meters
 
@@ -99,8 +101,14 @@ def _refresh_anchor(now):
             return _anchor_meters
         _anchor_checked = now
 
-    rect = window_region.find_client_rect(meter_anchor.get("window_title", ""))
+    found = window_region.find_window(meter_anchor.get("window_title", ""))
+    rect = None if found is None else found[1]
     with _anchor_lock:
+        #The handle is refreshed even when the rect is unchanged, and BEFORE the shortcut below.
+        #A game closed and relaunched at the same size and position is a different window with an
+        #identical rect - keeping the old handle would leave the focus check comparing against a
+        #window that no longer exists, i.e. permanently False, i.e. the guard stuck on.
+        _anchor_handle = None if found is None else found[0]
         if rect == _anchor_rect:
             return _anchor_meters
         _anchor_rect = rect
@@ -162,6 +170,32 @@ def anchor_rect():
     """Last known client rect of the anchor window, or None. Used to place the debug panel."""
     with _anchor_lock:
         return None if _anchor_rect is _UNRESOLVED else _anchor_rect
+
+
+def anchor_focused():
+    """True/False/None - is the anchor window the one the user is actually interacting with?
+
+    None means "cannot tell", and is NOT the same as False. There are three ways to get it and
+    all three must leave the pipeline behaving exactly as it did before this guard existed:
+    no pywin32 (macOS, or a Windows install without it), no meters.json / no "_anchor" in it
+    (nothing to anchor to), or the window not currently found. Collapsing None into False would
+    disable every meter reading and every action permanently on those setups.
+
+    Cheap enough to call per frame - see window_region.is_foreground().
+    """
+    with _anchor_lock:
+        handle = _anchor_handle
+    return window_region.is_foreground(handle)
+
+
+def actions_allowed():
+    """Whether it is safe to drive the real mouse/keyboard right now.
+
+    Allowed unless we POSITIVELY know the anchor window is not focused. The asymmetry is the
+    point: an unguarded setup keeps working as before, while a setup that can check gets stopped.
+    """
+    return anchor_focused() is not False
+
 
 #Queues for thread-safe comms
 screenshot_queue = Queue(maxsize = 3)
@@ -279,8 +313,16 @@ def detect_objects():
         #Read the HUD meters off this same frame before anything else touches it. Costs a few
         #tenths of a millisecond, so it does not meaningfully affect this loop's FPS.
         active_meters = _refresh_anchor(time.time())
+        if anchor_focused() is False:
+            #Not the foreground window -> the pixels where the orbs should be belong to whatever
+            #the user alt-tabbed to, so there is nothing here to measure. Checked per frame, not
+            #at ANCHOR_REFRESH_SECONDS: focus flips in well under a second and a stale "yes" is
+            #exactly the window in which a wrong reading gets acted on.
+            active_meters = []
         if meters:
-            #Anchor lost -> every configured meter reports None, never 0.0 (see _refresh_anchor).
+            #Anchor lost, or not focused -> every configured meter reports None, never 0.0. A
+            #failed read presented as an empty orb reads as "you are about to die" and would
+            #drive a potion or a retreat - see game_state.py on why None and 0.0 stay distinct.
             raw = (game_state.read_all(screenshot, active_meters) if active_meters
                    else {m.name: None for m in meters})
             readings = meter_smoother.update(raw)
@@ -603,8 +645,23 @@ def run_auto_collect():
     #once that item is no longer seen nearby, so a *future* drop of the same item there is still
     #eligible - this only suppresses retrying the exact instance we already failed on.
     abandoned = []
+    was_blocked = False  #so the console says it once per transition, not once per poll tick
 
     while True:
+        #Do not drive the mouse at screen coordinates when the game is not the window those
+        #coordinates now belong to - the clicks would land in whatever is in front of it. This is
+        #a hard stop rather than a warning: unlike a wrong meter reading, a stray click is already
+        #an action taken by the time anyone could react to it.
+        if not actions_allowed():
+            if not was_blocked:
+                was_blocked = True
+                print("Auto-collect paused - game window is not focused.")
+            time.sleep(AUTO_COLLECT_POLL_SECONDS)
+            continue
+        if was_blocked:
+            was_blocked = False
+            print("Auto-collect resumed - game window focused again.")
+
         if time.time() < snooze_until:
             time.sleep(AUTO_COLLECT_POLL_SECONDS)
             continue
@@ -644,7 +701,11 @@ def run_auto_collect():
 
         success = actions.click_until_gone(
             get_position, timeout=COLLECT_TIMEOUT_SECONDS, click_interval=CLICK_RETRY_INTERVAL_SECONDS,
-            poll_interval=AUTO_COLLECT_POLL_SECONDS, is_paused=lambda: time.time() < snooze_until,
+            poll_interval=AUTO_COLLECT_POLL_SECONDS,
+            #Also mid-attempt, not just before starting one: an attempt runs for up to
+            #COLLECT_TIMEOUT_SECONDS and clicks repeatedly throughout, so alt-tabbing one click
+            #into it would otherwise let the rest of them land somewhere else entirely.
+            is_paused=lambda: time.time() < snooze_until or not actions_allowed(),
         )
 
         if success:
@@ -652,6 +713,129 @@ def run_auto_collect():
         else:
             print(f"Auto-collect: gave up on '{target_name}' after {COLLECT_TIMEOUT_SECONDS:.0f}s - releasing mouse control")
             abandoned.append((target_name, last_known["x"], last_known["y"]))
+
+
+
+#--- Potion drinking ---------------------------------------------------------------------------
+#The first consumer of game_state that ACTS on what it reads, and the whole sensor -> decision ->
+#action loop end to end: read a number off the screen, decide, press a key.
+#
+#This block is Diablo II INTEGRATION, not engine - same status as run_auto_collect(). The belt
+#layout is one player's key bindings and the thresholds are playstyle, so both live here in data
+#rather than being spread through logic. Nothing below knows what a "potion" is beyond "a key to
+#press when a meter gets low", which is the same shape as a drone landing itself on low battery.
+#
+#PotionRule: when `meter` reads at or below `at_or_below`, press one of `keys`, then hold off on
+#THIS rule for `cooldown` seconds.
+PotionRule = namedtuple("PotionRule", "meter at_or_below keys cooldown label")
+
+#Order matters: the FIRST matching rule wins each tick, so more urgent rules come first.
+#Each rule keeps its OWN cooldown, which is what lets the emergency tier fire immediately after
+#an ordinary heal - taking a big hit one second after drinking a healing potion is exactly when
+#a rejuvenation is needed, and a single shared cooldown would swallow it.
+POTION_RULES = (
+    #Rejuvenation heals instantly and fully, so it is the emergency tier, not the everyday one.
+    #Keys 2 and 3 are BOTH rejuvenation columns and are used alternately: nothing here can see how
+    #many potions a column has left (belt counting is not built), so alternating means a run of
+    #emergencies drains both columns evenly instead of emptying one and then pressing a dead key.
+    PotionRule("health", 0.20, ("2", "3"), 1.0, "rejuvenation"),
+    #Ordinary healing potion. Heals over several seconds rather than instantly, so the cooldown
+    #has to outlast the heal - re-checking before it lands reads a still-low orb and drinks again,
+    #which is how a belt empties in one second.
+    PotionRule("health", 0.35, ("1",), 4.0, "health"),
+    PotionRule("mana", 0.25, ("4",), 4.0, "mana"),
+)
+#A floor under EVERY potion press regardless of which rule fired. The per-rule cooldowns above are
+#the tuning knob; this is the safety net, so a mistuned threshold or a misreading orb cannot empty
+#the belt in a second no matter what combination of rules matches.
+POTION_MIN_GAP_SECONDS = 0.6
+POTION_POLL_SECONDS = 0.15
+POTION_SNOOZE_SECONDS = 10.0 #'F6', same re-arming snooze as auto-collect's 'F4' - see SNOOZE_SECONDS
+POTION_DRINKING_ENABLED = True #one edit to turn the whole thing off without deleting anything
+
+potion_snooze_until = 0.0
+
+
+def _snooze_potions():
+    global potion_snooze_until
+    potion_snooze_until = time.time() + POTION_SNOOZE_SECONDS
+    print(f"Potion drinking snoozed for {POTION_SNOOZE_SECONDS:.0f}s")
+
+
+def _potion_due(readings, now, last_fired, last_any):
+    """The first POTION_RULES entry that should fire right now, or None.
+
+    Kept PURE - no key presses, no clock of its own, no globals - so the decision can be tested
+    directly. The thing this decides is "press a key into a live game", which is not something to
+    validate by playing and hoping; see test_potions.py.
+    """
+    if now - last_any < POTION_MIN_GAP_SECONDS:
+        return None
+    for rule in POTION_RULES:
+        value = readings.get(rule.meter)
+        if value is None:
+            continue  #cannot read it -> cannot act on it. NOT an emergency. See run_potion_drinking.
+        if value > rule.at_or_below:
+            continue
+        if now - last_fired.get(rule.label, 0.0) < rule.cooldown:
+            continue
+        return rule
+    return None
+
+
+def run_potion_drinking():
+    """Drinks a potion when a meter reads low. Reads shared_game_state; presses a belt key.
+
+    THE ONE RULE THAT MATTERS: a meter reading of None means "could not read", and this must then
+    do NOTHING. None is not a low value and must never be treated as one - if it were, alt-tabbing
+    or losing the game window would look like an emergency and dump the belt. game_state.py keeps
+    None and 0.0 distinct for exactly this consumer, and Smoother stops carrying a stale value
+    after MAX_CARRIED_FAILURES so a frozen number cannot masquerade as a live one either.
+    """
+    if not POTION_DRINKING_ENABLED:
+        return
+    keyboard.add_hotkey('f6', _snooze_potions)
+    rules = ", ".join(f"{r.label} <={r.at_or_below:.0%} -> {'/'.join(r.keys)}" for r in POTION_RULES)
+    print(f"Potion drinking running ({rules}) - press 'F6' to snooze it for {POTION_SNOOZE_SECONDS:.0f}s.")
+
+    last_fired = {}       #rule label -> when it last fired, so each rule cools down on its own
+    next_key = {}         #rule label -> index into rule.keys, for alternating columns
+    last_any = 0.0        #when ANY potion was last pressed, for POTION_MIN_GAP_SECONDS
+    was_blocked = False
+
+    while True:
+        time.sleep(POTION_POLL_SECONDS)
+        now = time.time()
+
+        #Same guard as auto-collect: never send input to a window that is not the game. A belt
+        #key going to whatever is in front is at best noise and at worst a keystroke in a chat box.
+        if not actions_allowed():
+            if not was_blocked:
+                was_blocked = True
+                print("Potion drinking paused - game window is not focused.")
+            continue
+        if was_blocked:
+            was_blocked = False
+            print("Potion drinking resumed - game window focused again.")
+
+        if now < potion_snooze_until:
+            continue
+
+        readings = current_game_state()
+        rule = _potion_due(readings, now, last_fired, last_any)
+        if rule is None:
+            continue
+
+        #Alternate across a rule's keys. Nothing here can see how many potions a belt column has
+        #left, so spreading the presses is the only way to avoid emptying one column and then
+        #pressing a dead key during an emergency.
+        index = next_key.get(rule.label, 0)
+        key = rule.keys[index % len(rule.keys)]
+        next_key[rule.label] = index + 1
+        actions.press_key(key)
+        last_fired[rule.label] = now
+        last_any = now
+        print(f"Potion: {rule.label} (key '{key}') at {rule.meter} {readings[rule.meter]:.0%}")
 
 
 WINDOW_NAME = "Hunters Eye"
@@ -750,6 +934,14 @@ def _debug_panel():
         #every meter as unreadable and leaving the cause to be guessed at.
         safe = meter_anchor.get("window_title", "?").encode("ascii", "replace").decode("ascii")
         return "GAME STATE  window not found", [(safe[:22], "not on screen", None, DEBUG_PANEL_BAD_COLOR)]
+    if anchor_focused() is False:
+        #Distinct again from both "window not found" and "no read": the window is right there, we
+        #simply are not looking at it, so the readings are suspended and actions are held. Saying
+        #this ON THE PANEL is the whole point - the person who needs to know why nothing is
+        #happening is looking at the screen, not at a console that has already scrolled past it.
+        return "GAME STATE  NOT FOCUSED", [
+            ("readings", "suspended", None, DEBUG_PANEL_BAD_COLOR),
+            ("actions", "paused", None, DEBUG_PANEL_BAD_COLOR)]
 
     age = current_game_state_age()
     if age is None:
@@ -860,10 +1052,12 @@ def main():
     t2 = threading.Thread(target=detect_objects, daemon=True)
     t3 = threading.Thread(target=detect_text, daemon=True)
     t4 = threading.Thread(target=run_auto_collect, daemon=True)
+    t5 = threading.Thread(target=run_potion_drinking, daemon=True)
     t1.start()
     t2.start()
     t3.start()
     t4.start()
+    t5.start()
 
     try:
         run_overlay()

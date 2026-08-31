@@ -1,17 +1,28 @@
 """
-Action layer: turns a detected match's position into a physical mouse action.
+Action layer: turning a decision into physical mouse and keyboard input.
 
 This is the "action" seam described in CLAUDE.md (move mouse / press key / click) -
-deliberately generic. It knows nothing about Diablo II, item names, or OCR; it just
-moves the mouse and clicks based on positions a caller feeds it, and reports back
-whether the target visually disappeared or the attempt timed out. Callers (see
-main.py's run_auto_collect()) own all of the game-specific meaning.
+deliberately generic. It knows nothing about Diablo II, item names, potions or OCR;
+it moves the mouse and clicks based on positions a caller feeds it, presses keys a
+caller names, and reports back what happened. Callers (see main.py's
+run_auto_collect() and run_potion_drinking()) own all of the game-specific meaning.
+
+A THEME RUNS THROUGH BOTH FUNCTIONS HERE, and it is the main thing to know before
+adding a third: the obvious convenience call from an input library is repeatedly the
+wrong one, and it fails SILENTLY - it sends something, raises nothing, and the game
+ignores it. pyautogui.click() collapses press and release into a single zero-duration
+event a per-frame poll can miss; pyautogui's key press hardcodes the scancode to 0,
+which a game reading raw input sees as empty. Both were established by reading the
+library source and then measuring the delivered Win32 event, not by assuming. Expect
+to do the same for whatever gets added next.
 """
 import time
 
+import keyboard
 import pyautogui
 
 
+KEY_HOLD_SECONDS = 0.05 #how long a key stays down before releasing - same reason as CLICK_HOLD_SECONDS
 MOVE_SETTLE_SECONDS = 0.05 #pause between the cursor arriving and the button going down - see below
 CLICK_HOLD_SECONDS = 0.05 #how long the mouse button stays down before releasing - see the comment
                            #on the mouseDown/mouseUp call below for why this can't be 0
@@ -84,3 +95,32 @@ def click_until_gone(get_position, timeout=5.0, click_interval=0.8, poll_interva
         time_since_click += poll_interval
 
     return get_position() is None
+
+
+def press_key(key, hold=KEY_HOLD_SECONDS):
+    """Presses and releases one key, holding it down for `hold` seconds.
+
+    Generic on purpose - it knows nothing about potions, belts or Diablo II. A caller decides
+    what the key means and when to send it (see main.py's run_potion_drinking()).
+
+    USES THE `keyboard` PACKAGE, NOT pyautogui, AND THAT IS NOT INTERCHANGEABLE HERE. Both end up
+    at Windows' keybd_event, but with a decisive difference, confirmed by reading each library's
+    source rather than assuming:
+
+        pyautogui  keybd_event(vkCode, 0,    KEYEVENTF_KEYDOWN, 0)   <- scancode hardcoded to 0
+        keyboard   keybd_event(vk,     code, event_type,        0)   <- real scancode
+
+    A game reading the keyboard through DirectInput or Raw Input looks at the SCANCODE, not the
+    virtual key code, so pyautogui's zero means the keypress arrives empty and the game does
+    nothing - with no error anywhere to say why. This is the keyboard-side twin of the mouse
+    finding documented on click_until_gone() above: the convenience call looks right, sends
+    something, and is silently ignored by the one program it was aimed at.
+
+    HOLDING IT DOWN FOR A BEAT IS ALSO DELIBERATE, for exactly the reason CLICK_HOLD_SECONDS
+    exists: a press and release landing in the same instant can fall between two of a game's
+    per-frame input polls and be missed entirely. `hold` is long enough that no reasonable poll
+    rate can straddle it.
+    """
+    keyboard.press(key)
+    time.sleep(hold)
+    keyboard.release(key)
