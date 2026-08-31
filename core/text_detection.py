@@ -29,6 +29,7 @@ often this gets called at all - even the fast path costs far more than image mat
 import difflib
 import platform
 import re
+import threading
 from pathlib import Path
 
 import cv2 as cv
@@ -93,6 +94,19 @@ def _find_tessdata_dir():
 
 _TESSDATA_DIR = _find_tessdata_dir()
 
+#ONE Tesseract engine is shared across the whole process, and it is NOT THREAD-SAFE. That was
+#fine while exactly one thread (detect_text) ever touched it. It stopped being fine the moment a
+#second caller appeared: main.py's next_game() reads the lobby's game name from its own thread
+#while the OCR thread is still scanning for item labels, and read_line() additionally changes the
+#engine's page-segmentation mode for the duration of a call. Two threads inside a C++ library's
+#mutable state at once does not raise a Python exception - it corrupts state or takes the whole
+#PROCESS down, with no traceback, which is exactly how it presented: "the program stops running".
+#
+#Every use of _tesserocr_api below is therefore inside this lock. Serialising costs little here:
+#detect_text's calls are ~0.1-0.26s and already the slow path, and the other callers are rare
+#(once per game). A lock rather than a second engine because a second engine would double the
+#memory and re-pay Tesseract's initialisation, to remove contention that does not exist.
+_tesserocr_lock = threading.Lock()
 _tesserocr_api = None
 try:
     import tesserocr
@@ -235,8 +249,9 @@ def _get_words_tesserocr(frame):
     """Returns [(text, left, top, width, height, block_num, par_num, line_num), ...]."""
     #_preprocess may hand us a single-channel binarized image; PIL takes that directly.
     prepared = frame if frame.ndim == 2 else cv.cvtColor(frame, cv.COLOR_BGR2RGB)
-    _tesserocr_api.SetImage(Image.fromarray(prepared))
-    tsv = _tesserocr_api.GetTSVText(0) #same column layout as pytesseract's image_to_data DICT
+    with _tesserocr_lock:
+        _tesserocr_api.SetImage(Image.fromarray(prepared))
+        tsv = _tesserocr_api.GetTSVText(0) #same column layout as pytesseract's image_to_data DICT
 
     words = []
     for line in tsv.strip().split("\n"):
@@ -422,6 +437,150 @@ def _match_ratio(text, name, base_cutoff):
     if despaced < strictest:
         return None
     return difflib.SequenceMatcher(None, text, name).ratio()
+
+
+#Threshold for read_line(). Lower than BRIGHT_TEXT_THRESHOLD (150) on purpose: that one is tuned
+#for bright item labels over dark game art, while a UI text field is dimmer, flatter text on a
+#dark panel. Measured on a real Diablo II lobby reading a game name of "z25pin35":
+#   threshold 150  ->  "Z25pin35"   (right characters, wrong case on the first letter)
+#   threshold 120  ->  "z25pin35"   exact
+#   threshold 100  ->  "z25pineq"
+FIELD_TEXT_THRESHOLD = 120
+#A QUIET BORDER ADDED AROUND THE CROP BEFORE OCR, and this is not cosmetic - it was the single
+#difference between reading a game name and misreading it. Tesseract expects a scanned page, which
+#always has a margin; a glyph touching the edge of the image gets clipped by its own layout
+#analysis. A crop cut to the text box's left edge put the first character hard against the border,
+#and the reading came back "Z25pindt" for "z25pin41" - wrong case AND two wrong characters.
+#With a border it reads exactly, at every threshold from 110 to 140 rather than only one.
+#Measured on the real crop that failed (lobby_diagnostic_namebox.png):
+#   no border, thr 120 -> 'Z25pindt'
+#   border,    thr 110 -> 'z25pin41'   120 -> 'z25pin41'   130 -> 'z25pin41'   140 -> 'z25pin41'
+FIELD_TEXT_BORDER = 12
+#Restricting the alphabet stops Tesseract inventing punctuation out of a text cursor or a box
+#edge. Deliberately keeps BOTH cases - forcing lowercase would read a name that really is
+#capitalised as something the user never typed.
+FIELD_TEXT_WHITELIST = ("ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                        "abcdefghijklmnopqrstuvwxyz"
+                        "0123456789 _-")
+
+
+def read_line(frame, threshold=FIELD_TEXT_THRESHOLD, whitelist=FIELD_TEXT_WHITELIST):
+    """The single line of text in `frame`, as a raw string ('' if nothing was read).
+
+    For reading ONE known thing - a name in a text box, a counter, a label - where the caller
+    already knows where it is and that there is exactly one line there. Different from
+    read_lines() in the one way that matters: it tells Tesseract to expect a single line
+    (PSM.SINGLE_LINE) instead of scattered text anywhere on a screen.
+
+    THAT SEGMENTATION MODE IS MOST OF THE ACCURACY, not a detail. The module's shared API runs
+    PSM.SPARSE_TEXT, which is correct for its actual job - finding item labels dropped anywhere on
+    a game screen - and it is the wrong question to ask about a text box. Measured on a real lobby
+    field containing "z25pin35":
+        SPARSE_TEXT   'SAME: 2 |  | l'      (fragments, nothing usable)
+        RAW_LINE      'e5pin8B'
+        SINGLE_LINE   'z25pin35'            exact
+    Telling the engine what shape of text to expect is worth more here than any amount of
+    threshold tuning, and it costs nothing.
+
+    ALSO WORTH KNOWING WHERE THIS DOES NOT WORK. The same string rendered in Diablo II's map
+    overlay - the "Game: z25pin35" line, about 11px tall in a stylised font - could not be read
+    exactly by ANY combination of threshold, scale and segmentation mode tried (the closest was
+    'Game: 225pIN a8.'). Upscaling made it worse, because interpolation blurs thin glyphs before
+    they are thresholded. If a value can be read from two places on screen, measure both: the
+    same text is not equally readable everywhere.
+    """
+    if frame is None or frame.size == 0:
+        return ""
+    gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+    prepared = 255 - cv.threshold(gray, threshold, 255, cv.THRESH_BINARY)[1]
+    #White, because the image is inverted by this point - so this is blank page, not blank ink.
+    prepared = cv.copyMakeBorder(prepared, FIELD_TEXT_BORDER, FIELD_TEXT_BORDER,
+                                 FIELD_TEXT_BORDER, FIELD_TEXT_BORDER,
+                                 cv.BORDER_CONSTANT, value=255)
+
+    if _tesserocr_api is not None:
+        try:
+            #Switch the shared API's mode for this call and put it back. Cheaper than a second
+            #long-lived API, and far cheaper than constructing one per call - initialising
+            #Tesseract from scratch is the cost the shared instance exists to avoid.
+            #The lock covers the mode change as well as the call: another thread finding the
+            #engine in SINGLE_LINE mode would silently read a game screen as one line of text.
+            with _tesserocr_lock:
+                _tesserocr_api.SetPageSegMode(tesserocr.PSM.SINGLE_LINE)
+                if whitelist:
+                    _tesserocr_api.SetVariable("tessedit_char_whitelist", whitelist)
+                try:
+                    _tesserocr_api.SetImage(Image.fromarray(prepared))
+                    return _tesserocr_api.GetUTF8Text().strip()
+                finally:
+                    #BOTH settings are restored, not just the mode. A whitelist left in place
+                    #would silently narrow every item-label scan afterwards - the same class of
+                    #shared-state bug as the page-seg mode, and just as quiet.
+                    _tesserocr_api.SetPageSegMode(tesserocr.PSM.SPARSE_TEXT)
+                    if whitelist:
+                        _tesserocr_api.SetVariable("tessedit_char_whitelist", "")
+        except Exception as e:
+            print(f"WARNING: OCR call failed, skipping this read ({e})")
+            return ""
+    if _pytesseract_available:
+        try:
+            config = "--psm 7"
+            if whitelist:
+                config += f" -c tessedit_char_whitelist={whitelist}"
+            return pytesseract.image_to_string(prepared, config=config).strip()
+        except pytesseract.TesseractError as e:
+            print(f"WARNING: OCR call failed, skipping this read ({e})")
+            return ""
+    return ""
+
+
+def read_lines(frame, preprocess=PREPROCESS_AUTO):
+    """Every line of text OCR can find in `frame`, as [(text, (x, y, w, h)), ...].
+
+    The other half of this module's job. find_text_matches() answers "is one of MY strings on
+    screen", which is the right question when you have a vocabulary; this answers "what does it
+    say", which is the right question when you do not - a game name someone typed, a score, a
+    timer, a license plate, a room number. Both go through the same preprocessing and the same
+    one-OCR-call-per-frame rule, so neither is a second detector.
+
+    THE TEXT IS RAW, deliberately, and this is the difference that matters. Matching runs through
+    _clean_text(), which upper-cases and strips everything but letters, digits and spaces - fine
+    when the result is only ever compared fuzzily against a list, and destructive when the result
+    is going to be typed back in somewhere. "z25pin35" would come back as "Z25PIN35" and be typed
+    into a field that cares about case. A caller that wants the cleaned form can call
+    _clean_text() itself; a caller that wants the characters cannot get them back afterwards.
+
+    Returns lines in no particular order - Tesseract's own block/paragraph/line grouping decides
+    what a line is, and the box is the union of the words in it.
+    """
+    frame = _preprocess(frame, preprocess)
+
+    if _tesserocr_api is not None:
+        try:
+            words = _get_words_tesserocr(frame)
+        except Exception as e:
+            print(f"WARNING: OCR call failed, skipping this read ({e})")
+            return []
+    elif _pytesseract_available:
+        try:
+            words = _get_words_pytesseract(frame)
+        except pytesseract.TesseractError as e:
+            print(f"WARNING: OCR call failed, skipping this read ({e})")
+            return []
+    else:
+        return []
+
+    lines = []
+    for line_words in _group_words_by_line(words):
+        text = " ".join(w[0] for w in line_words).strip()
+        if not text:
+            continue
+        left = min(w[1] for w in line_words)
+        top = min(w[2] for w in line_words)
+        right = max(w[1] + w[3] for w in line_words)
+        bottom = max(w[2] + w[4] for w in line_words)
+        lines.append((text, (left, top, right - left, bottom - top)))
+    return lines
 
 
 def find_text_matches(frame, target_items, match_cutoff=0.75, preprocess=PREPROCESS_AUTO):

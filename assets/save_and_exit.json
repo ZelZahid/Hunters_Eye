@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "The 'Save and Exit' button in Diablo II's in-game (Esc) menu.",
+    "THE TEMPLATE IS THE TEXT, NOT THE BUTTON, AND THAT IS THE WHOLE POINT. All five menu",
+    "buttons share identical frame art, so the chrome is nearly all of the correlation and the",
+    "words are a rounding error. Measured on a real menu frame at 0.3x:",
+    "   text only   best 0.936 vs 0.606 on another button - margin 0.331",
+    "   text + pad  best 0.755 vs 0.687                   - margin 0.068",
+    "   full button best 0.900 vs 0.888                   - margin 0.013  (a coin flip)",
+    "Including more of the button makes it WORSE at telling the buttons apart, which is the",
+    "opposite of the intuition that a bigger template is a stronger match.",
+    "MATCHED AT FULL RESOLUTION, not on the pipeline's 0.3x frame - see main.py's quit_game().",
+    "Through the real code path, measured right-button vs best-wrong-button:",
+    "   0.3x   0.793 vs 0.671  margin 0.122   (only 0.029 of headroom over a threshold of 0.70)",
+    "   0.5x   0.875 vs 0.617  margin 0.259",
+    "   full   0.891 vs 0.529  margin 0.362",
+    "threshold 0.75 leaves +0.22 over the wrong button and +0.14 under the right one.",
+    "search_region is fractions of the ANCHOR WINDOW and covers the menu column only."
+  ],
+  "template": "save_and_exit.png",
+  "source_size": [
+    1920,
+    1080
+  ],
+  "search_region": [
+    0.3,
+    0.25,
+    0.4,
+    0.5
+  ],
+  "threshold": 0.75
+}

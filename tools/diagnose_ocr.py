@@ -20,6 +20,12 @@ OCR_CAPTURE_SCALE, same viewport crop - so what it reports is what the real pipe
 an approximation of it. The captured viewport is saved as a PNG so the actual pixels Tesseract
 was given can be inspected afterwards.
 """
+import sys
+from pathlib import Path
+#Run directly (python tests/test_x.py), so the repo root has to be on the path before any
+#project import - sys.path[0] is this file's own folder, not the root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import argparse
 import time
 from pathlib import Path
@@ -29,7 +35,7 @@ import mss
 import numpy as np
 
 import main as pipeline
-import text_detection
+from core import text_detection
 
 
 def capture_viewport(sct):

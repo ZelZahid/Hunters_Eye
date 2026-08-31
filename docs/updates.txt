@@ -9,6 +9,30 @@ state. To get back to a known-working point after something breaks, check out
 that tag rather than guessing from commit history - that's what these are for.
 
 ------------------------------------------------------------------------------
+AT A GLANCE - newest first. Full entries are below, oldest first.
+------------------------------------------------------------------------------
+0.013  next_game(): quit, read the lobby's game name, increment it, create the
+       next game. Fixed a process-killing OCR threading crash along the way.
+0.012  In-play check (presence.py) - stops the lobby's red player names reading
+       as low health and typing potions into the game name box. user_config.txt.
+0.011  An unreadable HUD meter reported 0% instead of "cannot read", so the
+       potion layer treated "I cannot see it" as "you are about to die".
+0.010  Foreground guard + potion drinking - the first sensor -> decision ->
+       action loop, and the first thing that acts on a measured number.
+0.009  Frame source seam + DXGI capture: same frame rate for 36% less CPU.
+0.008  Performance pass, ~34 -> ~51 FPS, with nothing traded away.
+0.007  OCR preprocessing (binarize first), look-alike-aware matching, and
+       windowed FPS meters.
+0.006  game_state.py: read the health/mana orbs as a 0.0-1.0 number.
+0.005  Per-item detection box colours via targets.txt [color] tags.
+0.004  Auto-collect: move the mouse to an item and click until it is picked up.
+0.003  tesserocr OCR backend, ~4x faster than shelling out to tesseract.exe.
+0.002  Made OCR item tracking work during real movement, not just standing still.
+0.001  First tagged checkpoint: docs, cleanup, and OCR item detection.
+
+
+
+------------------------------------------------------------------------------
 Version 0.001 - 2026-08-27
 ------------------------------------------------------------------------------
 First tagged checkpoint. Took the project from a rough Diablo II prototype to
@@ -873,3 +897,85 @@ No new dependencies.
 STILL NOT VALIDATED: the potion thresholds themselves. Everything guarding them
 is now confirmed live, but the numbers have never been tested against real
 damage. See todolist.md's NOW.
+
+------------------------------------------------------------------------------
+Version 0.013 - 2026-08-31
+------------------------------------------------------------------------------
+next_game() - the full loop: quit the current game, read the name Diablo II
+pre-filled into the lobby, increment it, type it in, set or clear the password,
+create the game, and confirm one actually loaded. Bound to F3. Plus a repo
+reorganisation, and three bugs found on the way that were each worse than the
+feature that exposed them.
+
+THE SEQUENCE. quit_game() -> read -> increment -> fill -> Enter -> confirm. Every
+step verifies its own effect before the next runs, because the failures compound:
+a next_game that believes it quit types a game name into a live game, and one
+that believes it created a game leaves you in a lobby thinking you are farming.
+On "a game already exists with that name" it bumps the number and tries once
+more, then stops and stays in the lobby. Afterwards it parks the mouse in the
+middle of the game - the cursor is where the character walks on the next click,
+and the sequence would otherwise leave it in the top-right corner.
+
+WHERE THE GAME NAME IS READ FROM, and why it is not where it was asked for. The
+request was to read it off the in-game map overlay ("Game: z25pin41", Tab to
+show it). Measured, that text is ~11px in a stylised font and could not be read
+exactly by ANY combination of threshold, scale and segmentation mode tried - the
+closest was 'Game: 225pIN a8.'. Upscaling made it worse, because interpolation
+blurs thin glyphs before they are thresholded. Diablo II pre-fills the LOBBY's
+Game Name box with the last game, and that reads exactly. Same information, one
+fewer step, and reliable.
+
+THREE THINGS THAT WENT WRONG, ALL WORTH KEEPING:
+
+- A second thread calling OCR killed the whole process, with no traceback. The
+  shared Tesseract engine is not thread-safe and had only ever had one caller;
+  read_line() additionally switches its page-segmentation mode mid-call. Two
+  threads in a C++ library's mutable state does not raise - it takes the process
+  down. The ABSENCE of a traceback was the clue: a Python exception in a daemon
+  thread prints and leaves everything else running. Fixed with a lock over every
+  use, verified by running both callers concurrently. Error_history.txt #42.
+
+- The game name read as 'Z25pindt' for 'z25pin41'. The crop was correct and the
+  text plainly legible - the first glyph was flush against the crop's left edge,
+  and Tesseract clips a glyph touching the border. Adding a quiet border took it
+  from one wrong reading to correct at every threshold from 110 to 140. Also
+  added a character whitelist and a vote across four thresholds: a single
+  threshold that works on one screenshot is a setting tuned to that screenshot.
+
+- An item tooltip read as "not in a game". The in-play check had ONE reference,
+  on the right-hand orb; hovering an item covers it and the score fell to 0.48,
+  so everything paused while the left orb sat in plain view. Fixed with a second
+  reference on the opposite corner, either one being enough - occlusion during
+  play is normal and LOCAL, so the answer is more evidence elsewhere rather than
+  a looser threshold, which would trade away the thing that stops a lobby
+  matching. Also debounced the NEGATIVE only (0.3s): seeing the HUD is proof,
+  not seeing it might be a flicker.
+
+WHAT OCR CANNOT DO HERE, recorded so it is not re-attempted: determine CASE. 'z'
+and 'Z' are the same glyph at different sizes and a text box gives no x-height to
+judge against. Twelve crop geometries x four thresholds: the characters are
+always right, the case never reliably is. So the program remembers the case it
+typed, and user_config.txt's game_name seeds the first one.
+
+REORGANISED. core/ (the engine), tools/, tests/, docs/, with main.py and
+user_config.txt at the root. The import direction now enforces the architecture:
+main.py imports core, and core imports nothing back. This was safe to do
+precisely because of the detector-independence rule - core's modules do not
+import each other - which turned a risky refactor into a mechanical one.
+docs/updates.txt gained an AT A GLANCE index, newest first, so the most recent
+change is readable without scrolling.
+
+TESTS NOW HAVE THEIR OWN COMMITTED FIXTURES (tests/fixtures/). They had been
+reading the owner's scratch screenshot folder, which gets cleared - and a test
+whose input disappears SKIPS rather than fails, which is indistinguishable from
+passing. It had already happened twice unnoticed. Fixtures are masked to the
+regions the tests search, at the same frame dimensions, and verified to produce
+identical scores and answers to the originals.
+
+Eight test suites. One gap left deliberately visible: tests/fixtures/esc_menu.png
+does not exist, so test_quit_game.py's button checks do not run and say so loudly
+when they start.
+
+New: user_config.txt game/password settings, tools/diagnose_lobby.py,
+tests/test_next_game.py, tests/test_quit_game.py, assets/in_play_left.png,
+assets/save_and_exit.png. No new dependencies.

@@ -7,10 +7,16 @@ are the ones that matter: they each caught a real bug during development that a 
 synthetic orb passed straight through. See Error_history.txt #19 and #20.
 """
 import sys
+from pathlib import Path
+#Run directly (python tests/test_x.py), so the repo root has to be on the path before any
+#project import - sys.path[0] is this file's own folder, not the root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import sys
 
 import cv2 as cv
 import numpy as np
-import game_state
+from core import game_state
 
 FRAME_W, FRAME_H = 1200, 800
 ORB_BOX = (100, 500, 180, 180)          # x, y, w, h in pixels

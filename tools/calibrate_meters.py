@@ -21,19 +21,25 @@ USAGE
 During calibration: drag a box around each orb, then press ENTER (or SPACE). Press 'c' to skip
 a meter you do not want to configure. During preview: press 'q' to quit.
 """
+
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+#Run directly (python tests/test_x.py), so the repo root has to be on the path before any
+#project import - sys.path[0] is this file's own folder, not the root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import argparse
 import time
-from pathlib import Path
 
 import cv2 as cv
 import mss
 import numpy as np
 
-import game_state
+from core import game_state
 import main as pipeline #for CAPTURE_REGION only - see grab_screen() for why this must be shared
-import window_region
+from core import window_region
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 CONFIG_PATH = ASSETS_DIR / "meters.json"

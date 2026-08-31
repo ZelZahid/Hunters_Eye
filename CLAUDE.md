@@ -43,11 +43,11 @@ Every detector (template matching, OCR, HUD meter reading, and any future one �
 
 ## Versioning
 
-`updates.txt` is the changelog and the source of truth for version numbers — read it before assuming what "the current version" means. Versioning starts at `0.001` and increments by `0.001` per significant update, working toward `1.000` ("Hunter's Eye complete," which is intentionally far off). Each version has a matching git tag (`v0.001`, `v0.002`, ...) on the exact commit for that state — **when asked to roll back to a known-working version, check out that tag; don't guess from raw commit history.** When cutting a new version: append an entry to `updates.txt` (date + a short description of what changed, in the same style as existing entries), commit, then create an annotated tag (`git tag -a v0.XXX -m "..."`) on that commit.
+`docs/updates.txt` is the changelog and the source of truth for version numbers — read it before assuming what "the current version" means. Versioning starts at `0.001` and increments by `0.001` per significant update, working toward `1.000` ("Hunter's Eye complete," which is intentionally far off). Each version has a matching git tag (`v0.001`, `v0.002`, ...) on the exact commit for that state — **when asked to roll back to a known-working version, check out that tag; don't guess from raw commit history.** When cutting a new version: append an entry to `docs/updates.txt` (and a one-line summary to its AT A GLANCE index at the top) (date + a short description of what changed, in the same style as existing entries), commit, then create an annotated tag (`git tag -a v0.XXX -m "..."`) on that commit.
 
-`todolist.md` is the project's working memory — what to do next and why, plus ideas, open questions, known limitations, and decisions already made. **Read it at the start of a session and check it before proposing what to work on**, rather than inferring priorities from the code. Keep it current as work happens: move the finished item to DONE, promote the next thing into NOW (which holds exactly one item), and add anything raised in conversation that isn't being acted on immediately — a parked idea belongs in PARKING LOT, not lost in a transcript. It also records decisions that are already settled, so they don't get re-litigated months later.
+`docs/todolist.md` is the project's working memory — what to do next and why, plus ideas, open questions, known limitations, and decisions already made. **Read it at the start of a session and check it before proposing what to work on**, rather than inferring priorities from the code. Keep it current as work happens: move the finished item to DONE, promote the next thing into NOW (which holds exactly one item), and add anything raised in conversation that isn't being acted on immediately — a parked idea belongs in PARKING LOT, not lost in a transcript. It also records decisions that are already settled, so they don't get re-litigated months later.
 
-`Error_history.txt` logs significant bugs hit during development with root cause + fix + a one-line lesson each — **check it before debugging something that feels familiar** (e.g. anything touching `overlay.py`'s Win32 layered-window code, OCR/Tesseract error handling, or shared capture-resolution constants); it may already be documented there with the fix ready to reapply. Append a new entry there (same format as existing ones) any time a bug takes real effort to track down, not just quick typo fixes.
+`docs/Error_history.txt` logs significant bugs hit during development with root cause + fix + a one-line lesson each — **check it before debugging something that feels familiar** (e.g. anything touching `overlay.py`'s Win32 layered-window code, OCR/Tesseract error handling, or shared capture-resolution constants); it may already be documented there with the fix ready to reapply. Append a new entry there (same format as existing ones) any time a bug takes real effort to track down, not just quick typo fixes.
 
 ## Running
 
@@ -67,19 +67,19 @@ python main.py
 
 Press `End` to quit the overlay (or `q` in the fallback debug window); final average FPS is printed on exit.
 
-Global hotkeys while running (all via the `keyboard` package, because the overlay is click-through and can never hold keyboard focus): `End` quits, `F4` snoozes auto-collect for 10s, `F6` snoozes potion drinking for 10s, `F5` toggles the game-state debug panel. `F5` only changes what gets *drawn*, so toggling it cannot disturb detection, the boxes, or auto-collect.
+Global hotkeys while running (all via the `keyboard` package, because the overlay is click-through and can never hold keyboard focus): `End` quits, `F3` quits the current game (Esc → Save and Exit), `F4` snoozes auto-collect for 10s, `F6` snoozes potion drinking for 10s, `F5` toggles the game-state debug panel. `F5` only changes what gets *drawn*, so toggling it cannot disturb detection, the boxes, or auto-collect.
 
 `user_config.txt` at the repo root holds the settings a *user* changes rather than a developer — potion thresholds, belt key bindings, cooldowns. It is read once at import; edit and restart to apply. It sits at the root rather than in `assets/` deliberately: `assets/` holds *data* (a word list, calibration output produced by a tool), while this is the one file a person is expected to open and hand-edit, so it belongs where they will find it.
 
 One-time setup for HUD meter reading (health/mana), needed before `game_state.py` reports anything:
 
 ```
-python calibrate_meters.py
+python tools/calibrate_meters.py
 ```
 
 This is a setup/validation tool, not a second pipeline — the rule that there's exactly one `main.py` still holds, and this is the "distinctly-named new file" case that rule allows for. Re-run it after any resolution or UI-scale change, since the meter regions are tied to where the orbs appear on screen.
 
-There is no linter config or CI in this repo. There are six test files — `test_game_state.py`, `test_overlay.py`, `test_potions.py`, `test_presence.py`, `test_targets.py` and `test_user_config.py` (run each with `python <file>`). `test_game_state.py` — synthetic, no game required, covering `game_state.py`'s fill measurement. It exists because that measurement drives automatic actions and fails silently with a plausible-but-wrong number rather than an error; its adversarial cases caught two real bugs (`Error_history.txt` #19, #20). Other modules have no tests.
+There is no linter config or CI in this repo. There are eight test files in `tests/` — `test_game_state.py`, `test_next_game.py`, `test_overlay.py`, `test_potions.py`, `test_presence.py`, `test_quit_game.py`, `test_targets.py` and `test_user_config.py` (run each with `python tests/<file>`). `test_game_state.py` — synthetic, no game required, covering `game_state.py`'s fill measurement. It exists because that measurement drives automatic actions and fails silently with a plausible-but-wrong number rather than an error; its adversarial cases caught two real bugs (`Error_history.txt` #19, #20). Other modules have no tests.
 
 ## Architecture
 
@@ -128,6 +128,16 @@ Checking "is it gone yet" (`poll_interval`) and actually issuing a new click (`c
 - **A rule with several keys alternates between them.** Nothing can see how many potions a belt column holds (belt counting is not built), so spreading presses across both rejuvenation columns beats emptying one and then pressing a dead key mid-emergency.
 
 `_potion_due()` is kept **pure** — no clock of its own, no globals, no key presses — because what it decides is "press a key into a live game", which is not something to validate by playing and hoping. `test_potions.py` covers it (27 assertions, no game required).
+
+`click_when_seen(find_position, ...)` is the counterpart to `click_until_gone`: that one clicks something already on screen until it goes away, this one waits for something to appear and clicks it **once**. Together they cover "act on what is here" and "act when this shows up". Once, not repeatedly, because a menu button is not a walk-over-and-pick-it-up — clicking it again lands on whatever replaced it. `wait_until(condition, ...)` is the third piece: waiting for an *effect*, so a step can check that it worked.
+
+**A paused attempt is bounded, and the reason is a hang that shipped for two versions.** Both click functions treat a pause as "suspend, do not fail" — paused iterations deliberately do not consume the timeout. That is safe only while every `is_paused` callback eventually goes false, which was true when the only one was a snooze hotkey (a snooze always expires). **v0.010's foreground guard made it reachable** by widening auto-collect's callback to "snoozed OR not safe to act": the second half stays true for as long as the game is not focused, so alt-tabbing mid-pickup meant `click_until_gone` never returned and auto-collect silently stopped for the session — no spin, no error, no log line. `PAUSE_BUDGET_SECONDS` (30s) now bounds paused time separately from active time. **"This wait does not count against the timeout" is the same statement as "this wait is unbounded"**, and the second phrasing is the one that shows the bug. See `Error_history.txt` #41.
+
+**`quit_game()` (`main.py`) is the first scripted sequence, and the shape later ones should follow.** Press Esc → wait for the "Save and Exit" button to appear → click it → **confirm we actually left** by waiting for `in_play()` to go false. Every step waits on detection, never on a clock; and it returns True only if the game was actually exited, because `next_game()` will be built on it and a `next_game` that believes it quit when it did not would press Create-Game buttons into a live game world. Bound to `F3`, on its own thread — the `keyboard` package runs a hotkey callback on its listener thread, and blocking that for seconds would stall every other hotkey including `End`.
+
+**The button template is the TEXT, not the button, and this is the counter-intuitive part.** All five menu buttons share identical frame art, so chrome is nearly all of the correlation and the words are a rounding error. Measured on a real menu at 0.3x: a whole-button template scored **0.900 on the right button and 0.888 on a wrong one** — a margin of 0.013, a coin flip that would report success while clicking the wrong thing. Text-only took the margin to 0.331. **A bigger template is not a stronger match when the things you are telling apart share most of their pixels.**
+
+**It takes its own full-resolution capture rather than using the pipeline's 0.3x frame**, which is the same lesson already recorded for OCR one level deeper: resolution needs come from what a detector has to *tell apart*. Measured through the real code path — right button vs best wrong button: `0.3x → 0.793 vs 0.671` (0.029 of headroom over any threshold between them), `full → 0.891 vs 0.529`. Affordable precisely because this is rare and user-initiated, ~24ms per poll for a few seconds once per game; it never touches the fast path's budget.
 
 **Why OCR has its own thread**: it used to run inline inside `detect_objects()`, throttled to every Nth frame. That still periodically stalled the fast image-matching path for the OCR call's full ~120-150ms cost (pytesseract launches a new `tesseract.exe` subprocess per call — see `text_detection.py`'s docstring), capping overall FPS well below what image matching alone could do. Moving it to its own thread that merely *publishes* results asynchronously means `detect_objects()`'s throughput is no longer coupled to OCR timing at all — measured on dev hardware, this took the pipeline from ~25 FPS to ~44-46 FPS with OCR active either way.
 
@@ -212,7 +222,7 @@ Two calibration mistakes already made here, both worth not repeating. First: a s
 
 **A tie between two different targets is reported as nothing, never as a guess.** `find_text_matches()` tracks every target tied at the best score and suppresses the line if more than one is left standing. This is what makes the very loose short-word cutoffs (0.5 at two characters, 0.65 at three) safe: they permit roughly one bad character per word, and anything that stays genuinely undecidable afterwards is dropped rather than guessed. It earns its keep on real input — a bare `"RUNE"` ties across `EL`/`IO`/`KO`/`LO`/`UM` and is suppressed instead of being assigned to whichever happened to be first in the dict.
 
-**Two diagnostics, for two different questions.** `python diagnose_ocr.py` is the first thing to reach for when something on screen isn't detected: it captures through the exact path `detect_text()` uses (same monitor, same `OCR_CAPTURE_SCALE`, same viewport crop), prints every line Tesseract read and why each did or didn't match, and saves the viewport PNG. It exists because "it isn't detecting" has three causes that look identical from outside — Tesseract never saw the text (a capture/contrast problem, no cutoff will fix it), Tesseract misread characters (a font problem), or the text was read fine but nothing matched (a cutoff problem). Guessing between them wastes a lot of time. `MATCH_DEBUG = True` in `text_detection.py` is the same breakdown printed live during a normal run; off by default, far too noisy to leave on during play.
+**Two diagnostics, for two different questions.** `python tools/diagnose_ocr.py` is the first thing to reach for when something on screen isn't detected: it captures through the exact path `detect_text()` uses (same monitor, same `OCR_CAPTURE_SCALE`, same viewport crop), prints every line Tesseract read and why each did or didn't match, and saves the viewport PNG. It exists because "it isn't detecting" has three causes that look identical from outside — Tesseract never saw the text (a capture/contrast problem, no cutoff will fix it), Tesseract misread characters (a font problem), or the text was read fine but nothing matched (a cutoff problem). Guessing between them wastes a lot of time. `MATCH_DEBUG = True` in `text_detection.py` is the same breakdown printed live during a normal run; off by default, far too noisy to leave on during play.
 
 Even with all this, a short name can still get a genuine false-positive OCR read (Tesseract literally outputting the 3-letter string by misreading unrelated pixels) that no cutoff tuning can catch, since it isn't a fuzzy-match problem at that point — Tesseract's own per-word confidence score (currently read but discarded in `_get_words_tesserocr`/`_get_words_pytesseract`) is the next lever if that becomes frequent.
 
@@ -271,6 +281,10 @@ The fourth instance of the "detector" seam, and a **third shape of answer**. Tem
 
 Threshold `0.6`, margin **0.516**. `test_presence.py` asserts that margin, so a change that erodes the guard shows up as a failure rather than as a potion typed into a text box.
 
+**TWO references, on opposite corners, and either one is enough.** One was fragile to anything covering it: hovering an item draws a tooltip over the right-hand orb, the score fell to **0.48**, and the pipeline decided it was not in a game and paused everything — while the left orb sat in plain view. Occlusion during play is normal and **local** (tooltips, panels, spell effects), so the answer is a second piece of evidence somewhere else, not a looser threshold — a looser threshold trades away the very thing that stops a lobby matching. Measured on the frame that failed: right orb `0.48`, left orb `0.91`; on two lobby frames neither matches (`0.27`/`0.33` and `0.37`/`0.37`). `assets/in_play.json` takes a `references` list; a single reference may still be written flat at the top level, which is the right shape when there is only one thing to find (`save_and_exit.json`). Because each reference has its own search region, `main.py` passes a `resolve_region` **callback** rather than one region — forcing one region on all of them would search the right-hand corner for the left-hand orb.
+
+**The negative is debounced; the positive is not.** Seeing the HUD is proof; *not* seeing it might only mean something is briefly covering it. So a hit publishes immediately and a miss must persist for `IN_PLAY_MISS_GRACE_SECONDS` (0.3s) first. Kept short deliberately: believing we are in a game for too long means a keypress landing where it should not, and at 0.3s against `POTION_MIN_GAP_SECONDS` of 0.6 that is at most one. This covers *flicker*; sustained occlusion is what the second reference is for.
+
 **Restricted to a search region, and that is a 15x difference, not a tidiness preference:** a full-frame `matchTemplate` at `CAPTURE_SCALE` costs **3.0ms** — as much as the needle match, i.e. it would roughly double the detection thread's cost — against **0.198ms** restricted to the bottom-right. That is cheap enough to run **every frame**, which matters: a stale "yes" is exactly the window in which the wrong keys get typed.
 
 **The search region and the template scale both route through the window anchor**, the same way HUD meters do — the art is at a fixed place in the *window*, not on the screen, so a windowed or moved game would otherwise search the wrong pixels, and a different resolution would compare against a wrongly-sized reference. `assets/in_play.json` holds the template path, the size it was cut at, the search region and the threshold; **nothing Diablo-II-specific is in the module.** Pointed at a security camera the same code answers "is the door frame still in view?" — a sanity check that the camera has not been knocked askew before trusting anything else measured from that frame.
@@ -299,7 +313,7 @@ Everything degrades to `None` without `pywin32`, and every caller treats that as
 
 ### `calibrate_meters.py` — one-time setup + live validation tool
 
-`python calibrate_meters.py` — waits out a countdown so you can switch to the game, grabs a screenshot, lets you drag a box around each orb, and writes `assets/meters.json`. `--preview` skips straight to the preview against the saved config; `--delay` changes the countdown.
+`python tools/calibrate_meters.py` — waits out a countdown so you can switch to the game, grabs a screenshot, lets you drag a box around each orb, and writes `assets/meters.json`. `--preview` skips straight to the preview against the saved config; `--delay` changes the countdown.
 
 **Its windows must be created topmost (`_show_window()`), or they never appear.** The flow is "switch to the game, wait out a countdown, then interact with a window" — so by the time the window opens the *game* is the foreground app, and a normally-created OpenCV window opens behind it and is silently never seen. The symptom is "I run it and nothing happens". Any future interactive tool with a countdown has the same problem. If the game is in exclusive-fullscreen mode nothing can draw over it at all and it has to be switched to Windowed/Borderless — the tool now says so up front.
 
@@ -324,32 +338,63 @@ This is a different, incompatible architecture built for automating a specific g
 ## Project layout
 
 ```
-main.py              # the one entry point — real-time detection pipeline
-text_detection.py    # OCR-based detector (see above)
-game_state.py        # HUD meter reading — health/mana as a 0.0-1.0 number (see above)
-overlay.py           # transparent click-through output layer, Windows-only (see above)
-actions.py           # generic mouse-click action layer (see above)
-calibrate_meters.py  # one-time setup tool: defines + live-validates the HUD meters
-diagnose_ocr.py      # "why wasn't this detected?" - dumps what Tesseract actually read
-frame_source.py      # where pixels come from — DXGI or mss, with graceful fallback (see above)
-presence.py          # "is this reference art on screen?" - the in-play check (see above)
-window_region.py     # locating a window's client area, so meters can anchor to it (Windows-only)
-test_game_state.py   # synthetic tests for game_state.py's fill measurement + Smoother (no game needed)
-test_potions.py      # synthetic tests for main.py's potion decision (no game needed)
-test_overlay.py      # tests for overlay.py's panel layout (needs a display; skips otherwise)
-test_presence.py     # tests for presence.py + the in-play gate
-test_targets.py      # synthetic tests for targets.txt parsing + span ranking
-test_user_config.py  # synthetic tests for user_config.py's parsing/validation
-user_config.py       # generic loader for user_config.txt (see above)
-user_config.txt      # USER-EDITABLE settings: potion thresholds + belt key bindings
-assets/               # reference ("needle") images + targets.txt (OCR target item names + auto-collect/color tags)
-                      # + meters.json (HUD meter regions/colors, written by calibrate_meters.py)
-legacy/               # earlier, incompatible prototype (see above) — reference only
-  legacy/assets/       # unused leftover test images from that prototype
+main.py                  # the one entry point - the pipeline, and the Diablo II integration
+user_config.txt          # USER-EDITABLE settings: potion thresholds, belt keys, game password
+
+core/                    # THE ENGINE. Knows nothing about any particular game.
+  actions.py             #   mouse + keyboard: click, click-when-seen, type, press, wait-until
+  frame_source.py        #   where pixels come from - DXGI or mss, with graceful fallback
+  game_state.py          #   HUD meter reading - health/mana as a 0.0-1.0 number
+  overlay.py             #   transparent click-through output layer (Windows-only)
+  presence.py            #   "is this reference art on screen?" - the in-play check
+  text_detection.py      #   OCR: find listed names, or read a line of text as-is
+  user_config.py         #   loader/validator for user_config.txt
+  window_region.py       #   locating a window's client area, so regions can anchor to it
+
+tools/                   # run by hand, never by the pipeline
+  calibrate_meters.py    #   one-time setup: define + live-validate the HUD meters
+  diagnose_ocr.py        #   "why wasn't this item detected?" - what Tesseract actually read
+  diagnose_lobby.py      #   "why was the game name misread?" - dumps the crop it OCR'd
+
+tests/                   # none of them need the game running
+  fixtures/              #   REAL frames the tests measure against - committed, see its README
+  test_game_state.py     #   meter fill measurement + Smoother
+  test_next_game.py      #   name increment/validation, lobby form location, OCR field read
+  test_overlay.py        #   panel layout (needs a display; skips otherwise)
+  test_potions.py        #   the potion decision
+  test_presence.py       #   presence.py + the in-play gate
+  test_quit_game.py      #   the quit_game sequence + click_when_seen/wait_until
+  test_targets.py        #   targets.txt parsing + span ranking
+  test_user_config.py    #   user_config.py parsing/validation
+
+assets/                  # data, not code - edit these instead of the source
+  image1.png             #   reference ("needle") image for template matching
+  targets.txt            #   OCR item names + auto-collect/colour tags
+  meters.json            #   HUD meter regions/colours (written by calibrate_meters.py)
+  in_play.json/.png      #   HUD art proving the game is actually in play
+  save_and_exit.json/.png#   the Esc menu's Save and Exit button
+  zelScreenshots/        #   the owner's scratch space for sharing screenshots mid-session.
+                         #   GITIGNORED and cleared at will - NEVER point a test at it
+
+docs/
+  updates.txt            #   the changelog, and the source of truth for version numbers.
+                         #   Starts with an AT A GLANCE index, newest first.
+  todolist.md            #   what to work on next, ideas, open questions, settled decisions
+  Error_history.txt      #   bugs that took real effort, with root cause + fix + lesson
+
+legacy/                  # earlier, incompatible prototype - reference only
 requirements.txt
-todolist.md          # what to work on next, ideas, open questions, settled decisions
 README.md / LICENSE / CLAUDE.md
 ```
+
+**Why the layout is shaped this way, and where a new file goes.** The split is the architecture, not filing: `core/` is the engine and `main.py` is the Diablo II integration, and **the import direction enforces it** — `main.py` imports `core`, and `core` imports nothing back. If something in `core/` ever needs to import `main`, that is the design going wrong, not an import problem to solve.
+
+- A new **detector** (a trained model, motion detection, colour blobs) is a new module in `core/`. Note that core's modules do not import *each other* either — see "Detector independence" above. That was what made moving them into a package a safe change rather than a risky one.
+- A new **game-specific sequence** (a Pindle run, a chest route) does not go in `core/`. Today `main.py` holds them; when there is more than one, a `routes/` package beside `core/` is the place, importing `core` the same way `main.py` does.
+- **Tools and tests are run directly** (`python tests/test_x.py`), so each begins with a two-line `sys.path` bootstrap to put the repo root on the path — `sys.path[0]` is the script's own folder, not the root.
+- **A test never reads `assets/zelScreenshots/`.** That is the owner's scratch space for sharing screenshots during a session, it is gitignored, and it gets cleared whenever it suits them. A test pointed at it does not fail when a file disappears - it *skips*, which is indistinguishable from passing. **That has already happened twice**: `test_presence.py`'s entire real-screenshot section silently stopped running, and `test_quit_game.py`'s button checks are still off because the Esc-menu screenshot they used is gone. Real frames a test needs go in `tests/fixtures/`, committed, with an entry in its README.
+- **Fixtures are masked, not shrunk**: everything outside the regions the tests search is blacked out at the **same frame dimensions**, so every fraction and coordinate is unchanged while the files roughly halve. The rule when adding one is *preserve the numbers a test asserts on, not just the answers* - the first attempt masked the orb corners out of the lobby frames, every True/False still matched, and the in-play score fell from 0.272 to 0.038, which would have left the margin test measuring black pixels.
+- `user_config.txt` stays at the **root**, not in `assets/`, because it is the one file a person is expected to open and hand-edit. `assets/` holds data the tools write or the engine reads.
 
 There is exactly one `main.py`, at the repo root. `legacy/` used to be `version1/` and also had its own `main.py`; that duplicate was deleted since it was a strict subset of the root pipeline's screen-capture thread with no detection logic of its own. If a second entry point becomes genuinely necessary later (e.g. a GUI mode, a camera-input mode), prefer a flag/mode on the existing `main.py` or a distinctly-named new file — avoid ending up with two files named `main.py` again.
 

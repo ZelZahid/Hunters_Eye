@@ -15,11 +15,11 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 
 ## Now
 
-- [ ] **Validate the potion thresholds themselves, in real combat.** Everything guarding them is now verified live - foreground, in-play, the noise floor - but the numbers in `user_config.txt` have still never been tested against actual damage. Currently `rejuvenation <=30%`, `health <=70%`, `mana <=25%`.
-  - does the ordinary tier fire around 70% without wasting the belt? 70% is high; it will drink often
-  - does the emergency tier beat it to the punch on a burst?
-  - does it double-drink on a single dip? If so the 4.0s health cooldown is too short
-  - `F6` snoozes for 10s; `enabled = no` in `user_config.txt` stops it outright
+- [ ] **Validate the potion thresholds against real damage.** The last thing in the potion stack that has never been tested. Everything guarding it is confirmed live - foreground, in-play, the noise floor - but `user_config.txt`'s numbers (`rejuvenation <=30%`, `health <=70%`, `mana <=25%`) are still guesses.
+  - 70% is high; it will drink often. Does the belt last a run?
+  - does the emergency tier beat the ordinary one on a burst?
+  - does it double-drink on one dip? If so the 4.0s health cooldown is too short
+  - `F6` snoozes for 10s; `enabled = no` stops it outright
 
 ---
 
@@ -85,6 +85,9 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 - [ ] **Decide whether `assets/zelScreenshots/` is committed or gitignored.** ~6MB of PNGs today and it is a folder that will keep growing. Committing puts them in git history permanently; ignoring keeps the repo small but means a future session cannot see the evidence behind a bug. Currently untracked and undecided.
 - [ ] **One hotkey to pause ALL actions.** There are now two snoozes (`F4` auto-collect, `F6` potions) and adding a third action layer means a third key. In an actual emergency nobody remembers which is which. A single "hold everything" key with the per-action snoozes kept underneath is probably right; not done now because it silently changes what `F4` means, which is worth doing deliberately rather than as a side effect.
 - [ ] **Chicken / panic exit is now cheap.** `actions.press_key()` exists and `run_potion_drinking()` is the template — a rule that presses the exit key below a health threshold is nearly the same code. Was already in this list; noting that the blocker is gone.
+- [ ] **Add `tests/fixtures/esc_menu.png`.** A full-screen Diablo II Esc menu. Without it `test_quit_game.py` sections 3-5 do not run, and those cover the sharpest trap in the quit sequence: a whole-button template scores 0.900 on 'Save and Exit' and 0.888 on a different button, so a regression there would click the wrong thing and report success. The test says so loudly when it starts.
+- [ ] **Split `main.py`.** It is now the pipeline AND every Diablo II sequence (auto-collect, potions, quit_game, next_game) at ~1500 lines. The reorganisation left it deliberately alone - moving files and splitting a file are two different changes and doing both at once makes a breakage impossible to attribute. The shape is already clear: a `routes/` package beside `core/` for the game sequences.
+- [ ] **`mss.mss()` is deprecated** in favour of `mss.MSS` and warns on use. Three call sites (`detect_text`, `run_debug_window`, `quit_game`). Harmless today, will break on a future mss release.
 - [ ] **Belt potion counting** — how many potions are left in each slot. Template matching per slot, or color detection. Needed for "go restock" logic.
 - [ ] **Town vs. combat detection.** Probably a template match on a UI element that only appears in one context. Would make scripted routes much more robust.
 - [ ] **Chicken / panic exit** — leave the game instantly below a health threshold. Trivial once potion drinking works, and it's the difference between a survivable mistake and a dead character.
@@ -119,6 +122,15 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 ---
 
 ## Done
+
+- [x] **2026-08-31 - tests given their own committed fixtures (`tests/fixtures/`).** They were reading `assets/zelScreenshots/`, which is scratch space that gets cleared - so when a file went, the test **skipped rather than failed**, which looks exactly like passing. It had already happened twice unnoticed. Fixtures are masked to the regions the tests search, at the same frame dimensions, and verified to produce identical scores and answers to the originals (5.5MB instead of 9.5MB).
+
+- [x] **2026-08-31 — an item tooltip read as 'not in a game'.** Hovering an item draws a tooltip over the right-hand orb, which was the ONLY in-play reference - score fell to 0.48 and everything paused, while the left orb sat in plain view. Fixed with a **second reference on the opposite corner**, either one being enough: occlusion during play is normal and local, so more evidence elsewhere is the answer rather than a looser threshold (which would trade away the thing that stops a lobby matching). Measured on the failing frame: right 0.48, left 0.91; lobbies still match neither. Also added a short debounce on the NEGATIVE only (0.3s) - seeing the HUD is proof, not seeing it might be a flicker.
+
+- [x] **2026-08-31 — `next_game()` working, plus a repo reorganisation.** F3 now quits, reads the game name the lobby pre-filled, increments it, types it, clears or sets the password, presses Enter, and confirms a game actually loaded - then parks the mouse in the middle of the game so the first click is not a sprint to the corner. **Two real bugs found getting there.** (1) A second thread calling OCR killed the whole process with no traceback - the shared Tesseract engine is not thread-safe and had only ever had one caller (`Error_history.txt` #42). (2) The game name read as 'Z25pindt' for 'z25pin41' because the crop put the first glyph flush against its edge; Tesseract needs a quiet border. Adding one, plus a character whitelist and a vote across four thresholds, made it exact. **OCR cannot determine CASE** ('z' and 'Z' are the same glyph) - the program remembers the case it typed, and `game_name` in `user_config.txt` seeds the first one.
+  Repo reorganised into `core/` (the engine), `tools/`, `tests/`, `docs/`, with `main.py` and `user_config.txt` left at the root. The import direction now enforces the architecture: `main.py` imports `core`, `core` imports nothing back. `docs/updates.txt` gained an AT A GLANCE index, newest first.
+
+- [x] **2026-08-30 — `quit_game()` on `F3`, the first scripted sequence.** Esc -> wait for 'Save and Exit' -> click -> confirm we reached the lobby by waiting for `in_play()` to go false. Every step waits on detection, never a clock. New generic primitives `actions.click_when_seen()` and `actions.wait_until()`, and `presence.locate()` (position, not just a boolean). **Two things worth remembering.** (1) The template had to be the TEXT, not the button: all five menu buttons share identical frame art, so a whole-button template scored 0.900 on the right button and 0.888 on a wrong one - margin 0.013, a coin flip that would report success while clicking the wrong thing. Text-only: 0.331. A bigger template is not a stronger match. (2) It takes its own FULL-RESOLUTION capture, because at the fast path's 0.3x the words are 10px tall and the margin collapses to 0.122 (0.793 vs 0.671). At full res, 0.891 vs 0.529. Same lesson as OCR's separate capture resolution. **Also fixed a hang that had been shipping since v0.010** - see `Error_history.txt` #41.
 
 - [x] **2026-08-30 — v0.012 — in-play check + panel sizing. Confirmed working in live play.** The lobby no longer types potions into the game name (verified by the project owner: game name stayed clean). Panel text was spilling outside its backing plate for long status strings - `PANEL_WIDTH` was a fixed 300px while the value column starts at 232px, so `not on screen (0.30)` (392px needed) rendered in red over the game. Now measured with real Tk font metrics and the plate grows to fit; `NOT CALIBRATED` (384px) and `window not found` (336px) turned out to have been spilling unnoticed too. Kept as a MINIMUM so the plate does not jitter as `9%` becomes `100%`. New `test_overlay.py`.
 

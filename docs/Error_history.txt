@@ -1307,3 +1307,87 @@ Lesson: A sentinel that is also a legitimate value will eventually be returned
   sensor as a maximum-urgency reading. Where a sensor's failure mode has to
   collapse into a number at all, it must fail toward "do nothing", never toward
   "act immediately".
+
+------------------------------------------------------------------------------
+41. A paused attempt waited forever, because "does not count against the
+    timeout" is an unbounded wait
+------------------------------------------------------------------------------
+Where: actions.py, click_until_gone() and the new click_when_seen().
+Symptom: Found by a test written for a NEW function, which then turned out to
+  apply to a function that had been shipping for two versions. A unit test that
+  passed is_paused=lambda: True with a 0.3s timeout never returned; the test
+  process had to be killed.
+Root cause: both functions treat a pause as "suspend, do not fail" - the paused
+  iterations deliberately do not increment the elapsed counter the loop condition
+  tests, so a snooze suspends an attempt instead of consuming it. That is the
+  right behaviour and it is safe for as long as every is_paused callback
+  eventually goes false. It did: the original one was purely a snooze hotkey
+  (time.time() < snooze_until), which always expires on its own.
+  v0.010's foreground guard is what made it reachable, by widening auto-collect's
+  callback to "snoozed OR not safe to act". The second half stays true for as
+  long as the game is not the focused window - indefinitely, if you alt-tab away
+  and do not come back. Alt-tab in the middle of a pickup and click_until_gone()
+  never returns, so run_auto_collect() never gets its thread back and silently
+  stops collecting for the rest of the session.
+  Nothing looks wrong while it happens. The thread is not spinning - it sleeps
+  poll_interval every iteration - so there is no CPU spike, no error, and no log
+  line. The only symptom is that a feature quietly stops working.
+Fix: paused time is bounded separately from active time. Both functions now take
+  pause_budget (PAUSE_BUDGET_SECONDS, 30s): an attempt may be suspended for that
+  long in total, after which it gives up and reports failure. Callers re-attempt
+  on their own schedule, which is the right way to resume - not by holding one
+  attempt open indefinitely. Tests cover all three cases: a pause that never
+  clears must END, a pause that does clear must NOT fail the attempt, and the
+  older function must behave the same as the new one.
+Lesson: "this wait does not count against the timeout" is the same statement as
+  "this wait is unbounded", and the second phrasing is the one that shows the
+  bug. A timeout only bounds the thing it is measured against, so every path that
+  is deliberately excluded from it needs its own bound.
+  Note also HOW the latent bug was introduced: adding a second condition to an
+  existing callback changed that callback's lifetime from "always expires" to
+  "may never expire", with no change to the function relying on it. When you
+  widen a predicate, check what the code consuming it assumed about how the
+  predicate behaves over time, not just what it returns.
+
+------------------------------------------------------------------------------
+42. A second thread calling OCR killed the whole process, with no traceback
+------------------------------------------------------------------------------
+Where: text_detection.py's shared _tesserocr_api; triggered by main.py's
+  next_game() reading the lobby's game name.
+Symptom: Reported as "after the game successfully quits and goes into the lobby,
+  the program stops running". No Python traceback, no error line, no exit
+  message - the process was simply gone. That absence is itself the clue: a
+  Python exception in a daemon thread prints a traceback and leaves the rest of
+  the program running, so "nothing at all" points below Python.
+Root cause: text_detection keeps ONE long-lived Tesseract engine
+  (PyTessBaseAPI) and reuses it for every call - deliberately, because
+  re-initialising Tesseract per call is the cost that instance exists to avoid.
+  It is not thread-safe, and that was invisible for as long as exactly one thread
+  (detect_text) ever touched it.
+  next_game() added a second caller, on its own thread, while the OCR thread was
+  still scanning for item labels. Two threads inside a C++ library's mutable
+  state at once does not raise - it corrupts or it crashes the process.
+  read_line() made it worse in a second, quieter way: it switches the engine's
+  page-segmentation mode to SINGLE_LINE for the duration of a call and puts it
+  back afterwards. Even without a crash, another thread finding the engine in
+  SINGLE_LINE mode would read a whole game screen as one line of text and
+  silently find nothing - a detection outage with no error at all.
+Fix: a module-level threading.Lock around every use of _tesserocr_api, covering
+  the page-segmentation mode change as well as the call itself. Serialising costs
+  little: detect_text's calls are ~0.1-0.26s and already the slow path, and the
+  new callers run once per game. A lock rather than a second engine, because a
+  second engine would double the memory and re-pay initialisation to remove
+  contention that does not exist. Verified with a stress test that runs both
+  callers concurrently: 11 full-screen scans all returning an identical line
+  count, and 12 field reads all exact, with no errors.
+Also fixed alongside: both scripted-sequence worker threads swallowed
+  exceptions. A hotkey that appears to do nothing, with nothing printed, is
+  almost impossible to diagnose - they now print the traceback and say they
+  stopped.
+Lesson: "shared, long-lived, and fast because it is reused" is the same sentence
+  as "single-threaded", and nothing in the code says so. Before calling into an
+  existing helper from a NEW thread, check what state it keeps between calls -
+  the danger is not the code you are writing, it is the assumption the old code
+  was allowed to make when it had only one caller. Watch especially for a helper
+  that temporarily CHANGES a shared setting and restores it: that is correct with
+  one thread and a race with two, and its failure is silent rather than loud.

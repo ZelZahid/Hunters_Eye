@@ -42,6 +42,27 @@ snooze = 10
 ignore_below = 0.03
 
 
+# --- Making a new game (F3 / next_game) --------------------------------------
+
+# Put a password on every new game this makes. Off by default, because the safe
+# thing for an automatic sequence is to leave a field ALONE unless it is told
+# otherwise - and because an unwanted password is invisible until someone cannot
+# join your game. With this off, any password already in the box is CLEARED, so
+# a password you set by hand earlier does not silently carry into every new game.
+use_password = yes
+
+# The password to use when use_password is yes. Taken exactly as written.
+password = 123
+
+# Normally the game name is read off the lobby's own "Game Name" box, which
+# Diablo II pre-fills with your last game, and then the number on the end is
+# incremented ("z25pin35" -> "z25pin36"; a name with no number gets a "0").
+# Set this to force a starting name instead - useful on a fresh client where the
+# box is empty, or to switch naming scheme without typing it in yourself.
+# Leave it blank to read the box, which is what you normally want.
+game_name =
+
+
 # -----------------------------------------------------------------------------
 # Potion rules - one [section] each
 # -----------------------------------------------------------------------------

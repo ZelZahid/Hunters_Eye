@@ -6,11 +6,17 @@ live game, so the two failure modes both matter: crashing on a typo (the program
 unattended, so a config typo must never stop it) and SILENTLY running with a setting nobody
 intended, which is worse because nothing looks wrong. Every case below is one of those.
 """
+import sys
+from pathlib import Path
+#Run directly (python tests/test_x.py), so the repo root has to be on the path before any
+#project import - sys.path[0] is this file's own folder, not the root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import os
 import sys
 import tempfile
 
-import user_config
+from core import user_config
 
 failures = 0
 

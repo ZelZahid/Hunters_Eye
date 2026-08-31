@@ -12,19 +12,21 @@ import mss
 import numpy as np
 import time
 import threading
+import traceback
+import re
 import keyboard
 from collections import namedtuple
 from pathlib import Path
 from queue import Queue, Empty
 
-import actions
-import game_state
-import text_detection
-import window_region
-import presence
-import user_config
-import frame_source
-from overlay import Overlay
+from core import actions
+from core import game_state
+from core import text_detection
+from core import window_region
+from core import presence
+from core import user_config
+from core import frame_source
+from core.overlay import Overlay
 
 #Globals
 w, h = pyautogui.size() #Captures Screen Resolution [1920x1080]
@@ -185,9 +187,20 @@ def anchor_rect():
 #Measured separation on real frames: 0.951 in game and 0.835 with the ESC menu open (HUD still
 #drawn, correctly still "in play") against 0.343 and 0.329 in two different lobbies.
 in_play_check = presence.load(ASSETS_DIR / "in_play.json")
+
 _in_play_lock = threading.Lock()
 _in_play = None      #True/False/None-cannot-tell - see anchor_focused() for why None is a third answer
 _in_play_score = None
+#A MISS HAS TO PERSIST BEFORE IT COUNTS, and the asymmetry is the point: seeing the HUD is proof
+#we are in a game, while NOT seeing it might only mean something is briefly covering it. So a
+#positive is published immediately and a negative has to hold for this long first. Kept short
+#because the cost of believing we are in a game for too long is a keypress landing somewhere it
+#should not - at 0.3s, with POTION_MIN_GAP_SECONDS at 0.6, that is at most one.
+#This handles the FLICKER (a spell effect, floating combat text). Sustained occlusion - an item
+#tooltip sits there for as long as you hover - is handled by having a second reference on the
+#opposite corner instead; see assets/in_play.json.
+IN_PLAY_MISS_GRACE_SECONDS = 0.3
+_in_play_missing_since = None
 
 
 def _update_in_play(frame_gray):
@@ -201,17 +214,33 @@ def _update_in_play(frame_gray):
     if in_play_check is None:
         return None
 
+    global _in_play_missing_since
     rect = anchor_rect()
     if rect is not None:
         #Same routing the HUD meters use: the art is at a fixed place in the WINDOW, not on the
-        #screen, so a windowed or moved game would otherwise search the wrong pixels.
-        region = window_region.to_frame_fractions(rect, CAPTURE_RECT, in_play_check.search_region)
+        #screen, so a windowed or moved game would otherwise search the wrong pixels. Passed as a
+        #RESOLVER rather than one region, because each reference has its own - forcing one on all
+        #of them would search the right-hand corner for the left-hand orb.
+        resolver = lambda r: window_region.to_frame_fractions(rect, CAPTURE_RECT, r)
         hud_width = rect[2] * CAPTURE_SCALE
     else:
-        region = None
+        resolver = None
         hud_width = frame_gray.shape[1]
 
-    found, score = in_play_check.check(frame_gray, hud_width, region=region)
+    found, score = in_play_check.check(frame_gray, hud_width, resolve_region=resolver)
+
+    #Debounce only the negative - see IN_PLAY_MISS_GRACE_SECONDS.
+    now = time.monotonic()
+    if found is False:
+        if _in_play_missing_since is None:
+            _in_play_missing_since = now
+        if now - _in_play_missing_since < IN_PLAY_MISS_GRACE_SECONDS:
+            with _in_play_lock:
+                _in_play_score = score
+                return _in_play      #hold the previous answer while the miss is still brief
+    else:
+        _in_play_missing_since = None
+
     with _in_play_lock:
         _in_play, _in_play_score = found, score
     return found
@@ -941,6 +970,511 @@ def run_potion_drinking():
         print(f"Potion: {rule.label} (key '{key}') at {rule.meter} {readings[rule.meter]:.0%}")
 
 
+#--- Scripted sequences (Diablo II integration) --------------------------------------------------
+#The first scripted sequence, and the shape every later one should follow. This block is game
+#glue in the same sense run_auto_collect() and POTION_RULES are: the engine underneath it
+#(presence.locate, actions.click_when_seen, actions.wait_until) knows nothing about Diablo II,
+#menus, or quitting - it knows "find this art", "click it when it appears" and "wait for this to
+#become true". What is Diablo-specific lives here and in assets/save_and_exit.json.
+#
+#EVERY STEP WAITS ON DETECTION, NEVER ON A CLOCK. The obvious version of this function is
+#press-Esc, sleep, click-fixed-coordinates - and that breaks on the first frame-rate dip or
+#loading hitch, by clicking whatever is under those coordinates instead of the button. See
+#todolist.md, where "sequence steps on detection, not sleep()" was written down before any of
+#this existed.
+save_and_exit_button = presence.load(ASSETS_DIR / "save_and_exit.json")
+QUIT_MENU_TIMEOUT = 4.0    #how long to wait for the Esc menu to appear before giving up
+QUIT_CONFIRM_TIMEOUT = 20.0 #how long to wait to actually leave the game after clicking. Generous:
+                             #this is a save + a map teardown + a lobby load, not a UI transition.
+_quit_lock = threading.Lock()  #one sequence at a time - see run_quit_game()
+
+
+#Characters a game name may contain. Anything else OCR produced is a misread, not a name - and a
+#misread that gets typed into a field and then incremented forever is a mistake that compounds.
+_GAME_NAME_OK = re.compile(r"^[A-Za-z0-9 _-]+$")
+_TRAILING_DIGITS = re.compile(r"(\d+)$")
+MAX_GAME_NAME_LENGTH = 15   #Diablo II's own limit; a longer read is a misread, not a long name
+
+
+def next_game_name(name):
+    """'z25pin35' -> 'z25pin36'. A name with no trailing number gets a '0'.
+
+    Pure string handling, no game knowledge, so the rule can be checked without a game running -
+    which matters because the failure is silent: a wrong increment still produces a perfectly
+    valid game name, and you only notice when the sequence has drifted off your naming scheme.
+
+    Zero padding is preserved at its current width ('z25pin09' -> 'z25pin10') and grows when it
+    has to ('z25pin99' -> 'z25pin100'), so a name never shrinks or gains a leading zero it did
+    not have. Only a number at the very END counts - 'z25pin' increments to 'z25pin0', not
+    'z26pin', because the digits in the middle are part of the name the user chose.
+    """
+    name = (name or "").strip()
+    if not name:
+        return ""
+    match = _TRAILING_DIGITS.search(name)
+    if match is None:
+        return name + "0"
+    digits = match.group(1)
+    return name[:match.start()] + str(int(digits) + 1).zfill(len(digits))
+
+
+def clean_game_name(raw):
+    """What OCR read, reduced to a usable game name, or None if it does not look like one.
+
+    OCR is the weakest link in this whole sequence and its mistakes are not loud: a misread name
+    is still a valid name, so it gets typed in, created, and incremented from there forever. So
+    anything that does not look like a name someone would have typed is rejected outright rather
+    than cleaned up into something plausible - the caller can fall back to the configured name or
+    stop, both of which are better than quietly renaming your games.
+    """
+    if not raw:
+        return None
+    #OCR likes to hallucinate a trailing cursor or field edge as punctuation.
+    text = raw.strip().strip("|").strip()
+    if not text or len(text) > MAX_GAME_NAME_LENGTH:
+        return None
+    if not _GAME_NAME_OK.match(text):
+        return None
+    return text
+
+
+def _find_save_and_exit(frame_bgra):
+    """Screen position (centre, real pixels) of the 'Save and Exit' button in a FULL-RESOLUTION
+    frame, or None if it is not there.
+
+    Takes the frame rather than capturing one, so the decision can be tested against a saved
+    screenshot without a game running - the same reason _potion_due() takes its readings.
+    """
+    if save_and_exit_button is None or frame_bgra is None:
+        return None
+
+    gray = cv.cvtColor(frame_bgra, cv.COLOR_BGRA2GRAY if frame_bgra.shape[2] == 4
+                       else cv.COLOR_BGR2GRAY)
+    rect = anchor_rect()
+    if rect is not None:
+        #Anchored to the window, like the meters and the in-play check: the menu is drawn at a
+        #fixed place in the GAME, not on the screen, so a windowed or moved game would otherwise
+        #search the wrong pixels and compare against a wrongly-sized template.
+        resolver = lambda r: window_region.to_frame_fractions(rect, CAPTURE_RECT, r)
+        hud_width = rect[2]
+    else:
+        resolver = None
+        hud_width = gray.shape[1]
+
+    found, _score, box = save_and_exit_button.locate(gray, hud_width, resolve_region=resolver)
+    if not found:
+        return None
+    x, y, w, h = box
+    #Full resolution, so no SCALE_TO_NATIVE here - only the capture origin has to be added back.
+    return int(CAPTURE_RECT[0] + x + w / 2), int(CAPTURE_RECT[1] + y + h / 2)
+
+
+def quit_game():
+    """Leaves the current game: press Esc, click 'Save and Exit', end up in the lobby.
+
+    Returns True only if we actually left, which is not the same as "the click was issued" - the
+    click is the easy half. next_game() will be built on this, and a next_game that believes it
+    quit when it did not would go on to press Create-Game buttons into a live game world.
+
+    Deliberately reports failure rather than retrying or forcing anything: if the menu never
+    appeared, pressing Esc again would only toggle it, and if the click landed but the game did
+    not exit, something is on screen that this function was not written for.
+    """
+    if save_and_exit_button is None:
+        print("quit_game: no assets/save_and_exit.json - cannot find the button.")
+        return False
+    if not actions_allowed():
+        #Same two guards as every other action: the window must be focused and the HUD must be on
+        #screen. Pressing Esc into a lobby or another program is exactly the class of bug that
+        #typed a potion sequence into a game name.
+        print("quit_game: not safe to act (game not focused, or not in a game).")
+        return False
+
+    print("quit_game: opening the menu...")
+    actions.press_key("esc")
+
+    #ITS OWN FULL-RESOLUTION CAPTURE, not the pipeline's 0.3x frame, and that is a correctness
+    #decision rather than a nicety. The five menu buttons differ only in their WORDS, and at 0.3x
+    #those words are ten pixels tall - measured through this exact code path, the right button
+    #scored 0.793 against 0.671 for a wrong one, leaving 0.029 of headroom over any threshold
+    #placed between them. At full resolution it is 0.891 against 0.529. This is the same lesson
+    #already recorded for OCR (see "Why OCR needs its own capture resolution"): a detector's
+    #resolution needs come from what it has to tell apart, and sharing one frame between
+    #differently-shaped detectors is a trap. Affordable precisely because this is rare and
+    #user-initiated - about 24ms per poll for at most a few seconds, once per game, against the
+    #fast path's per-frame budget which this never touches.
+    with mss.mss() as sct:
+        def find_button():
+            raw = sct.grab(monitor_area)
+            frame = np.frombuffer(raw.raw, dtype=np.uint8).reshape(raw.height, raw.width, 4)
+            return _find_save_and_exit(frame)
+
+        clicked = actions.click_when_seen(find_button, timeout=QUIT_MENU_TIMEOUT,
+                                          is_paused=lambda: not actions_allowed())
+    if not clicked:
+        print(f"quit_game: 'Save and Exit' did not appear within {QUIT_MENU_TIMEOUT:.0f}s - "
+              f"doing nothing. (Esc may have opened something else, or the menu art has changed.)")
+        return False
+
+    #Confirm by looking, not by assuming. The in-play check already answers "is the game HUD on
+    #screen", and leaving for the lobby is precisely that going false - so the confirmation costs
+    #no new machinery.
+    print("quit_game: clicked 'Save and Exit', waiting to reach the lobby...")
+    left = actions.wait_until(lambda: in_play() is False, timeout=QUIT_CONFIRM_TIMEOUT)
+    if left:
+        print("quit_game: in the lobby.")
+    else:
+        print(f"quit_game: clicked, but still appear to be in a game after "
+              f"{QUIT_CONFIRM_TIMEOUT:.0f}s - check the screen.")
+    return left
+
+
+#--- Making the next game (lobby form) ------------------------------------------------------------
+#Everything below drives Diablo II's Create Game form. It is located by READING THE FORM'S OWN
+#LABELS rather than by stored coordinates, which is what makes it survive a resolution change, a
+#windowed game, or the panel moving - there is nothing here to re-calibrate.
+#
+#The form is a regular grid, and that is what makes this work. Measured on a real lobby:
+#   "Game Name" label      y=135
+#   its text box           y=161   (+26)
+#   "Password" label       y=204   (+69)
+#   "Game Description"     y=273   (+69, the same spacing again)
+#Two labels found by OCR give the row spacing at runtime, and every other position follows from
+#it as a RATIO - so no pixel offset is ever hard-coded.
+LOBBY_FORM_REGION = (0.55, 0.03, 0.45, 0.35)   #anchor fractions: the Create Game form
+LOBBY_DIALOG_REGION = (0.18, 0.28, 0.64, 0.38) #anchor fractions: the centred error dialog
+#Where a text box sits below its own label, and how far into it to click - both in units of the
+#measured row spacing, so they scale with the form instead of with the screen.
+LOBBY_FIELD_DROP = 0.50
+LOBBY_FIELD_INSET = 0.30
+#Fallback row spacing, in units of the label's own text height, for when only one label is read.
+LOBBY_ROW_SPACING_FALLBACK = 6.27
+#Thresholds the game name is read at, and how many must agree before the result is trusted.
+#See _read_lobby_game_name() for why a single threshold is not enough.
+NAME_READ_THRESHOLDS = (110, 120, 130, 140)
+NAME_READ_AGREEMENT = 3
+
+#The last name this actually typed into the box. OCR CANNOT TELL 'z' FROM 'Z' - they are the same
+#glyph at different sizes, and a text box gives no x-height reference to judge against. Measured on
+#a real lobby, every threshold from 120 to 150 read "z25pin38" as "Z25pin38". So the reading is
+#used to decide WHICH name it is, and this remembers the exact case it was typed with.
+#Self-correcting on purpose: it is only trusted when it matches what was just read
+#case-insensitively, so renaming the game by hand takes effect immediately instead of being
+#overridden by a stale memory.
+_last_created_name = None
+
+NEXT_GAME_CREATE_TIMEOUT = 25.0 #how long to wait for a new game to load after pressing Enter
+NEXT_GAME_NAME_CLASH_RETRIES = 1 #"a game already exists with that name" -> bump and try once more
+
+
+def _anchor_region_pixels(region, frame_shape):
+    """(x0, y0, x1, y1) pixel bounds of an anchor-relative region within a full-resolution frame.
+
+    Falls back to treating the region as screen fractions when there is no anchor, exactly like
+    the meters and the in-play check do, so a fullscreen setup with no window lookup still works.
+    """
+    height, width = frame_shape[:2]
+    rect = anchor_rect()
+    if rect is not None:
+        converted = window_region.to_frame_fractions(rect, CAPTURE_RECT, region)
+        if converted is not None:
+            region = converted
+    rx, ry, rw, rh = region
+    x0 = max(0, min(width, int(rx * width)))
+    y0 = max(0, min(height, int(ry * height)))
+    return x0, y0, max(x0 + 1, min(width, int((rx + rw) * width))), \
+        max(y0 + 1, min(height, int((ry + rh) * height)))
+
+
+def _looks_like(text, *wanted):
+    """Loose containment test for a UI label OCR only half-read.
+
+    "Password (Optional)" comes back as 'Pa' / 'SY ERD' / 'BPTISNALI' - three fragments, none of
+    them the word. Labels that DO read cleanly ("Game Name", "Game Desc") are the ones worth
+    keying on, and this stays deliberately loose for those rather than pretending the broken ones
+    can be matched. Compare text_detection's fuzzy matching, which is strict because it decides
+    what to CLICK ON; this only decides where a form's rows begin.
+    """
+    squashed = "".join(ch for ch in text.upper() if ch.isalnum())
+    return all("".join(ch for ch in w.upper() if ch.isalnum()) in squashed for w in wanted)
+
+
+def _lobby_form(frame_bgra):
+    """Where the Create Game form's fields are, read from the form's own labels.
+
+    Returns {"name_field": (x, y), "password_field": (x, y), "row_spacing": px} in real screen
+    pixels, or None if the form is not on screen.
+    """
+    x0, y0, x1, y1 = _anchor_region_pixels(LOBBY_FORM_REGION, frame_bgra.shape)
+    crop = frame_bgra[y0:y1, x0:x1]
+    if crop.size == 0:
+        return None
+    lines = text_detection.read_lines(cv.cvtColor(crop, cv.COLOR_BGRA2BGR)
+                                      if crop.shape[2] == 4 else crop)
+
+    name = next(((t, b) for t, b in lines if _looks_like(t, "GAMENAME")), None)
+    if name is None:
+        return None
+    _, (nx, ny, _nw, nh) = name
+
+    #Row spacing from a SECOND label rather than a stored constant: "Game Description" is two
+    #rows below "Game Name", so half the gap is one row. Self-calibrating, so nothing here has to
+    #know the resolution. If that label is unreadable, fall back to the measured ratio of row
+    #spacing to label height.
+    desc = next(((t, b) for t, b in lines if _looks_like(t, "GAMEDESC")), None)
+    if desc is not None and desc[1][1] > ny:
+        row_spacing = (desc[1][1] - ny) / 2.0
+    else:
+        row_spacing = nh * LOBBY_ROW_SPACING_FALLBACK
+
+    click_x = x0 + nx + int(row_spacing * LOBBY_FIELD_INSET) + CAPTURE_RECT[0]
+    name_y = y0 + ny + int(row_spacing * LOBBY_FIELD_DROP) + CAPTURE_RECT[1]
+    return {
+        "name_field": (click_x, name_y),
+        #The password row is exactly one row below the name row - the same spacing again.
+        "password_field": (click_x, name_y + int(row_spacing)),
+        "row_spacing": row_spacing,
+        "name_label": (x0 + nx + CAPTURE_RECT[0], y0 + ny + CAPTURE_RECT[1], nh),
+    }
+
+
+def _read_lobby_game_name(frame_bgra, form):
+    """The text currently in the lobby's Game Name box, or None if it cannot be read.
+
+    Diablo II pre-fills this with the last game you made, which is where the number to increment
+    comes from. Read HERE rather than off the in-game map overlay, and that is a measurement, not
+    a preference: the same string in the map overlay is about 11px tall in a stylised font and
+    could not be read exactly by any combination of threshold, scale or segmentation mode tried
+    (closest: 'Game: 225pIN a8.' for 'Game: z25pin35'). Upscaling made it worse. The lobby's own
+    text box reads exactly - see text_detection.read_line().
+    """
+    spacing = form["row_spacing"]
+    lx, ly, _lh = form["name_label"]
+    #Started slightly LEFT of the label so the first character is never flush against the crop
+    #edge - the text box begins a little before its label does. Combined with the quiet border
+    #read_line() adds, this is what took the reading from 'Z25pindt' to 'z25pin41'.
+    x0 = max(0, int(lx - CAPTURE_RECT[0] - spacing * 0.12))
+    y0 = int(ly - CAPTURE_RECT[1] + spacing * 0.20)
+    box = frame_bgra[y0:y0 + int(spacing * 0.62), x0:x0 + int(spacing * 6)]
+    if box.size == 0:
+        return None
+    if box.shape[2] == 4:
+        box = cv.cvtColor(box, cv.COLOR_BGRA2BGR)
+
+    #READ AT SEVERAL THRESHOLDS AND TAKE THE MAJORITY, rather than trusting one number. A single
+    #threshold that happens to work on one screenshot is a setting tuned to that screenshot; the
+    #characters that go wrong here ('4' read as 'd', '1' as 't') do so at SOME thresholds and not
+    #others, so agreement across several is real evidence and one reading is not. Measured on the
+    #crop that failed: thresholds 110-140 all agree on 'z25pin41' once the border is added, while
+    #the old single reading at 120 gave 'Z25pindt'.
+    votes = {}
+    for threshold in NAME_READ_THRESHOLDS:
+        candidate = clean_game_name(text_detection.read_line(box, threshold=threshold))
+        if candidate:
+            votes[candidate] = votes.get(candidate, 0) + 1
+    if not votes:
+        return None
+    best, count = max(votes.items(), key=lambda kv: kv[1])
+    if count < NAME_READ_AGREEMENT:
+        #No clear winner means the readings disagree, which is exactly when a name should not be
+        #trusted - a wrong one gets typed in and then incremented from forever after.
+        print(f"next_game: the game name could not be read confidently (readings: "
+              f"{sorted(votes)}).")
+        return None
+    return best
+
+
+def _name_clash_showing(frame_bgra):
+    """Whether Diablo II's 'A Game Already Exists With That Name' dialog is up."""
+    x0, y0, x1, y1 = _anchor_region_pixels(LOBBY_DIALOG_REGION, frame_bgra.shape)
+    crop = frame_bgra[y0:y1, x0:x1]
+    if crop.size == 0:
+        return False
+    if crop.shape[2] == 4:
+        crop = cv.cvtColor(crop, cv.COLOR_BGRA2BGR)
+    return any(_looks_like(t, "ALREADY", "EXISTS") for t, _ in text_detection.read_lines(crop))
+
+
+def _fill_and_create(sct, name):
+    """Types `name` into the form, sets or clears the password, and presses Enter."""
+    frame = _grab(sct)
+    form = _lobby_form(frame)
+    if form is None:
+        print("next_game: could not find the Create Game form on screen.")
+        return False
+
+    actions.click_at(*form["name_field"])
+    actions.clear_field()
+    actions.type_text(name)
+
+    #The password field is handled EVERY time, not only when a password is wanted. Leaving it
+    #alone would silently carry a password set by hand into every game this makes afterwards,
+    #and an unwanted password is invisible until somebody cannot join.
+    actions.click_at(*form["password_field"])
+    actions.clear_field()
+    if potion_config.use_password and potion_config.password:
+        actions.type_text(potion_config.password)
+
+    #Enter rather than clicking the button: "Create Game" is on screen TWICE - the tab at the top
+    #of the panel and the button at the bottom - so a template or a text search has to
+    #disambiguate them, and the keyboard does not.
+    actions.press_key("enter")
+    return True
+
+
+def _grab(sct):
+    raw = sct.grab(monitor_area)
+    return np.frombuffer(raw.raw, dtype=np.uint8).reshape(raw.height, raw.width, 4)
+
+
+def _park_mouse_in_game():
+    """Puts the cursor in the middle of the game once a new game has loaded.
+
+    The sequence leaves the mouse wherever it last clicked - the lobby's Game Name box, up in the
+    top right - and in Diablo II the cursor position is not idle state: it is where the character
+    walks the moment you click. Leaving it in a corner means the first move of every run is a
+    sprint to the edge of the screen. The middle is where the character already is, so the first
+    click goes wherever the player actually points.
+
+    Centred on the ANCHOR WINDOW rather than the screen, so a windowed game gets the middle of
+    the game and not the middle of the desktop.
+    """
+    rect = anchor_rect() or CAPTURE_RECT
+    x, y, w, h = rect
+    actions.move_to(int(x + w / 2), int(y + h / 2))
+
+
+def _preferred_case(read_name):
+    """`read_name`, but with the exact capitalisation this program last typed, when they are the
+    same name. See _last_created_name for why OCR cannot supply the case itself."""
+    if read_name and _last_created_name and read_name.lower() == _last_created_name.lower():
+        return _last_created_name
+    return read_name
+
+
+def next_game():
+    """Quits the current game and creates the next one, with the name's number incremented.
+
+    Builds on quit_game(): leave -> read the name the lobby pre-filled -> increment -> type it in
+    -> set or clear the password -> Enter -> confirm a game actually loaded. If Diablo II says the
+    name is taken, bump the number and try once more, then stop and stay in the lobby rather than
+    hammering the server.
+
+    Every step confirms its own effect before the next one runs, because the failures compound:
+    a next_game that thinks it quit types a game name into a live game, and one that thinks it
+    created a game leaves you sitting in a lobby believing you are farming.
+    """
+    global _last_created_name
+    if in_play_check is None:
+        #Success is confirmed by the game HUD appearing. Without that check there is no way to
+        #tell "created a game" from "still sitting in the lobby", and a sequence that cannot
+        #verify its own result must not run - it would report whatever it guessed.
+        print("next_game: no in-play check available (assets/in_play.json) - cannot confirm a "
+              "game was created, so not starting.")
+        return False
+    if not quit_game():
+        print("next_game: could not leave the current game - stopping.")
+        return False
+
+    with mss.mss() as sct:
+        frame = _grab(sct)
+        form = _lobby_form(frame)
+        if form is None:
+            print("next_game: reached the lobby but could not find the Create Game form.")
+            return False
+
+        current = _preferred_case(_read_lobby_game_name(frame, form))
+        if current is None:
+            #A misread name is still a VALID name, so it would be typed in, created, and
+            #incremented from forever after. Refuse rather than guess - the configured name is
+            #the user's own answer to this, and stopping is better than renaming their games.
+            current = potion_config.game_name or None
+            if current is None:
+                print("next_game: could not read the game name, and no game_name is set in "
+                      "user_config.txt - stopping in the lobby.")
+                return False
+            print(f"next_game: could not read the lobby's game name; using the configured "
+                  f"{current!r}.")
+
+        #A configured game_name is the user's own spelling, so it wins over both OCR and memory
+        #the first time round - that is the point of setting it.
+        if potion_config.game_name and _last_created_name is None:
+            current = potion_config.game_name
+
+        for attempt in range(NEXT_GAME_NAME_CLASH_RETRIES + 1):
+            current = next_game_name(current)
+            print(f"next_game: creating {current!r}...")
+            if not _fill_and_create(sct, current):
+                return False
+
+            #Wait for one of three answers, not for a fixed time: we are in a game, the name is
+            #taken, or neither happened.
+            created = actions.wait_until(
+                lambda: in_play() is True or _name_clash_showing(_grab(sct)),
+                timeout=NEXT_GAME_CREATE_TIMEOUT, poll_interval=0.3)
+
+            if in_play() is True:
+                _last_created_name = current
+                _park_mouse_in_game()
+                print(f"next_game: in game {current!r}.")
+                return True
+            if not created:
+                print(f"next_game: no game after {NEXT_GAME_CREATE_TIMEOUT:.0f}s and no error "
+                      f"shown - stopping in the lobby.")
+                return False
+
+            print(f"next_game: {current!r} is taken.")
+            actions.press_key("enter")   #dismiss the dialog - OK is its default button
+            actions.wait_until(lambda: not _name_clash_showing(_grab(sct)), timeout=3.0)
+
+    print("next_game: the name was taken more than once - stopping in the lobby.")
+    return False
+
+
+def run_next_game():
+    """'F3' entry point. Runs next_game() on its own thread and never lets two overlap."""
+    if not _quit_lock.acquire(blocking=False):
+        print("next_game: already running.")
+        return
+
+    def worker():
+        try:
+            next_game()
+        except Exception:
+            #A scripted sequence dying quietly is the worst outcome: the hotkey appears to do
+            #nothing and there is nothing to go on. Print it and carry on - the rest of the
+            #pipeline is unaffected by this thread failing.
+            traceback.print_exc()
+            print("next_game: stopped by the error above.")
+        finally:
+            _quit_lock.release()
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def run_quit_game():
+    """'F3' entry point. Runs quit_game() on its own thread and never lets two overlap.
+
+    On its own thread because the `keyboard` package runs a hotkey callback on its listener
+    thread, and this one blocks for seconds - holding that thread up would stall every other
+    hotkey, including the 'End' that quits the program.
+    """
+    if not _quit_lock.acquire(blocking=False):
+        print("quit_game: already running.")
+        return
+
+    def worker():
+        try:
+            quit_game()
+        except Exception:
+            traceback.print_exc()
+            print("quit_game: stopped by the error above.")
+        finally:
+            _quit_lock.release()
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 WINDOW_NAME = "Hunters Eye"
 FPS_PRINT_INTERVAL_SECONDS = 5.0 #how often to print the FPS line - printing every single frame just floods the console
 
@@ -1106,6 +1640,8 @@ def run_overlay():
     #Kept entirely separate from the detection path: 'F5' only changes what gets DRAWN, so
     #toggling the panel can never disturb item detection, the boxes, or auto-collect.
     keyboard.add_hotkey("f5", _toggle_debug_panel)
+    keyboard.add_hotkey("f3", run_next_game)
+    print("Press 'F3' to quit this game and create the next one.")
     print("Overlay running - press 'End' anytime to quit, 'F5' to toggle the game-state panel.")
 
     t0 = time.time()

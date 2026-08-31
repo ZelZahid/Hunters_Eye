@@ -10,9 +10,12 @@ Measured with the real Tk font metrics rather than an estimate, because that is 
 checked: a monospace guess would agree with the code under test and prove nothing.
 """
 import sys
+from pathlib import Path
+#Run directly, so the repo root has to be on the path before any project import.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 try:
-    import overlay as ov
+    from core import overlay as ov
 except Exception as exc:                      # noqa: BLE001 - no display, no Tk, whatever
     print(f"SKIPPED: overlay could not be imported ({exc})")
     sys.exit(0)

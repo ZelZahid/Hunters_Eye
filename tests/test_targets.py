@@ -6,15 +6,22 @@ exactly where a name gets listed twice with conflicting flags - which happened, 
 a version, and presented as "OCR cannot read this item" rather than as a config mistake. These
 tests cover the parsing rules and the one ranking property the file's contents depend on.
 """
+import sys
+from pathlib import Path
+#Run directly (python tests/test_x.py), so the repo root has to be on the path before any
+#project import - sys.path[0] is this file's own folder, not the root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import io
 import os
 import sys
 import tempfile
 from contextlib import redirect_stdout
 
-import text_detection as td
+from core import text_detection as td
 
 failures = 0
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def check(label, condition):
@@ -77,7 +84,7 @@ check("falls back to the default", items["THING"]["color"] == td.DEFAULT_BOX_COL
 check("the item is still usable", items["THING"]["ignore"] is False)
 
 print("\n4. The shipped targets.txt has no duplicates and reports the small Rejuvenation Potion")
-shipped = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "targets.txt")
+shipped = os.path.join(REPO_ROOT, "assets", "targets.txt")
 buffer = io.StringIO()
 with redirect_stdout(buffer):
     real = td.load_target_items(shipped)

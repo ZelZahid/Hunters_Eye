@@ -13,9 +13,15 @@ edit as a code defect the first time they changed one. Section 8 checks the ship
 and checks only the things that must be true of ANY sane configuration.
 """
 import sys
+from pathlib import Path
+#Run directly (python tests/test_x.py), so the repo root has to be on the path before any
+#project import - sys.path[0] is this file's own folder, not the root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import sys
 
 import main
-import user_config
+from core import user_config
 
 failures = 0
 

@@ -1,26 +1,49 @@
 {
   "_comment": [
-    "Reference art proving the game HUD is on screen, i.e. that we are actually in play.",
-    "Cropped from a real in-game frame (the right-hand orb's stone frame - fixed art that is",
-    "always drawn during play and absent in the lobby / character select).",
-    "region and search_region are fractions of the ANCHOR WINDOW (see window_region.py), not",
-    "of the screen, so they survive the game being windowed, moved or resized.",
-    "search_region is deliberately much larger than the art itself: a wider search costs",
-    "almost nothing here but tolerates small HUD layout shifts. A FULL-frame search measured",
-    "3.0ms/frame against 0.2ms restricted, which is why it is restricted at all.",
-    "threshold separates in-play from lobby by a wide margin - measured 0.951 in game and",
-    "0.835 with the ESC menu open (HUD still drawn), against 0.343 and 0.329 in two lobbies."
+    "Art that proves the game HUD is on screen, i.e. that we are actually in play.",
+    "TWO references, on OPPOSITE CORNERS, and EITHER ONE is enough. A single reference made",
+    "the check fragile to anything covering it: hovering an item draws a tooltip over the",
+    "right-hand orb and the score fell to 0.48, so the pipeline decided it was not in a game",
+    "and paused everything - while the left orb sat there in plain view.",
+    "Occlusion is normal during play (tooltips, panels, spell effects) and it is local, so",
+    "the fix is a second piece of evidence somewhere else rather than a looser threshold.",
+    "Measured on the frame where the single reference failed:",
+    "   right orb frame (gargoyle)  0.48   <- covered by the tooltip",
+    "   left  orb frame (angel)     0.91",
+    "and on two lobby frames, where NEITHER may match: gargoyle 0.27/0.33, angel 0.37/0.37.",
+    "region and search_region are fractions of the ANCHOR WINDOW (see window_region.py), so",
+    "they survive the game being windowed, moved or resized."
   ],
-  "template": "in_play.png",
-  "source_size": [
-    1920,
-    1080
-  ],
-  "search_region": [
-    0.62,
-    0.7,
-    0.38,
-    0.3
-  ],
-  "threshold": 0.6
+  "references": [
+    {
+      "name": "right orb frame",
+      "template": "in_play.png",
+      "source_size": [
+        1920,
+        1080
+      ],
+      "search_region": [
+        0.62,
+        0.7,
+        0.38,
+        0.3
+      ],
+      "threshold": 0.6
+    },
+    {
+      "name": "left orb frame",
+      "template": "in_play_left.png",
+      "source_size": [
+        1920,
+        1080
+      ],
+      "search_region": [
+        0.02,
+        0.7,
+        0.38,
+        0.3
+      ],
+      "threshold": 0.6
+    }
+  ]
 }

@@ -36,6 +36,12 @@ DEFAULTS = {
     "min_gap": 0.6,
     "snooze": 10.0,
     "ignore_below": 0.03,
+    #Game-flow settings (see main.py's next_game). use_password is off by default because the
+    #safe thing for an automatic sequence is to leave a field ALONE unless told otherwise - and
+    #because an unwanted password on a game is invisible until someone cannot join it.
+    "use_password": False,
+    "password": "123",
+    "game_name": "",
 }
 
 #Sanity bounds. These are not taste, they are "this value cannot possibly be what you meant":
@@ -50,12 +56,23 @@ _LIMITS = {
 }
 
 
-class Config(namedtuple("Config", "enabled min_gap snooze ignore_below rules source")):
+class Config(namedtuple("Config",
+                       "enabled min_gap snooze ignore_below use_password password game_name "
+                       "rules source")):
     """Loaded settings. `source` is the file it came from, or None when defaults were used."""
 
     @property
     def loaded(self):
         return self.source is not None
+
+
+_FIELDS = ("enabled", "min_gap", "snooze", "ignore_below", "use_password", "password", "game_name")
+
+
+def _defaults(rules):
+    """A Config with every setting at its documented default. One definition, so a new setting
+    cannot be added to DEFAULTS and forgotten on one of the fall-back paths."""
+    return Config(*[DEFAULTS[k] for k in _FIELDS], tuple(rules), None)
 
 
 def _warn(where, message):
@@ -113,14 +130,12 @@ def load(path, known_meters=None, default_rules=()):
         with open(path, encoding="utf-8") as handle:
             parser.read_file(handle)
     except FileNotFoundError:
-        return Config(*[DEFAULTS[k] for k in ("enabled", "min_gap", "snooze", "ignore_below")],
-                      tuple(default_rules), None)
+        return _defaults(default_rules)
     except (OSError, configparser.Error) as exc:
         #A malformed file is worth shouting about - the user edited it and meant something.
         print(f"WARNING: could not read {path}: {exc}\n"
               f"         Falling back to built-in defaults.")
-        return Config(*[DEFAULTS[k] for k in ("enabled", "min_gap", "snooze", "ignore_below")],
-                      tuple(default_rules), None)
+        return _defaults(default_rules)
 
     settings = dict(DEFAULTS)
     if parser.has_section(SETTINGS_SECTION):
@@ -132,12 +147,17 @@ def load(path, known_meters=None, default_rules=()):
                 except Exception as exc:  # noqa: BLE001
                     _warn(f"[{SETTINGS_SECTION}]", f"{key} could not be read ({exc}); "
                                                    f"using {DEFAULTS[key]}")
-        if "enabled" in section:
-            try:
-                settings["enabled"] = section.getboolean("enabled")
-            except ValueError:
-                _warn(f"[{SETTINGS_SECTION}]", f"enabled = {section['enabled']!r} is not yes/no; "
-                                               f"using {DEFAULTS['enabled']}")
+        for key in ("enabled", "use_password"):
+            if key in section:
+                try:
+                    settings[key] = section.getboolean(key)
+                except ValueError:
+                    _warn(f"[{SETTINGS_SECTION}]", f"{key} = {section[key]!r} is not yes/no; "
+                                                   f"using {DEFAULTS[key]}")
+        for key in ("password", "game_name"):
+            if key in section:
+                #Taken verbatim - a password is not a number and not a name to be tidied up.
+                settings[key] = section[key].strip()
 
     rules = []
     for name in parser.sections():
@@ -184,5 +204,4 @@ def load(path, known_meters=None, default_rules=()):
             _warn("", "no usable rules found; falling back to built-in defaults")
         rules = list(default_rules)
 
-    return Config(settings["enabled"], settings["min_gap"], settings["snooze"],
-                  settings["ignore_below"], tuple(rules), str(path))
+    return Config(*[settings[k] for k in _FIELDS], tuple(rules), str(path))
