@@ -1,13 +1,15 @@
 """Tests for the quit_game sequence: button location, and the generic primitives under it.
 
-WHY THIS EXISTS: this is the first scripted sequence, and next_game() will be built on top of it.
+WHY THIS EXISTS: this is the first scripted sequence, and next_game() is built on top of it.
 Its dangerous failure is not "it did not work" - it is clicking the WRONG menu button, because all
 five share identical frame art and differ only in their words. A whole-button template scored
 0.900 on the right one and 0.888 on a wrong one, a margin of 0.013, and nothing about that looks
 wrong from outside: the sequence reports success and the game carries on running.
 
-Frames come from tests/fixtures/, which is committed. NOTE: tests/fixtures/esc_menu.png does not
-exist yet, so sections 3-5 do not run - see the message they print.
+Frames come from tests/fixtures/, which is committed - including esc_menu.png, so sections 3-5 do
+run. They are still guarded: if that file ever goes missing they SAY SO loudly rather than skipping
+quietly, because a test that skips is indistinguishable from a test that passes. They had already
+been off long enough for a refactor to break them unnoticed.
 """
 import sys
 from pathlib import Path
