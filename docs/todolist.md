@@ -39,11 +39,13 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
   - needs: an "am I in town / in the pit" state check of some kind
   - needs: an abort condition (low health, timeout, unexpected screen)
 
-- [ ] **Monster detection.** Start with a **benchmark, not an integration**: does YOLOv8/v11-nano hit acceptable FPS on this machine?
-  - ONNX Runtime, standalone script, imports nothing from the pipeline
-  - measure ms/frame on CPU, and on GPU if available
-  - budget: ~30–60 ms/frame CPU, ~5–10 ms GPU. CPU would roughly halve current FPS — a real tradeoff to decide deliberately, not stumble into
-  - if the numbers are bad: smaller input size, run detection every Nth frame, or a cheaper classical detector for a narrower job
+- [ ] **Monster detection.** **Design is now DECIDED and written up in [`monster_detection_plan.txt`](monster_detection_plan.txt) (2026-09-02) — read that before starting.** Short version: one small fine-tuned neural detector (YOLOv8n/11n class), **one model with N classes, not one model per monster**, trained offline by `tools/train_monster.py` from folders of example images under `assets/monsters/` (those folders now exist, empty). Template matching was considered and rejected — not on cost, on *invariance*: monsters are animated 3D models and `TM_CCOEFF_NORMED` has no scale/rotation/deformation tolerance.
+  - still start with a **benchmark, not an integration** — standalone script, imports nothing from the pipeline
+  - measure ms/frame on CPU, and on GPU if available, at 640/416/320
+  - budget: ~30–60 ms/frame CPU, ~5–10 ms GPU. Mitigated by design: infer at ~5–10 Hz and reuse `_relocalize_track()` between inferences, the pattern OCR already proved
+  - ~~zero-shot experiment~~ **DONE 2026-09-03, answer recorded in the plan.** OWLv2 image-prompt **fails outright** (scores saturate near 1.0, uncorrelated with correctness — the "register a monster with one image, no training" idea is dead). Text-prompt **partially works**: cropped to `main.py`'s existing OCR viewport margins it got 9 of 11 detections onto real Defiled Warriors at 0.12–0.21. Good enough to **auto-label training data**, not good enough to act on. So the training pipeline stays, and section 7's manual labelling gets much cheaper
+  - 135ms on the RTX 5070 vs 3199ms on CPU — 24x. Any timing conclusion about a GPU model must come from the GPU
+  - runtime dep is **onnxruntime only** — ultralytics/PyTorch stays a dev-only dependency, never a runtime one
   - this is also the exact code path the security-robot project needs (person detection is a pretrained class — no training data required)
 
 - [ ] **Combat target selection.** Needs monster detection working first.

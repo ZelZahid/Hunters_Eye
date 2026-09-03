@@ -12,3 +12,21 @@ lobby_diagnostic_*.png
 # permanently for evidence that is useful for one conversation. Anything worth
 # keeping from a screenshot belongs in Error_history.txt as measured numbers.
 assets/zelScreenshots/
+
+# Monster detector training images and the model built from them - see
+# assets/monsters/README.txt and docs/monster_detection_plan.txt. The class
+# FOLDERS are tracked (each holds a .gitkeep) and so is the README, but their
+# contents are not: same reasoning as zelScreenshots above - large binaries
+# that only grow - and monsters.onnx is reproducible from the images anyway.
+assets/monsters/*/*
+!assets/monsters/*/.gitkeep
+assets/monsters/monsters.onnx
+assets/monsters/monsters.json
+
+# Benchmark/experiment outputs - models downloaded and exported by
+# tools/benchmark_detector.py, and the annotated PNGs tools/zeroshot_check.py
+# writes. All reproducible by re-running the scripts.
+tools/_benchmark_models/
+*.onnx
+zeroshot_result*.png
+zeroshot_scene.png

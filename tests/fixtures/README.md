@@ -19,6 +19,12 @@ If a new test needs a real frame, add it here.
 | `in_game_tooltip.png` | in game, an item tooltip covering the right-hand orb | the occlusion bug: one in-play reference covered, the other still visible |
 | `lobby_form_crop.png` | a close crop of the Create Game form | reading a game name out of the text box |
 | `lobby_zze9.png` | the lobby with game name `zze9` | the per-character name vote - no single OCR threshold reads this name correctly (`Error_history.txt` #43) |
+| `pindle_pack.png` | Nihlathak's Temple entrance, ~8-9 Defiled Warriors | the monster-detection experiments - see `docs/monster_detection_plan.txt` section 9 |
+
+`pindle_pack.png` is the one fixture kept **unmasked and full-size**, deliberately. Everywhere else the
+subject is a small HUD region and the rest is noise worth blacking out; here the monsters scattered
+across the frame *are* the subject, and the viewport-crop result in the plan depends on this exact
+geometry. Masking it would delete the thing it exists to show.
 
 ## Why they are mostly black
 

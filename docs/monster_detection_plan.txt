@@ -1,0 +1,479 @@
+Hunter's Eye - Monster Detection Plan
+=====================================
+
+Written 2026-09-02. Status: DECIDED, not yet built.
+
+This is the design record for how Hunter's Eye will detect monsters. It exists
+so the reasoning survives the conversation it came from - what was chosen, what
+was rejected, and why - so none of it gets re-litigated months later. See
+CLAUDE.md for the architecture rules this has to obey, and todolist.md for where
+this sits in the queue.
+
+The requirement it answers: detect specific, named monsters (Pindle, Mephisto,
+zombies, fallen, ...) reliably enough to kill them, with new monsters added by
+dropping example images in a folder, without losing FPS as the list grows.
+
+
+------------------------------------------------------------------------------
+1. THE DECISION
+------------------------------------------------------------------------------
+A small fine-tuned neural object detector (YOLOv8n / YOLO11n class of model),
+trained OFFLINE by a tools/ script from folders of example images, shipped as a
+single ONNX file, run at inference time by onnxruntime.
+
+ONE model with N classes - not one model per monster.
+
+Registering a new monster = create a folder, drop images in it, re-run the
+training tool. No code change, no new model file, no extra runtime cost.
+
+This is the same "edit data, not code" split the project already uses for
+targets.txt (OCR item names) and meters.json (HUD meter regions), and the same
+tool-produces-a-data-file shape as calibrate_meters.py.
+
+
+------------------------------------------------------------------------------
+2. WHY NOT THE ALTERNATIVES
+------------------------------------------------------------------------------
+Recorded so these do not get proposed again.
+
+TEMPLATE MATCHING (cv.matchTemplate) - REJECTED.
+  The tempting answer, because CLAUDE.md already says template matching wins
+  below ~15-20 templates and we only want a handful of monsters. That rule is
+  about COST. The blocker here is INVARIANCE, which is a different problem.
+  TM_CCOEFF_NORMED has no tolerance for scale, rotation or deformation. A
+  monster is an animated 3D model: it idles, walks, attacks, gets knocked back,
+  and D2R lets the camera rotate. One template captures one animation frame at
+  one facing at one zoom. Covering that needs dozens of templates per monster,
+  which puts the linear cost explosion straight back - and each one still fails
+  when lighting or a spell effect changes the pixels.
+
+FEATURE MATCHING (ORB / SIFT + homography) - REJECTED.
+  The usual "but it is rotation invariant" answer. Built for rigid, textured,
+  planar objects (book covers, logos, landmarks). A deforming creature against
+  cluttered terrain is close to its worst case.
+
+HAAR CASCADE (as in legacy/) - REJECTED.
+  One cascade per class, so cost is linear in the number of monsters, plus
+  per-class training data. Grayscale-shape based, so it has the same animation
+  problem as template matching.
+
+ZERO-SHOT / IMAGE-PROMPT MODELS (OWLv2, YOLO-World) - NOT CHOSEN, BUT WORTH
+  ONE EXPERIMENT. These need no training at all: hand them a reference image
+  and they find that thing. If one works on stylised game art it would skip
+  this entire pipeline. The risk is that they are trained on natural photos and
+  a Diablo skeleton is nowhere in that distribution, and the ViT-based ones are
+  slow on CPU. Cheap to test, expensive to assume. See section 9.
+
+ONE MODEL PER MONSTER - REJECTED. See section 3.
+
+
+------------------------------------------------------------------------------
+3. WHY ONE MODEL WITH N CLASSES
+------------------------------------------------------------------------------
+The counterintuitive part, so it is written down properly.
+
+A trained detector is not a stored picture. It is two parts:
+
+  frame -> BACKBONE + NECK -> feature maps -> HEAD -> boxes + class scores
+
+  The backbone learns a general VISUAL VOCABULARY - edges, then textures, then
+  parts, then whole-shape silhouettes. It never sees a class label. It is ~99%
+  of the compute and it is byte-for-byte identical whether the model knows 1
+  class or 500.
+
+  The head, for each candidate location on a grid, outputs 4 numbers for the
+  box plus N numbers - one score per class. That is one dot product per class.
+
+So adding classes changes the output tensor from (8400, 4+1) to (8400, 4+N) and
+nothing else. On a YOLOv8n-sized model at 640px the whole network is roughly
+8.7 GFLOPs and the extra class channels are on the order of well under 1% of
+that.
+
+The empirical proof: every published YOLOv8n speed benchmark IS the 80-class
+COCO model. Nobody runs 80 networks to detect 80 object types. A model with
+5-20 monsters runs FASTER than the numbers in the docs, not slower.
+
+"But the bosses look completely different" is an argument FOR one model, not
+against it. Visually distinct classes are the EASY case - the separating
+features are stark and the network finds them immediately. The HARD case is
+classes that look alike (two near-identical skeleton variants), where a fine
+distinction has to be learned. And a multi-class model learns those distinctions
+BETTER than separate models would, because it is explicitly trained to tell them
+apart: five single-class models each only ever learn "this vs. background", so
+none of them ever learns "Pindle, not Mephisto".
+
+One model per monster is actively worse on three counts:
+  - cost goes linear: 5 models = 5 forward passes = 5x the milliseconds, which
+    is precisely the trap this design exists to avoid
+  - each model relearns the visual vocabulary from scratch off a small dataset,
+    instead of pooling all the data to learn it once
+  - five training runs, five model files, five thresholds to tune
+
+The real per-class cost is TRAINING EXAMPLES, which is genuinely linear in the
+number of monsters. But that is paid offline, once, in the training tool - not
+on every frame at 60 FPS. The whole trick is that the per-class cost moved from
+runtime to build time.
+
+
+------------------------------------------------------------------------------
+4. FOLDER LAYOUT
+------------------------------------------------------------------------------
+  assets/monsters/
+    README.txt              how to use the folder (short version of this file)
+    pindle/                 <- drop images of Pindle here
+    mephisto/
+    defiled_warrior/
+    zombie/
+    fallen/
+    skeleton/
+    _dataset/               what actually trains - see "two folder shapes" below
+      images/               full gameplay frames (tools/capture_frames.py)
+      labels/               one .txt per frame, YOLO format (tools/autolabel.py)
+      preview/              the same boxes drawn on, for human review
+      classes.txt           class-name -> id mapping the labels refer to
+    monsters.onnx           BUILT ARTIFACT - written by the training tool
+    monsters.json           class names + per-class thresholds, also built
+
+  tools/capture_frames.py   record gameplay frames to train on
+  tools/autolabel.py        draft boxes for them, for a human to correct
+  tools/train_monster.py    rebuilds monsters.onnx  [NOT WRITTEN YET]
+  core/<detector>.py        loads monsters.onnx, returns box + centre
+
+TWO FOLDER SHAPES, and why both are needed. This came up building step 3 and is
+worth stating plainly, because the per-class folders alone cannot express a
+training set: a single gameplay frame usually contains SEVERAL kinds of monster
+at once, so it belongs to no one class folder, and YOLO wants one label file per
+frame listing everything visible in it. So:
+  <class>/    exemplar images - the user-facing registration surface. Make a
+              folder, drop pictures of the thing in it. One folder = one class.
+  _dataset/   frames + labels - what the trainer actually reads.
+Adding a monster is still "make a folder and put images in it". The dataset is
+built from captures, not hand-sorted, so nobody files frames by hand.
+
+RULES:
+  - THE FOLDER NAME IS THE CLASS NAME. lowercase_with_underscores, no spaces.
+  - Adding a monster = adding a folder. Nothing else.
+  - An empty folder is skipped by the trainer, not an error. The folders can
+    sit empty indefinitely.
+  - Deleting a folder removes that class on the next training run.
+  - The folders are committed (via .gitkeep) but the IMAGES IN THEM ARE NOT -
+    they are multi-megabyte PNGs and the same reasoning that gitignores
+    assets/zelScreenshots/ applies. Same for monsters.onnx, which is a build
+    artifact reproducible from the images.
+
+
+------------------------------------------------------------------------------
+5. THE BUILD STEP
+------------------------------------------------------------------------------
+tools/train_monster.py, run by hand, never by the pipeline - the same category
+as calibrate_meters.py.
+
+  folders of images -> dataset -> train -> export ONNX -> assets/monsters/
+
+Training happens with ultralytics (PyTorch) which is a HEAVY, DEVELOPMENT-ONLY
+dependency. It must NOT become a runtime requirement: the pipeline depends on
+onnxruntime only (~12MB model, no torch). Keep that split in requirements.txt -
+a separate optional section, the way tesserocr and bettercam already are.
+
+The model retrains offline and explicitly. It must never retrain itself while
+the pipeline is running - that is exactly the unpredictability design priority
+#1 (stability) rules out.
+
+
+------------------------------------------------------------------------------
+6. THE RUNTIME DESIGN
+------------------------------------------------------------------------------
+A NEW MODULE IN core/, importing nothing from the other detectors and imported
+by none of them - CLAUDE.md's detector-independence rule. It is handed a BGR
+frame and returns matches; it must not know it is looking at a game.
+
+It returns the project's standard contract - bounding box + centre point - so
+the overlay, and future combat target selection, consume it with no changes.
+That is the "match result" seam from CLAUDE.md finally being tested by a third
+kind of detector.
+
+FPS strategy, which is the whole point (design priority #2). This reuses the
+pattern OCR already proved rather than inventing one:
+
+  1. ITS OWN THREAD, publishing to a lock-guarded shared variable, exactly like
+     shared_text_tracks. The fast path never blocks on it.
+  2. INFER AT ~5-10 Hz, NOT EVERY FRAME. Monsters do not teleport. A 40ms
+     inference at 8 Hz is 0.32 cores, not 2.4.
+  3. RELOCALIZE IN BETWEEN with the existing _relocalize_track() approach -
+     a small local grayscale matchTemplate around the last known position,
+     measured at 5.7ms per tracked item. This is what keeps boxes glued between
+     inferences. (Note this uses template matching where it actually DOES work:
+     a tiny search window, one frame apart, where nothing has had time to
+     rotate or change animation pose. That is not a contradiction of section 2
+     - it is the same reason section 2 rejects it for first detection.)
+  4. SMALLER INPUT - 416 or 320 instead of 640. Savings are quadratic in side
+     length.
+  5. GPU VIA ONNX RUNTIME if the numbers demand it. DirectML works on any DX12
+     GPU (AMD/Intel included), not only CUDA on NVIDIA.
+
+Budget from todolist.md: ~30-60 ms/frame CPU, ~5-10 ms GPU. Combined with (2)
+and (3), even the CPU figure is affordable.
+
+
+------------------------------------------------------------------------------
+7. GETTING TRAINING DATA
+------------------------------------------------------------------------------
+The honest cost, and the part with real manual work in it.
+
+YOLO trains on BOXES, not bare crops - each example image needs a label saying
+where in it the monster is. Two ways to get those without hand-annotating
+hundreds of frames:
+
+  CUT-PASTE SYNTHESIS. Take cropped images of the monster, paste them onto real
+  game background frames at random scale/position, and the bounding box label
+  is generated for free because we chose where it went. Scales well. Weakness:
+  if the crops are rectangular the model can learn the paste edge rather than
+  the monster, so the crops want alpha mattes (background removed).
+
+  HAND-LABELLED REAL FRAMES. ~100 per monster, roughly an hour each with a
+  labelling tool. More reliable - the model sees real lighting, real occlusion,
+  real terrain - but linear in monsters.
+
+Probably both: hand-label a base set, synthesise the rest. Decide after the
+first monster, not now.
+
+WHAT GOES IN THE FOLDERS IS NOT YET FIXED. It may be full frames, or tight
+crops, or crops with alpha. That is deliberately left open until section 9's
+experiments say which the pipeline wants. Put whatever is convenient in there
+for now; the trainer will be written to match reality.
+
+
+------------------------------------------------------------------------------
+8. THE FREE WIN THAT MAKES THIS EASIER
+------------------------------------------------------------------------------
+For scripted routes, DETECTION AND IDENTIFICATION ARE SEPARATE PROBLEMS, and
+the route usually only needs the first.
+
+Pindle is not discovered - he is walked to. A Pindle run goes through the red
+portal knowing he is the only super-unique there. So the detector only has to
+answer "big hostile thing, at (x,y)" and route context supplies "which".
+
+For positive confirmation when it is actually needed, text_detection.read_line()
+ALREADY EXISTS: hover the candidate, read the name plate, check it against a
+word list. Zero training, constant cost, hundreds of boss names in a text file.
+Verify the plate is legible at the target resolution with tools/diagnose_ocr.py
+before relying on it.
+
+Route context for WHICH, cheap detector for WHERE, OCR for confirmation, is far
+more robust than asking one model to do all three.
+
+
+------------------------------------------------------------------------------
+9. NEXT STEPS - MEASURE BEFORE BUILDING
+------------------------------------------------------------------------------
+Both are standalone scripts under tools/ that import nothing from the pipeline,
+so neither can break anything currently working. Same discipline the todolist
+already prescribes for this work: benchmark, do not integrate.
+
+Both scripts are WRITTEN (2026-09-02) and neither has been RUN yet - the
+dependencies are development-only and not installed. Each prints the exact
+install command and exits cleanly if something is missing. See requirements.txt.
+
+  [ ] 1. SPEED FLOOR - tools/benchmark_detector.py
+
+           python tools/benchmark_detector.py
+           python tools/benchmark_detector.py --image some_screenshot.png
+
+         Benchmarks YOLOv8n / YOLO11n at 640 / 416 / 320 across every
+         onnxruntime execution provider present. Decides whether inference runs
+         every frame or at ~8 Hz with relocalization filling the gaps, and
+         whether a GPU is required or merely nice.
+
+         It measures ONNXRUNTIME, not ultralytics/PyTorch, because onnxruntime
+         is the path that will actually ship - ultralytics is used only to
+         download and export the model once. It reports preprocess, inference
+         and postprocess separately (postprocess is NMS, and scales with the
+         number of DETECTIONS, not the input size - pass --image for a
+         representative number there), and converts ms/frame into CPU cores at
+         60/8/5 Hz, which is the figure that actually decides the design.
+
+         RESULT, 2026-09-03 - BOTH QUESTIONS ANSWERED, ON CPU ALONE.
+         Measured against tests/fixtures/pindle_pack.png, i9-11900K, CPU
+         execution provider (see the GPU caveat below - GPU is still unmeasured
+         and, as it turns out, not needed to decide anything).
+
+           model     size    ms   cores@60Hz  cores@8Hz
+           yolo11n    320    8.8      0.53       0.07
+           yolo11n    416   16.9      1.01       0.13
+           yolo11n    640   37.3      2.24       0.30
+           yolov8n    320   11.0      0.66       0.09
+           yolov8n    416   17.3      1.04       0.14
+           yolov8n    640   39.5      2.37       0.32
+
+         Q: every frame, or periodic with relocalization?
+         A: PERIODIC IS COMFORTABLE AT EVERY SIZE - 640px costs 0.30 cores at
+            8 Hz. And 320px at a full 60 Hz is 0.53 cores, so running on every
+            frame is genuinely on the table at small input sizes, which was not
+            expected. The design has more headroom than it was drawn with.
+
+         Q: is a GPU required, or merely nice?
+         A: MERELY NICE. This machine has an RTX 5070 and does not need it.
+
+         YOLO11N BEATS YOLOV8N at every size (8.8 vs 11.0 at 320, 37.3 vs 39.5
+         at 640). That settles the "which model" open question in section 10.
+
+         Preprocess is a real cost, not a rounding error: 1.9ms of the 8.8ms at
+         320 and 7.0ms of 37.3ms at 640 is letterbox + normalise, all of it on
+         CPU regardless of where inference runs. Postprocess (NMS) was under
+         0.5ms throughout, even on a frame with ~9 monsters - the thing that was
+         flagged as potentially surprising turned out not to be.
+
+         GPU NOT MEASURED, AND THE REASON IS A TRAP WORTH KNOWING.
+         onnxruntime-gpu 1.29 requires CUDA 13 + cuDNN 9. The machine had 12.9
+         (via torch), the nvidia-*-cu13 pip wheels have NO Python 3.14 build and
+         failed from source, and only CUDA-13-era onnxruntime-gpu builds exist
+         for cp314 - the same new-Python-version wheel gap as Error_history #15.
+         Also note ultralytics DOWNGRADED torch to the +cpu build on install,
+         silently undoing a CUDA torch install done minutes earlier.
+
+         THE BUG THIS EXPOSED, now fixed in the script: onnxruntime does NOT
+         raise when a provider's libraries are missing. It warns on stderr and
+         SILENTLY SUBSTITUTES CPU. The first run reported a full CUDA column
+         whose numbers were identical to CPU because they WERE CPU. bench_one()
+         now compares session.get_providers()[0] against what was requested and
+         refuses to report a fallback. ASKING FOR A PROVIDER IS NOT GETTING ONE
+         - the same shape as pyautogui sending scancode 0 and raising nothing.
+
+  [ ] 2. FREE-LUNCH CHECK - tools/zeroshot_check.py
+
+           python tools/zeroshot_check.py --scene shot.png --query pindle.png
+           python tools/zeroshot_check.py --capture --text "a skeleton"
+
+         Hands OWLv2 an image prompt (a crop of the monster) or a text prompt
+         and sees whether it finds the thing untrained. Saves an annotated PNG,
+         because the verdict is a visual judgement, not a score threshold.
+
+         RUN THIS ONE FIRST. It is the cheaper experiment and a positive result
+         invalidates a lot of downstream work.
+
+         THREE OUTCOMES, AND THE MIDDLE ONE IS NOT A FAILURE:
+           a) finds it, fast enough to run live -> skip training entirely; this
+              becomes the detector. Unlikely, OWLv2 is ViT-based and heavy.
+           b) finds it, far too slow to run live -> STILL A WIN. Use it offline
+              as an AUTO-LABELLER over a few hundred recorded frames and it has
+              just solved section 7's annotation problem, which is the only
+              genuinely laborious part of this plan. A slow model that is right
+              is worth a great deal when it runs once per dataset frame instead
+              of 60 times a second.
+           c) finds nothing, or boxes terrain -> the plan proceeds as written,
+              and this cost an hour.
+
+         RECORD THE RESULT HERE when it has been run, so a future session does
+         not repeat the experiment to learn the same thing.
+
+         RESULT, 2026-09-03 - RUN AND ANSWERED. VERDICT: OUTCOME (b).
+         Not a live detector. IS a usable auto-labeller. The plan below
+         proceeds exactly as written; the training path is still the product.
+
+         Tested against a real Pindle-pack frame (Nihlathak's Temple entrance,
+         ~8-9 Defiled Warriors, 1920x1080, dark and cluttered, monsters ~85x130
+         px, several overlapping). Frame kept as tests/fixtures/pindle_pack.png.
+
+         SPEED: 135-138 ms on the RTX 5070, 3199 ms on CPU - a 24x gap. The CPU
+         number alone would have wrongly ruled this out as an auto-labeller.
+         Time a GPU model on the GPU before concluding anything about it.
+
+         IMAGE PROMPT (hand it a crop of a monster): FAILS. Not "worse" - it
+         does not work at all. Scores saturate: 24 detections above 0.995, and
+         at the default 0.10 it returned thousands of boxes tiling the entire
+         frame. The scores are UNCORRELATED with correctness - of the 15
+         highest-scoring boxes, one was near a monster and the rest were on
+         stone floor and HUD chrome. No threshold rescues it, because ranking
+         itself is broken. This was the most attractive idea in the whole plan
+         (register a monster with one image, no training) and it is dead.
+
+         TEXT PROMPT ("a skeleton", "an undead warrior"): PARTIALLY WORKS, and
+         the failure mode is instructive. Full-frame, it found most of the pack
+         but scored HUD ornaments identically - the carved gargoyle beside the
+         mana orb scored 0.17, a real Defiled Warrior scored 0.17. Nothing
+         separates them, which is the same shape of problem as text_detection's
+         look-alikes: the answer is not a better cutoff.
+
+         The fix was already in this repo. Cropping to main.py's EXISTING OCR
+         viewport margins (VIEWPORT_TOP_MARGIN 0.08 / VIEWPORT_BOTTOM_MARGIN
+         0.25) removed nearly every false positive at a stroke: 11 detections,
+         9 of them on real monsters, the other two a torch and the player
+         character. Scores 0.12-0.21. That is good enough to draw draft boxes
+         a human then corrects - which is section 7's laborious part, largely
+         solved. It is NOT good enough to drive killing: 0.21 on a monster
+         against 0.15 on a torch is not a margin anything should act on.
+
+         GENERAL LESSON, worth more than the verdict: a HUD is not gameplay,
+         and every detector this project has added has eventually wanted it
+         cropped out. OCR needed it for cost (0.9s -> 0.42s). This needed it
+         for accuracy. Assume the next detector needs it too.
+
+         Environment notes worth not rediscovering:
+           - torch 2.9.0+cu129 (CUDA build - the +cpu one runs but at 3.2s),
+             transformers 5.16.1, and SCIPY, which is a HIDDEN requirement:
+             OWLv2's image processor imports it lazily inside resize(), so it
+             fails only at the first actual detection, minutes and a 600MB
+             download in. All three now noted in requirements.txt.
+           - tools/zeroshot_check.py takes --device (auto/cuda/cpu). CUDA calls
+             are asynchronous, so it warms up once and calls synchronize()
+             around the timed region - without that the timer stops when the
+             work is merely QUEUED and reports a fictional number.
+
+         PROCESS NOTE: assets/zelScreenshots/ was cleared MID-EXPERIMENT, after
+         a frame had been read from it and before it could be re-read. That is
+         the documented behaviour of that folder, not a fault. Anything an
+         experiment depends on gets copied out immediately, and anything worth
+         re-running against belongs in tests/fixtures/.
+
+  [~] 3. First real monster end to end, ONE class, to prove the loop.
+         TOOLING WRITTEN AND SMOKE-TESTED 2026-09-03. Blocked only on frames.
+
+           python tools/capture_frames.py                    <- YOU DO THIS
+           python tools/autolabel.py --class defiled_warrior
+           (review assets/monsters/_dataset/preview/ by eye)
+           python tools/train_monster.py --check
+           python tools/train_monster.py
+
+         capture_frames.py  mss (NOT DXGI - singleton, would steal frames from
+                            a running main.py), skips near-identical frames so
+                            standing still does not make 40 copies of one
+                            picture. Untested against a live game.
+         autolabel.py       proven on pindle_pack.png: 10 boxes, 8 on real
+                            monsters, 2 false (a torch, the player). Writes
+                            YOLO labels in FULL-FRAME coordinates - verified,
+                            since the model sees the HUD-cropped viewport and
+                            an un-offset label would be silently ~86px high.
+         train_monster.py   validates first and REFUSES on anything fatal
+                            (pixel coordinates instead of normalised, a class
+                            id with no entry, empty training split). Verified
+                            end to end on 3 frames: split -> train -> ONNX ->
+                            monsters.json. Defaults to yolo11n at 640.
+
+         WHY 640 AND NOT 320, though the benchmark says 320 is 4x cheaper: a
+         Defiled Warrior measures ~69x105 px in a 1920x1080 frame. Letterboxed
+         to 640 that is ~23x35 px; to 320 it is ~11x17, about two cells at the
+         head's finest 8px stride. Inference rate buys speed back later;
+         resolution cannot be bought back at all.
+
+         STILL TO DO once frames exist: train for real, then detect live and
+         measure the true FPS cost. Only after that does the class list grow.
+
+
+------------------------------------------------------------------------------
+10. OPEN QUESTIONS
+------------------------------------------------------------------------------
+  - ~~YOLOv8n or YOLO11n?~~ ANSWERED 2026-09-03: YOLO11N, faster at every
+    input size on the benchmark. See section 9.
+  - What exactly goes in the folders (full frames / crops / alpha crops)?
+    See section 7.
+  - Does the detection thread gate on the foreground/in-play guards? Detection
+    is currently deliberately ungated (boxes are display-only) but a neural net
+    is far more expensive than a matchTemplate call, so this may become a
+    performance decision worth making deliberately. Related todolist item:
+    "Gate OCR/detection on focus too, for CPU."
+  - Per-class confidence thresholds, or one global one? Probably per-class,
+    stored in monsters.json, since a rare boss and common trash will not want
+    the same operating point.
+  - Does a monster need multiple classes for its own variants (Fallen vs Fallen
+    Shaman vs Carver)? Cheap to add later - it is one more folder - so do not
+    decide up front.

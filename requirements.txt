@@ -53,3 +53,39 @@ pywin32>=306 ; sys_platform == "win32"
 # frame_source.py uses it automatically when present and falls back to mss when it is not
 # (or if DXGI fails mid-session), so the pipeline runs either way - just slower without it.
 bettercam>=1.0 ; sys_platform == "win32"
+
+# --- Monster detection experiments (tools/benchmark_detector.py,
+#     tools/zeroshot_check.py) - DEVELOPMENT ONLY, NOT INSTALLED ABOVE ---
+# Deliberately not plain requirements: these are heavy (torch alone is well over
+# a gigabyte) and the pipeline never imports any of them. Both scripts print the
+# exact install command and exit cleanly when one is missing, so skipping this
+# whole section costs you nothing except the ability to run those two tools.
+# See docs/monster_detection_plan.txt.
+#
+# Speed benchmark - pick the onnxruntime build matching your hardware:
+#   python -m pip install onnxruntime              # CPU, works everywhere
+#   python -m pip install onnxruntime-directml     # any DX12 GPU (Windows)
+#   python -m pip install onnxruntime-gpu          # NVIDIA CUDA
+# Plus, ONE TIME, to download and export the models to ONNX:
+#   python -m pip install ultralytics
+# NOTE: installing ultralytics DOWNGRADES torch to the +cpu build, silently
+# undoing a CUDA torch install. Reinstall the CUDA build afterwards if you want
+# GPU for tools/zeroshot_check.py or tools/train_monster.py. Observed 2026-09-03.
+#
+# Training (tools/train_monster.py) needs the same ultralytics + torch. Frame
+# capture (tools/capture_frames.py) needs only mss + keyboard, both already
+# listed above, so collecting data costs no extra install at all.
+#
+# Zero-shot experiment (OWLv2 via transformers):
+#   python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   python -m pip install transformers pillow scipy
+# scipy is NOT optional and NOT listed by transformers as a hard dependency -
+# OWLv2's image processor imports it lazily inside resize(), so it fails only
+# once you actually run a detection, several minutes and a 600MB model download
+# in. Verified on transformers 5.16.1 / torch 2.14.0. For GPU (this machine has
+# an RTX 5070) install a CUDA torch build instead of the +cpu one above; CPU
+# inference measured ~3.2s per call, which is auto-labeller territory, not live.
+#
+# NOTE for when this graduates from experiment to shipped feature: the RUNTIME
+# dependency is onnxruntime ONLY. ultralytics/torch stay development-only, used
+# by tools/train_monster.py to build the model, never by main.py to run it.
