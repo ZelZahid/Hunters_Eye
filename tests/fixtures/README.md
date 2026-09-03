@@ -18,7 +18,7 @@ If a new test needs a real frame, add it here.
 | `lobby_name_clash.png` | the same lobby with "A Game Already Exists With That Name" | detecting the clash dialog, and not detecting it when it is absent |
 | `in_game_tooltip.png` | in game, an item tooltip covering the right-hand orb | the occlusion bug: one in-play reference covered, the other still visible |
 | `lobby_form_crop.png` | a close crop of the Create Game form | reading a game name out of the text box |
-| `esc_menu.png` | the in-game Esc menu | finding **Save and Exit** and not the four buttons that share its art |
+| `lobby_zze9.png` | the lobby with game name `zze9` | the per-character name vote - no single OCR threshold reads this name correctly (`Error_history.txt` #43) |
 
 ## Why they are mostly black
 

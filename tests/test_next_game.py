@@ -208,5 +208,24 @@ try:
 finally:
     main.quit_game = saved_quit
 
+print("\n16. A name no single threshold reads correctly is still resolved, per character")
+#Regression, 2026-09-03. Live failure: the lobby held 'zze9' and next_game refused to read it.
+#The four thresholds gave zzeQ / zze9 / zze9 / zz09 - '9' misreads as 'Q' at one end of the
+#range and 'e' as '0' at the other - so no WHOLE string ever reached the 3-of-4 bar, even though
+#every character was decidable (z 4/4, z 4/4, e 3/4, 9 3/4). Whole-string voting discards where
+#the readings disagree, which is exactly where the evidence lives.
+zze9 = os.path.join(FIXTURES, "lobby_zze9.png")
+if not os.path.exists(zze9):
+    print("  FIXTURE MISSING - this should not happen")
+    failures += 1
+else:
+    import cv2 as _cv
+    _frame = _cv.cvtColor(_cv.imread(zze9), _cv.COLOR_BGR2BGRA)
+    _form = main._lobby_form(_frame)
+    check("form located on the zze9 lobby", _form is not None)
+    if _form is not None:
+        check("'zze9' read despite no single threshold winning outright",
+              main._read_lobby_game_name(_frame, _form) == "zze9")
+
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

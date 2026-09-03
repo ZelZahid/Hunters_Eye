@@ -1391,3 +1391,44 @@ Lesson: "shared, long-lived, and fast because it is reused" is the same sentence
   was allowed to make when it had only one caller. Watch especially for a helper
   that temporarily CHANGES a shared setting and restores it: that is correct with
   one thread and a race with two, and its failure is silent rather than loud.
+
+------------------------------------------------------------------------------
+43. A perfectly readable game name was rejected, because the vote counted whole
+    strings instead of characters
+------------------------------------------------------------------------------
+Where: main.py, _read_lobby_game_name()
+Symptom: sitting in the lobby with the game name "zze9", F3 refused to start the
+  next game - "could not read the game name, and no game_name is set in
+  user_config.txt - stopping in the lobby." Nothing was wrong with the crop, the
+  form location, the whitelist or the length/charset validation, all of which
+  accept "zze9" without complaint.
+Cause: the name is read at four thresholds (110/120/130/140) and a result was
+  trusted only if the SAME WHOLE STRING came back at least 3 times
+  (NAME_READ_AGREEMENT). Reproduced exactly against the user's screenshot:
+
+      thr 110 -> 'zzeQ'     ('9' misread as 'Q')
+      thr 120 -> 'zze9'
+      thr 130 -> 'zze9'
+      thr 140 -> 'zz09'     ('e' misread as '0')
+
+  Two INDEPENDENTLY confusable glyphs, each failing at a different end of the
+  threshold range, so the correct string only ever got 2 of 4 votes and was
+  discarded. Every character was individually decidable - z 4/4, z 4/4, e 3/4,
+  9 3/4 - but whole-string voting cannot see that.
+  The bar was tuned on 'z25pin41', where all four thresholds agree (4/4), so it
+  was calibrated on a case that had no disagreement to handle.
+Fix: vote PER CHARACTER among the readings of the modal length, requiring a
+  majority of the readings compared (never fewer than 2, so one lone reading
+  still cannot carry a name). The assembled winner is re-validated through
+  clean_game_name(), since it is a string no single threshold necessarily
+  produced. 'zze9' now resolves; 'z25pin38' is unchanged. Also: the
+  no-readings-at-all path returned None silently and now says so, because the
+  caller's message cannot distinguish "unreadable" from "read but not trusted"
+  and those want opposite fixes.
+Lesson: this is the SAME lesson text_detection._word_ratio() already records one
+  level down - WHERE two readings differ carries information that counting how
+  many of them match throws away. Any agreement threshold gets worse as the
+  string gets longer, because one bad glyph anywhere spoils the entire vote,
+  so a whole-string vote is least reliable exactly where names are most complex.
+  Watch for the calibration trap too: a threshold tuned on an example that
+  happens to be unanimous has never actually been tested.

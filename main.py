@@ -15,7 +15,7 @@ import threading
 import traceback
 import re
 import keyboard
-from collections import namedtuple
+from collections import Counter, namedtuple
 from pathlib import Path
 from queue import Queue, Empty
 
@@ -1267,21 +1267,47 @@ def _read_lobby_game_name(frame_bgra, form):
     #others, so agreement across several is real evidence and one reading is not. Measured on the
     #crop that failed: thresholds 110-140 all agree on 'z25pin41' once the border is added, while
     #the old single reading at 120 gave 'Z25pindt'.
-    votes = {}
+    readings = []
     for threshold in NAME_READ_THRESHOLDS:
         candidate = clean_game_name(text_detection.read_line(box, threshold=threshold))
         if candidate:
-            votes[candidate] = votes.get(candidate, 0) + 1
-    if not votes:
+            readings.append(candidate)
+    if not readings:
+        #Nothing legible at any threshold. Say so explicitly - the caller's message ("could not
+        #read the game name") cannot tell this apart from "read it but did not trust it", and
+        #those want completely different fixes (crop/contrast vs. tuning).
+        print("next_game: nothing readable in the game name box at any threshold "
+              f"({list(NAME_READ_THRESHOLDS)}).")
         return None
-    best, count = max(votes.items(), key=lambda kv: kv[1])
-    if count < NAME_READ_AGREEMENT:
-        #No clear winner means the readings disagree, which is exactly when a name should not be
-        #trusted - a wrong one gets typed in and then incremented from forever after.
-        print(f"next_game: the game name could not be read confidently (readings: "
-              f"{sorted(votes)}).")
-        return None
-    return best
+
+    #VOTE PER CHARACTER, NOT PER WHOLE STRING. Counting whole readings throws away where they
+    #disagree, and that is where the evidence is. Measured on a real failure: 'zze9' read as
+    #zzeQ / zze9 / zze9 / zz09 - two independently confusable glyphs ('9'->'Q', 'e'->'0'), so no
+    #whole string ever reached 3 of 4 and a perfectly decidable name was rejected. Per character
+    #the same four readings agree z(4/4) z(4/4) e(3/4) 9(3/4) and resolve to 'zze9'. Same lesson
+    #text_detection._word_ratio() already records: WHERE two readings differ carries information
+    #that counting how many match discards. A longer name makes whole-string voting worse, since
+    #one bad glyph anywhere spoils the whole vote.
+    modal_length = Counter(len(r) for r in readings).most_common(1)[0][0]
+    same_length = [r for r in readings if len(r) == modal_length]
+
+    #The bar is a majority of the readings actually being compared, and never fewer than two -
+    #so one lone reading can still never carry a name on its own, exactly as before.
+    required = max(2, len(same_length) // 2 + 1)
+
+    resolved = []
+    for i in range(modal_length):
+        char, count = Counter(r[i] for r in same_length).most_common(1)[0]
+        if count < required:
+            #Genuinely undecided at this position. A wrong name here is not a cosmetic error -
+            #it gets typed in, created, and incremented from forever after - so refuse.
+            print(f"next_game: the game name could not be read confidently at character {i + 1} "
+                  f"(readings: {sorted(set(readings))}).")
+            return None
+        resolved.append(char)
+
+    #Re-validate: the assembled winner is a string no single threshold necessarily produced.
+    return clean_game_name("".join(resolved))
 
 
 def _name_clash_showing(frame_bgra):
