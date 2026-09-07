@@ -11,6 +11,8 @@ that tag rather than guessing from commit history - that's what these are for.
 ------------------------------------------------------------------------------
 AT A GLANCE - newest first. Full entries are below, oldest first.
 ------------------------------------------------------------------------------
+0.014  The in-play check read NOT IN GAME in a dark room - the reference art
+       included the game world behind the orbs, so the score tracked the light.
 0.013  next_game(): quit, read the lobby's game name, increment it, create the
        next game. Fixed a process-killing OCR threading crash along the way.
 0.012  In-play check (presence.py) - stops the lobby's red player names reading
@@ -979,3 +981,64 @@ when they start.
 New: user_config.txt game/password settings, tools/diagnose_lobby.py,
 tests/test_next_game.py, tests/test_quit_game.py, assets/in_play_left.png,
 assets/save_and_exit.png. No new dependencies.
+
+------------------------------------------------------------------------------
+0.014 - 2026-09-07
+------------------------------------------------------------------------------
+THE IN-PLAY CHECK SAID "NOT IN GAME" WHILE STANDING IN ONE. Reported from
+Catacombs Level 2, Hell: both orbs and the whole HUD on screen, the panel
+reading
+
+    GAME STATE  NOT IN GAME
+    game HUD    not on screen (0.56)
+    actions     paused
+
+so HUD meters were suspended and auto-collect and potions were gated off.
+
+Cause, and it was not occlusion - nothing was covering the left orb. Both
+reference templates included a band of the GAME WORLD showing above and behind
+the orb assembly, whatever it happened to be when the art was cut (a lit stone
+wall), plus the live life/mana readout ("/ 372" baked in against "/ 374" now),
+and on the right a slice of the mana orb, whose liquid level moves. In a lit
+room that band correlates by luck. In an unlit catacomb it is black, and since
+TM_CCOEFF_NORMED normalises over the whole patch, a quarter of the template
+being scenery dragged the entire score down. The check had effectively been
+measuring how well-lit the room was.
+
+Fixed by recutting both templates down to the parts that genuinely cannot
+change - the angel and gargoyle statue frames, with the world, the readout text
+and the orb liquid cropped out (182x210 -> 122x130, 144x194 -> 104x114). The
+crops were chosen by sweeping and measuring the margin against real frames, not
+by eye. Measured at CAPTURE_SCALE 0.3, worst in-play frame vs best lobby frame:
+
+    before   in-play 0.573  (this frame)   lobby 0.310    THRESHOLD MISSED
+    after    in-play 0.867                 lobby 0.433    margin 0.434
+
+The right-hand reference gained the most where it mattered most: its top band
+was where dropped-item labels render, so it degraded exactly when items were on
+the ground - precisely when auto-collect needs to run.
+
+A SECOND FINDING FROM THE SAME WORK: two references only survive occlusion if
+they fail INDEPENDENTLY, and these two did not. Both included game world, so
+one dark room took out both at once - the failure the second reference was
+added to prevent. Worth checking what a reference is MADE of, not just where
+it is.
+
+TESTS. Three pieces of rot fixed in test_presence.py, all of the same shape -
+a check that had quietly stopped checking anything:
+
+- Section 9 (the debounce) globbed for "004909" and "000149", scratch filenames
+  that went away with the folder. It had been skipping silently for versions.
+  Now named committed fixtures, and a missing one FAILS rather than skips.
+- Section 8 asserted that the tooltip fixture occludes at least one reference.
+  After the recut it no longer occludes either (0.514 -> 0.897), which is a
+  better outcome but leaves the fixture unable to prove the two-reference design
+  works - "nothing was occluded" and "occlusion is handled" look identical from
+  the result. Occlusion is now staged explicitly: black out one reference's
+  entire search region and the other must still carry the answer.
+- New fixture tests/fixtures/in_game_dim.png - the reported frame, masked to the
+  bottom strip at the same dimensions, verified score-identical to the original.
+  This is the case no existing fixture covered: in game, and dark.
+
+All eight test suites pass. No new dependencies, no code changes - the fix is
+two cropped PNGs and the documentation of why. Details in Error_history.txt #44.

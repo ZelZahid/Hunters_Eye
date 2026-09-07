@@ -113,10 +113,13 @@ else:
     print("\n6. Real screenshots: in-play and lobby separate by a wide margin")
     #The numbers that justify the threshold. If a future change narrows this gap, the guard is
     #being eroded and this is where it shows up.
-    #Keyed on the screenshots currently in the folder. That folder is gitignored and the owner
-    #clears it, so a name that has gone simply drops out of the run - which is why the margin
-    #assertion below is guarded rather than assumed.
+    #Keyed by filename, so a fixture added here without an entry above is simply not scored
+    #rather than being guessed at.
     EXPECT = {"in_game_tooltip": ("in game, tooltip over an orb", True),
+              #A DIM area. The reference art used to include the game world showing above the
+              #orb, so the score tracked how well-lit the room was: this frame scored 0.56 and
+              #the pipeline announced NOT IN GAME while the HUD sat there in plain view.
+              "in_game_dim": ("in game, an unlit catacomb", True),
               "lobby.png": ("lobby", False),
               "lobby_name_clash": ("lobby, name-clash dialog", False)}
     scores = {}
@@ -180,10 +183,20 @@ else:
         _f, s1 = one.check(g, g.shape[1])
         print(f"       {reference.name:18} alone: {s1:.3f}"
               f"{'  <- covered by the tooltip' if s1 < reference.threshold else ''}")
-    covered = [r for r in p.references
-               if presence.Presence([r]).check(g, g.shape[1])[1] < r.threshold]
-    check("...and at least one reference IS covered, so this is a real test",
-          len(covered) >= 1)
+    #This fixture no longer covers either reference: the tooltip sat over the upper band and the
+    #blue orb, and both were cut out of the templates when they turned out to be game world and
+    #liquid rather than fixed art. That is a better outcome, but it leaves the fixture unable to
+    #PROVE the two-reference design still works - "nothing was occluded" and "occlusion is handled"
+    #look identical from the result. So occlusion is staged explicitly instead: black out one
+    #reference's whole search region and the other must still carry the answer.
+    for blinded in p.references:
+        staged = g.copy()
+        rx, ry, rw, rh = blinded.search_region
+        h, w = staged.shape
+        staged[int(ry * h):int((ry + rh) * h), int(rx * w):int((rx + rw) * w)] = 0
+        blind_found, blind_score = p.check(staged, w)
+        check(f"'{blinded.name}' fully blacked out -> still in play "
+              f"(score {blind_score:.3f})", blind_found is True)
     check("a lobby still matches NO reference",
           all(presence.Presence([r]).check(
               cv.cvtColor(cv.resize(cv.imread(
@@ -194,11 +207,14 @@ else:
 print("\n9. The negative is debounced, the positive is not")
 import main as pipeline
 import time as _time
-shots = sorted(glob.glob(os.path.join(FIXTURES, "*.png")))
-ingame = [s for s in shots if "004909" in s]
-lobby = [s for s in shots if "000149" in s]
-if not (ingame and lobby):
-    print("  SKIPPED (needs the screenshots)")
+#Named fixtures, not a glob for timestamps from a folder that no longer holds them. This section
+#quietly skipped for several versions because "004909" and "000149" were scratch filenames that
+#went away - a skip reads exactly like a pass, which is the whole reason fixtures are committed.
+ingame = [os.path.join(FIXTURES, "in_game_tooltip.png")]
+lobby = [os.path.join(FIXTURES, "lobby.png")]
+if not all(os.path.exists(f) for f in ingame + lobby):
+    print("  FIXTURES MISSING, this should not happen")
+    failures += 1
 else:
     def frame(path):
         return cv.cvtColor(cv.resize(cv.imread(path), (0, 0), fx=0.3, fy=0.3), cv.COLOR_BGR2GRAY)

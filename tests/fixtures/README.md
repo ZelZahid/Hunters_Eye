@@ -17,6 +17,7 @@ If a new test needs a real frame, add it here.
 | `lobby.png` | the Create Game lobby, game name `z25pin38` | form location, row spacing, reading + incrementing the name, and the in-play check correctly saying "not in a game" |
 | `lobby_name_clash.png` | the same lobby with "A Game Already Exists With That Name" | detecting the clash dialog, and not detecting it when it is absent |
 | `in_game_tooltip.png` | in game, an item tooltip covering the right-hand orb | the occlusion bug: one in-play reference covered, the other still visible |
+| `in_game_dim.png` | in game, Catacombs Level 2 - an unlit room, both orbs clear | the in-play check must not track how well-lit the scene is (`Error_history.txt` #44) |
 | `lobby_form_crop.png` | a close crop of the Create Game form | reading a game name out of the text box |
 | `lobby_zze9.png` | the lobby with game name `zze9` | the per-character name vote - no single OCR threshold reads this name correctly (`Error_history.txt` #43) |
 | `pindle_pack.png` | Nihlathak's Temple entrance, ~8-9 Defiled Warriors | the monster-detection experiments - see `docs/monster_detection_plan.txt` section 9 |

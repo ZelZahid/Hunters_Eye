@@ -1432,3 +1432,63 @@ Lesson: this is the SAME lesson text_detection._word_ratio() already records one
   so a whole-string vote is least reliable exactly where names are most complex.
   Watch for the calibration trap too: a threshold tuned on an example that
   happens to be unanimous has never actually been tested.
+
+------------------------------------------------------------------------------
+44. The in-play check said NOT IN GAME in a dark room, because the reference art
+    included the game world behind it
+------------------------------------------------------------------------------
+Where: assets/in_play.png, assets/in_play_left.png (presence.py's references)
+Symptom: standing in Catacombs Level 2, Hell, plainly in a game with both orbs
+  and the whole HUD on screen, the debug panel read
+
+      GAME STATE  NOT IN GAME
+      game HUD    not on screen (0.56)
+      actions     paused
+
+  so meters were suspended and every action - auto-collect, potions - was
+  gated off. Nothing was occluded in the way the two-reference design was
+  built for: the left orb was completely clear.
+Cause: measured against that frame, BOTH references scored far below what they
+  had ever scored before - right 0.573, left 0.535, against a 0.6 threshold.
+  A row-by-row difference between each template and the correctly aligned patch
+  of the frame showed exactly where they disagreed:
+
+      left  template rows   0-51   mean 33-46   frame rows   0-51   mean 0-10
+      left  template rows 100-209  mean 21-27   frame            "  mean 21-27
+
+  The top quarter of each template was not HUD art at all. It was whatever the
+  game world happened to be rendering above and behind the orb assembly when
+  the reference was cut - in that frame a lit stone wall - plus the life/mana
+  readout, which is live text ("/ 372" in the template against "/ 374" now).
+  In a bright area that band correlates by luck. In an unlit catacomb it is
+  pure black, and because TM_CCOEFF_NORMED normalises over the whole patch, a
+  quarter of the template being wrong drags the entire score down. The score
+  was effectively reporting how well-lit the room was.
+  The right-hand reference had a second, independent version of the same fault:
+  it included a slice of the blue mana orb, whose liquid level changes, and its
+  top band was where dropped-item labels render - so it degraded exactly when
+  items were on the ground, which is precisely when auto-collect needs to run.
+Fix: recut both templates down to the parts that are genuinely fixed art - the
+  statue frames, with the game world, the readout text and the orb liquid all
+  cropped out (left 182x210 -> 122x130, right 144x194 -> 104x114). Chosen by
+  sweeping the crop and measuring the margin against real frames, not by eye.
+  Measured, worst in-play frame against best lobby frame, at CAPTURE_SCALE 0.3:
+
+      before   in-play 0.573 (this frame)   lobby 0.310    THRESHOLD MISSED
+      after    in-play 0.867                lobby 0.433    margin 0.434
+
+  The tooltip fixture also stopped occluding anything (0.514 -> 0.897), since
+  the tooltip covered the band that is now gone - so test_presence.py section 8
+  now stages occlusion explicitly by blacking out one reference's whole search
+  region, rather than relying on a fixture that happens to cover one.
+Lesson: a reference template must contain ONLY pixels that cannot change, and
+  "cut a rectangle around the thing" does not give you that - it gives you the
+  thing plus a border of whatever was behind it that day. The failure is silent
+  and load-bearing: a normalised score does not say WHICH part disagreed, so it
+  reads as a slightly weak match rather than as "a quarter of this template is
+  scenery". The diagnostic that actually found it was a per-row diff between
+  the template and the aligned patch, which localises the disagreement in one
+  look. Corollary for the two-reference design: two references only survive
+  occlusion if their failure modes are independent, and these two shared one -
+  both included game world, so a dark room took out both at once. Check what a
+  reference is MADE of, not just where it is.
