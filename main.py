@@ -1166,6 +1166,35 @@ _last_created_name = None
 NEXT_GAME_CREATE_TIMEOUT = 25.0 #how long to wait for a new game to load after pressing Enter
 NEXT_GAME_NAME_CLASH_RETRIES = 1 #"a game already exists with that name" -> bump and try once more
 
+#Keys pressed once in every newly created game, in order, with what each is for and how long to
+#wait after it. A new game starts from scratch: whatever you toggled on in the last one is gone,
+#so anything that has to be ON has to be switched on again here.
+#  alt - Diablo II only labels items on the ground while Alt is held, unless its "Item Name
+#        Toggle" option is on, and that toggle is PER GAME. This one matters to the pipeline
+#        rather than just to play: text_detection reads those labels, so until it is pressed
+#        there is nothing on screen for OCR to find and auto-collect has nothing to act on.
+#  q   - selects Vigor, so the character runs faster in town.
+#  g   - casts Holy Shield. Unlike the other two this is an ACTION, not a toggle: it plays a
+#        ~0.2s animation during which the character cannot move or cast, so it goes last (nothing
+#        after it is stalled) and carries a longer wait (next_game does not hand control back
+#        mid-animation, where auto-collect's first click would be eaten by the lockout).
+#The wait belongs to the KEY and not to its position in the list, so reordering these or adding a
+#fourth stays correct instead of quietly depending on Holy Shield still being last.
+#All Diablo II facts, and character-specific ones at that ('q' and 'g' are skill hotkeys on THIS
+#character's bar), so they live in main.py's integration layer and not in core/ - the detection
+#engine has no business knowing which key reveals loot or which one is an aura. They are a plain
+#list because the next one costs a line here and nothing else; if the list starts changing per
+#character, move it to user_config.txt rather than growing branches in here.
+#The default wait is just enough that two presses cannot land in one of the game's input polls,
+#which is the case press_key's hold time exists to avoid - cheap insurance on a once-a-game path.
+NEW_GAME_KEYS = (("alt", "show items on the ground", 0.1),
+                 ("q",   "Vigor",                    0.1),
+                 ("g",   "Holy Shield",              0.3))
+#A beat after the HUD appears before sending the keypresses. in_play() going True is already
+#evidence the game is rendering, so this is only margin for input not being accepted on the very
+#first frames of a load-in, not a substitute for detection.
+NEW_GAME_KEYS_SETTLE_SECONDS = 0.5
+
 
 def _anchor_region_pixels(region, frame_shape):
     """(x0, y0, x1, y1) pixel bounds of an anchor-relative region within a full-resolution frame.
@@ -1370,6 +1399,40 @@ def _park_mouse_in_game():
     actions.move_to(int(x + w / 2), int(y + h / 2))
 
 
+def _press_new_game_keys():
+    """Presses each of NEW_GAME_KEYS once in a freshly created game.
+
+    THE ONE STEP IN THIS SEQUENCE WHOSE EFFECT CANNOT BE CONFIRMED, and worth being explicit
+    about since every other step here waits on detection rather than on a clock. Verifying Alt
+    would mean seeing a label appear, which needs an item lying on the ground - not something a
+    brand new game guarantees - and neither an active aura nor a cast buff is something this
+    program can see at all. So this presses and reports what it sent, and never claims more.
+
+    Two consequences of that, both deliberate:
+      - It runs only after in_play() has already gone True, so the keys go to a loaded game
+        rather than to a loading screen or a lobby with a text field focused.
+      - It re-checks actions_allowed() before EVERY key, not once at the top. The gap between the
+        first and last press is small, but someone alt-tabbing inside it would send the rest into
+        whatever is now in front: a lone Alt keyup opens another program's menu bar, and a bare
+        'q' or 'g' types a letter into whatever has focus. Same class of bug as the potion
+        sequence that once got typed into a game name, and the check costs 0.3us.
+
+    Alt also assumes Diablo II's "Item Name Toggle" option is ON. With it off, Alt is
+    hold-to-show and a single press does nothing at all - there is no way to tell the two apart
+    from outside.
+    """
+    time.sleep(NEW_GAME_KEYS_SETTLE_SECONDS)
+    for index, (key, purpose, wait_after) in enumerate(NEW_GAME_KEYS):
+        if not actions_allowed():
+            missed = ", ".join(repr(k) for k, _, _ in NEW_GAME_KEYS[index:])
+            print(f"next_game: not safe to act - did NOT press {missed}. Press them yourself.")
+            return False
+        actions.press_key(key)
+        print(f"next_game: pressed {key!r} ({purpose}).")
+        time.sleep(wait_after)
+    return True
+
+
 def _preferred_case(read_name):
     """`read_name`, but with the exact capitalisation this program last typed, when they are the
     same name. See _last_created_name for why OCR cannot supply the case itself."""
@@ -1443,6 +1506,10 @@ def next_game():
                 _last_created_name = current
                 _park_mouse_in_game()
                 print(f"next_game: in game {current!r}.")
+                #After the success print, and its result deliberately ignored: the game WAS
+                #created either way, and reporting failure here would make quit-and-create look
+                #like it had not happened.
+                _press_new_game_keys()
                 return True
             if not created:
                 print(f"next_game: no game after {NEXT_GAME_CREATE_TIMEOUT:.0f}s and no error "
