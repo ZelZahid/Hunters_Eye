@@ -15,11 +15,11 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 
 ## Now
 
-- [ ] **Validate the potion thresholds against real damage.** The last thing in the potion stack that has never been tested. Everything guarding it is confirmed live - foreground, in-play, the noise floor - but `user_config.txt`'s numbers (`rejuvenation <=30%`, `health <=70%`, `mana <=25%`) are still guesses.
-  - 70% is high; it will drink often. Does the belt last a run?
-  - does the emergency tier beat the ordinary one on a burst?
-  - does it double-drink on one dip? If so the 4.0s health cooldown is too short
-  - `F6` snoozes for 10s; `enabled = no` stops it outright
+- [ ] **Automate the Pindleskin kill.** (2026-09-11) The walk through the portal (`F7`) is done and validated live. Next leg: arrive in Nihlathak's Temple -> move to the fighting spot -> attack until Pindleskin is dead -> auto-collect picks up -> `F3`. Same rule as the walk: every step waits on something SEEN, never on a clock.
+  - the temple entrance is a fixed layout, so getting to the fighting spot can reuse `core/localize.py` + `tools/build_route_map.py` as a second route
+  - "is he dead?" needs a detector. Candidates: OCR on the monster name + health bar D2R draws at the top of the screen for a hovered monster; item labels appearing (Alt); the monster detector (not built). Decide from real screenshots of the fight
+  - needs an abort: low health -> `quit_game()`. The "chicken" item in the parking lot stops being optional once the fight is automated
+  - waiting on the owner: build + skill keys, and screenshots of the temple walk, the fight, and a dead Pindleskin
 
 ---
 
@@ -27,11 +27,17 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 
 *In order — each depends on the one above it.*
 
+- [ ] **Validate the potion thresholds against real damage.** (Moved back to Next 2026-09-11 for the Pindle kill - which will exercise them anyway, since an automated fight is exactly where they matter.) The last thing in the potion stack that has never been tested. Everything guarding it is confirmed live - foreground, in-play, the noise floor - but `user_config.txt`'s numbers (`rejuvenation <=30%`, `health <=70%`, `mana <=25%`) are still guesses.
+  - 70% is high; it will drink often. Does the belt last a run?
+  - does the emergency tier beat the ordinary one on a burst?
+  - does it double-drink on one dip? If so the 4.0s health cooldown is too short
+  - `F6` snoozes for 10s; `enabled = no` stops it outright
+
 - [ ] **Validate potion drinking in real gameplay.** Thresholds in `user_config.txt` are still unvalidated starting points. `F6` snoozes for 10s; `enabled = no` in that file turns it off. Watch the `F5` panel while taking real damage: does the ordinary tier fire near 35%, does the emergency tier beat it on a burst, does it double-drink on one dip (if so the 4.0s health cooldown is too low)?
 
 - [ ] **Read meters from a higher-resolution frame.** `main.py` measures meters off the 0.3x detection frame, where an orb is ~43 rows tall and one row is 2.3% — that quantization *is* the noise floor that made the lobby artifact indistinguishable from a real low reading, and it currently costs any reading below ~7%. `CLAUDE.md` already anticipated this ("the meter is too small to measure reliably at that downscale and `main.py` should read it from a higher-resolution frame instead"). The meter regions are small, so cropping them out of the full-resolution frame before the downscale should be cheap — measure it.
 
-- [ ] **Pindle scripted run.** Waypoint → red portal → clear → collect → return.
+- [ ] **Pindle run - the full loop.** Walk (done) -> kill (NOW) -> collect -> next game. Once the kill works, chain it all onto `next_game()` so one key runs the whole loop.
   - sequence steps on **detection, not `sleep()`** — "wait until the portal is on screen," not "wait 3 seconds." Timing-based scripts break on any lag spike.
   - `legacy/pindle.py` is the rough prior art (hardcoded click positions)
   - new file, e.g. `routes/pindle.py` — explicitly Diablo II integration code, kept out of the core engine per CLAUDE.md's detector-independence rule
@@ -72,6 +78,11 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 ## Parking lot
 
 *Unvetted ideas — cheap to write down, may never happen.*
+
+- [ ] **Bind Diablo II's Force Move key and set `MOVE_KEY` in `routes/pindle.py`.** With an ordinary left click, an NPC who wanders under a walk click gets spoken to and the dialog swallows the rest of the walk. Force Move walks past. Not done by default because the binding is per-install and its default key is not known here. If the key starts varying per character, move it to `user_config.txt`.
+- [ ] **Verify route maps at another 16:9 resolution** (e.g. 2560x1440). `Route.fits()` accepts same-aspect sizes on the *assumption* that Diablo II scales its view uniformly; unmeasured. The walk prints a note when it happens. One screenshot at the new size, located with `test_route.py`-style code, would settle it.
+- [ ] **Route map from the waypoint too.** Screenshots 001/005-010 (2026-09-11) walked waypoint -> portal; they are currently only test fixtures. If a run ever starts from the waypoint (e.g. after a town trip), rebuild the map from all 15 - they register together cleanly.
+- [ ] **`build_route_map.py` could also mark the portal automatically** from its saturated red (measured consistent to +/-8px across four frames) instead of taking `--point` by hand. Only worth it when there is a second route with a portal.
 
 - [ ] **Two-pane Zellij reading surface**: left pane = Claude working, right pane = `tail -f` on a file that gets the prose/findings only, without tool-call noise. Claude Code writes to one stdout stream so it can't be split directly, but a `Stop` hook could extract the last assistant message to a file. Partially investigated 2026-08-28, paused before implementing.
 - [ ] **Re-tune `BRIGHT_TEXT_THRESHOLD`** (`text_detection.py`, currently 150) if labels get missed in bright areas — it was tuned 2026-08-28 on two dark dungeon/town frames only. A single global threshold may not hold in snow, desert or lava zones; adaptive thresholding is the fallback if it doesn't, at some speed cost.
@@ -114,6 +125,7 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 
 - `game_state.py` has **never been validated against a real screen.** Synthetic tests only. See [Now](#now).
 - The overlay is **Windows-only.** macOS falls back to a plain debug window.
+- The Harrogath route map is only valid at **16:9** (recorded at 1920x1080). The 1280x800 windowed mode `meters.json` also has a profile for is refused - re-record the route there if you play that way.
 - Only **one template image** is supported (`assets/image1.png`), and its match threshold (`0.60`) is hand-tuned to it.
 - OCR viewport margins (`VIEWPORT_TOP_MARGIN` / `VIEWPORT_BOTTOM_MARGIN` in `main.py`) assume item labels never render in the top 8% or bottom 25% of the screen. An item very close to a screen edge could go undetected.
 - Capture is still what sets the frame rate, but it is no longer the ceiling: with DXGI (v0.009) the pipeline can do ~177 FPS and is deliberately **paced to 60** (`TARGET_FPS`) to spend 0.42 cores instead of 3.56. On a machine without `bettercam` it falls back to `mss` and the old ~52–58 FPS ceiling applies again.
@@ -123,6 +135,8 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 ---
 
 ## Done
+
+- [x] **2026-09-11 — walk to Nihlathak's portal (`F7`), validated live 3 games out of 3.** From where a new game starts in Harrogath, through the red portal, every step located by LOOKING: the live frame is matched against a map stitched from screenshots of the owner walking the route (`core/localize.py`), and each click aims at the next point along that recorded path. Rests on the camera moving by pure translation, which was measured first (scale 1.000 +/- 0.0015, rotation within 0.07 degrees, 0.3px agreement across 15 screenshots). Held-out screenshots located within 1.7-2.6px; the temple interior scores 0.275 against a 0.55 threshold. The waypoint is a keep-out zone, the portal is only clicked once its hover label is read, and going through is confirmed by the map no longer matching while the HUD is up. New: `core/localize.py`, `routes/pindle.py`, `tools/build_route_map.py`, `assets/routes/`, `tests/test_route.py` (36 checks).
 
 - [x] **2026-09-08 — `next_game()` presses the keys a new game needs.** A new game starts from scratch, so anything that has to be ON has to be switched on again: `alt` (item labels), `q` (Vigor), `g` (Holy Shield). Alt is the one that matters to the pipeline rather than just to play — `text_detection.py` reads exactly those labels, and Diablo II's "Item Name Toggle" is per-game state, so OCR and auto-collect had nothing to work with until someone pressed it by hand. `NEW_GAME_KEYS` in `main.py` is a plain `(key, purpose, wait_after)` list; the next one costs a line. **The wait belongs to the key, not to its position** — Holy Shield is a cast, not a toggle, and locks the character out of moving or casting for ~0.2s, so it carries 0.3s and everything else 0.1s; putting that delay on the key rather than on "the last one" means reordering the list or appending a fourth key stays correct instead of silently depending on Holy Shield still being last. **The one step in the sequence whose effect cannot be confirmed** — verifying Alt needs a label on screen, which needs an item on the ground, and neither an aura nor a cast buff is visible to this program at all — so it reports what it sent and claims nothing more. `actions_allowed()` is re-checked before *every* key, not once: alt-tabbing between presses would send the rest into whatever is now in front, where a lone Alt keyup opens that program's menu bar and a bare `q`/`g` types a letter. Assumes "Item Name Toggle" is ON; with it off Alt is hold-to-show and a single press does nothing, indistinguishable from outside.
 
@@ -172,4 +186,5 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 - **Detectors stay independent**, and none is ever removed for being out of focus. See CLAUDE.md → "Detector independence."
 - **Templates for fixed UI art** (portals, buttons, icons); **a neural detector for monsters** (they animate, rotate, recolor, overlap — templates fail there). Neural cost is constant in class count; template cost is linear.
 - **Tesla-style multi-camera BEV fusion / occupancy networks are out of scope.** The useful half is just "one net, many objects per frame" = YOLO. The rest is for driving a car with eight cameras through 3D space.
+- **No "humanised" input to get past anti-cheat** (2026-09-11). Randomised timing and mouse paths exist to hide automation from Blizzard's detection, and that is not something this project builds. The answer to ban risk is the Open question below - play offline - not disguise.
 - **One Claude session at a time, not parallel agents.** The bottleneck on this project is live in-game validation, which is inherently serial and human-only.

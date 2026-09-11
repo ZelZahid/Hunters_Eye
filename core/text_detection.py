@@ -534,6 +534,18 @@ def read_line(frame, threshold=FIELD_TEXT_THRESHOLD, whitelist=FIELD_TEXT_WHITEL
     return ""
 
 
+def ocr_available():
+    """Whether any OCR backend is usable at all.
+
+    read_lines() and read_line() return nothing when there is no backend, and a caller cannot tell
+    that apart from "there is no text here". Most callers do not need to - no text and no OCR both
+    mean "found nothing". A caller that would ACT DIFFERENTLY on "no text" does: routes/pindle.py
+    only clicks the portal once its hover label reads correctly, and without OCR that label can
+    never be read, so it has to know to fall back rather than wait forever.
+    """
+    return _tesserocr_api is not None or _pytesseract_available
+
+
 def read_lines(frame, preprocess=PREPROCESS_AUTO):
     """Every line of text OCR can find in `frame`, as [(text, (x, y, w, h)), ...].
 

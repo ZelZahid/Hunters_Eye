@@ -20,7 +20,17 @@ If a new test needs a real frame, add it here.
 | `in_game_dim.png` | in game, Catacombs Level 2 - an unlit room, both orbs clear | the in-play check must not track how well-lit the scene is (`Error_history.txt` #44) |
 | `lobby_form_crop.png` | a close crop of the Create Game form | reading a game name out of the text box |
 | `lobby_zze9.png` | the lobby with game name `zze9` | the per-character name vote - no single OCR threshold reads this name correctly (`Error_history.txt` #43) |
-| `pindle_pack.png` | Nihlathak's Temple entrance, ~8-9 Defiled Warriors | the monster-detection experiments - see `docs/monster_detection_plan.txt` section 9 |
+| `pindle_pack.png` | Nihlathak's Temple entrance, ~8-9 Defiled Warriors | the monster-detection experiments - see `docs/monster_detection_plan.txt` section 9; also `test_route.py`'s "not Harrogath" case |
+| `route_harrogath_01/05/06/09/10.png` | Harrogath, the waypoint->portal walk, **stored at 0.25x** | `test_route.py`: locating frames the route map was *not* built from, against ground truth from the registration |
+| `portal_label.png` / `portal_no_label.png` | full-resolution crops round Nihlathak's portal, hovered (label showing) and not | `test_route.py`: the portal is only clicked once its label is read |
+
+The `route_harrogath_*` frames are the other exception, in the opposite direction: they are
+**downscaled rather than masked**, to exactly the map's scale (`map_scale` in
+`assets/routes/harrogath_to_nihlathak.json`). That is the array the live path produces after its
+own resize, so the test skips the resize and measures bit-for-bit what runs live - while each file
+is ~240 KB instead of ~3 MB. If `map_scale` ever changes, these have to be regenerated from the
+original screenshots at the new scale, or the test will be measuring a different image from the
+one the game produces.
 
 `pindle_pack.png` is the one fixture kept **unmasked and full-size**, deliberately. Everywhere else the
 subject is a small HUD region and the rest is noise worth blacking out; here the monsters scattered

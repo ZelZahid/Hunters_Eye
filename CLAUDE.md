@@ -67,7 +67,7 @@ python main.py
 
 Press `End` to quit the overlay (or `q` in the fallback debug window); final average FPS is printed on exit.
 
-Global hotkeys while running (all via the `keyboard` package, because the overlay is click-through and can never hold keyboard focus): `End` quits, `F3` starts the next game (quit → read the lobby's game name → increment → create), `F4` snoozes auto-collect for 10s, `F6` snoozes potion drinking for 10s, `F5` toggles the game-state debug panel. `F5` only changes what gets *drawn*, so toggling it cannot disturb detection, the boxes, or auto-collect.
+Global hotkeys while running (all via the `keyboard` package, because the overlay is click-through and can never hold keyboard focus): `End` quits, `F3` starts the next game (quit → read the lobby's game name → increment → create), `F4` snoozes auto-collect for 10s, `F6` snoozes potion drinking for 10s, `F5` toggles the game-state debug panel, `F7` walks from where a new game starts in Harrogath through Nihlathak's portal (`routes/pindle.py`). `F5` only changes what gets *drawn*, so toggling it cannot disturb detection, the boxes, or auto-collect.
 
 `user_config.txt` at the repo root holds the settings a *user* changes rather than a developer — potion thresholds, belt key bindings, cooldowns. It is read once at import; edit and restart to apply. It sits at the root rather than in `assets/` deliberately: `assets/` holds *data* (a word list, calibration output produced by a tool), while this is the one file a person is expected to open and hand-edit, so it belongs where they will find it.
 
@@ -79,7 +79,7 @@ python tools/calibrate_meters.py
 
 This is a setup/validation tool, not a second pipeline — the rule that there's exactly one `main.py` still holds, and this is the "distinctly-named new file" case that rule allows for. Re-run it after any resolution or UI-scale change, since the meter regions are tied to where the orbs appear on screen.
 
-There is no linter config or CI in this repo. There are eight test files in `tests/` — `test_game_state.py`, `test_next_game.py`, `test_overlay.py`, `test_potions.py`, `test_presence.py`, `test_quit_game.py`, `test_targets.py` and `test_user_config.py` (run each with `python tests/<file>`). `test_game_state.py` — synthetic, no game required, covering `game_state.py`'s fill measurement. It exists because that measurement drives automatic actions and fails silently with a plausible-but-wrong number rather than an error; its adversarial cases caught two real bugs (`Error_history.txt` #19, #20). Other modules have no tests.
+There is no linter config or CI in this repo. There are nine test files in `tests/` — `test_game_state.py`, `test_next_game.py`, `test_overlay.py`, `test_potions.py`, `test_presence.py`, `test_quit_game.py`, `test_route.py`, `test_targets.py` and `test_user_config.py` (run each with `python tests/<file>`). `test_game_state.py` — synthetic, no game required, covering `game_state.py`'s fill measurement. It exists because that measurement drives automatic actions and fails silently with a plausible-but-wrong number rather than an error; its adversarial cases caught two real bugs (`Error_history.txt` #19, #20). Other modules have no tests.
 
 ## Architecture
 
@@ -319,6 +319,28 @@ The user never types a window title: `calibrate_meters.py` snapshots the visible
 
 Everything degrades to `None` without `pywin32`, and every caller treats that as "no anchor, use the full frame" — the pipeline stays fully functional, just screen-anchored as before. A config with no `_anchor` (fullscreen calibration) behaves exactly as it always did.
 
+### `localize.py` + `routes/pindle.py` — finding your way by looking, and the walk to Nihlathak's portal
+
+The fifth detector, and a **fourth shape of answer**: not where a thing is on screen, but **where the screen is in the world**. `MapLocator` takes a greyscale map stitched from earlier screenshots and finds where a crop of the live frame fits inside it — ordinary template matching with the roles swapped. Knows nothing about any game; same `True`/`False`/`None` contract as `presence.py` (a flat loading screen is `None`, not `False`).
+
+**It rests on one assumption, and that was measured before anything was built on it: the camera moves by pure translation.** Across every overlapping pair of 15 Harrogath screenshots, the best-fit similarity transform was scale 1.000 ± 0.0015, rotation within ±0.07°, and one set of camera offsets agreed with every pair to 0.3px. (Offsets came out as multiples of 14.4px — the camera snaps to a sub-tile grid.) A game that zooms or tilts as it pans breaks this, so `tools/build_route_map.py` checks it on every build rather than trusting this paragraph.
+
+**Measured on frames the map was NOT built from** (the waypoint→portal walk, against a map of the start→portal walk): all five fixtures located within 1.7–2.6px, weakest score 0.776 / margin 0.470; the inside of Nihlathak's Temple scores 0.275. Threshold 0.55, min margin 0.2. **That temple number flattered it:** measured later against more of the temple, its arrival view scores 0.508 and one frame a few steps in *falsely matched* at 0.630 — both scenes are dark and contain the same bright red portal, which dominates a normalised score. The walk's "through the portal" check reads the arrival view, so it held live, but on a ~0.04 margin (`updates.txt` 0.015, known limitation). A fixture from one corner of a place is not evidence about the rest of it. ~18ms per live locate including the resize. Two choices that were measured, not picked: **0.25 map scale** (0.2/0.25/0.33 all accurate, at 8/13/29ms), and **a query crop centred on the character** rather than the whole viewport — the full-width query failed outright on a frame near the map's edge because it could not fit inside the map, while the centred crop located every one of 15 frames.
+
+**The margin matters as much as the score.** A match must beat the best *different* place by `min_margin`, or a map with two similar corners hands back whichever scored a hair higher — the same "a tie is reported as nothing" rule `text_detection.py` follows.
+
+`routes/pindle.py`'s `walk_to_portal()` (**F7**) is the first route: every step grabs the game's client area, locates it on `assets/routes/harrogath_to_nihlathak.png`, and clicks the furthest point along the **recorded path** (where the owner's character actually stood in each screenshot) that is within `LOOKAHEAD_PX`, on screen, off the HUD and outside the waypoint keep-out zone. Nothing plans a route; it replays one known to be passable, and because each step starts from where the character *really* is, a bump or a short click corrects itself instead of compounding the way `legacy/pindle.py`'s fixed offsets did. `Walker.decide()` is kept pure (no clock, mouse or screen) for the reason `_potion_due()` is, and `test_route.py` drives it through simulated walks, including a character pushed 200px off the path.
+
+Four things it does rather than assumes:
+- **The waypoint is a keep-out zone.** Clicking the ground beside its platform can land on the platform and open the waypoint menu, which swallows every later click.
+- **The portal is clicked only after its hover label is read** (OCR, either `NIHLATHAK` or `TEMPLE` — the font reads as `NIHLATHAK's TeEmMPLe`). Anything standing in front of it shows a different label, and clicking *that* starts a conversation. The portal's position is recomputed from a fresh frame every poll, because the character is usually still running when this starts. Without OCR it clicks unverified and says so (`text_detection.ocr_available()` exists for exactly this: "no text" and "no OCR" are otherwise indistinguishable).
+- **Going through is confirmed by looking:** HUD up (`in_play()`) but no longer on the Harrogath map, sustained for 1s. A loading screen is neither, so it just waits.
+- **It stops and says why** when not located for 3s, no progress for 4s, or 45s of walking — never carries on blind. Stopping is always safe: the character is standing in town.
+
+**`MOVE_KEY`** in `routes/pindle.py`: Diablo II: Resurrected has a Force Move binding (Options → Controls) that walks without interacting with whatever is under the cursor. Bind it and set the key there, and an NPC wandering under a click is walked past instead of spoken to. `None` = ordinary left click.
+
+**The map is only valid at the aspect ratio it was recorded at** (16:9, 1920x1080). A different shape shows a different slice of world, so `Route.fits()` refuses it with a message to re-record. Same aspect at a different size is *assumed* to scale uniformly and is **not yet verified** on Diablo II — the walk prints a note when it happens. **To record a new route**: walk it taking a screenshot every second or so (consecutive shots must overlap by about half a screen), then run `tools/build_route_map.py` — its docstring has the exact command used for this one. The screenshots themselves are scratch (`zelScreenshots/`); the map and JSON it writes are what gets committed.
+
 ### `calibrate_meters.py` — one-time setup + live validation tool
 
 `python tools/calibrate_meters.py` — waits out a countdown so you can switch to the game, grabs a screenshot, lets you drag a box around each orb, and writes `assets/meters.json`. `--preview` skips straight to the preview against the saved config; `--delay` changes the countdown.
@@ -353,13 +375,18 @@ core/                    # THE ENGINE. Knows nothing about any particular game.
   actions.py             #   mouse + keyboard: click, click-when-seen, type, press, wait-until
   frame_source.py        #   where pixels come from - DXGI or mss, with graceful fallback
   game_state.py          #   HUD meter reading - health/mana as a 0.0-1.0 number
+  localize.py            #   "where on this map is the camera looking?" - position on a stitched map
   overlay.py             #   transparent click-through output layer (Windows-only)
   presence.py            #   "is this reference art on screen?" - the in-play check
   text_detection.py      #   OCR: find listed names, or read a line of text as-is
   user_config.py         #   loader/validator for user_config.txt
   window_region.py       #   locating a window's client area, so regions can anchor to it
 
+routes/                  # GAME-SPECIFIC scripted sequences, built on core/. Never imports main.
+  pindle.py              #   the Pindle run - so far: new game in Harrogath -> through the red portal
+
 tools/                   # run by hand, never by the pipeline
+  build_route_map.py     #   stitch screenshots of a walked route into assets/routes/<name>.png/.json
   calibrate_meters.py    #   one-time setup: define + live-validate the HUD meters
   diagnose_ocr.py        #   "why wasn't this item detected?" - what Tesseract actually read
   diagnose_lobby.py      #   "why was the game name misread?" - dumps the crop it OCR'd
@@ -372,6 +399,7 @@ tests/                   # none of them need the game running
   test_potions.py        #   the potion decision
   test_presence.py       #   presence.py + the in-play gate
   test_quit_game.py      #   the quit_game sequence + click_when_seen/wait_until
+  test_route.py          #   map localization on held-out frames + the walk's decisions, simulated
   test_targets.py        #   targets.txt parsing + span ranking
   test_user_config.py    #   user_config.py parsing/validation
 
@@ -381,6 +409,7 @@ assets/                  # data, not code - edit these instead of the source
   meters.json            #   HUD meter regions/colours (written by calibrate_meters.py)
   in_play.json/.png      #   HUD art proving the game is actually in play
   save_and_exit.json/.png#   the Esc menu's Save and Exit button
+  routes/                #   route maps + paths, written by tools/build_route_map.py
   zelScreenshots/        #   the owner's scratch space for sharing screenshots mid-session.
                          #   GITIGNORED and cleared at will - NEVER point a test at it
 
@@ -398,7 +427,7 @@ README.md / LICENSE / CLAUDE.md
 **Why the layout is shaped this way, and where a new file goes.** The split is the architecture, not filing: `core/` is the engine and `main.py` is the Diablo II integration, and **the import direction enforces it** — `main.py` imports `core`, and `core` imports nothing back. If something in `core/` ever needs to import `main`, that is the design going wrong, not an import problem to solve.
 
 - A new **detector** (a trained model, motion detection, colour blobs) is a new module in `core/`. Note that core's modules do not import *each other* either — see "Detector independence" above. That was what made moving them into a package a safe change rather than a risky one.
-- A new **game-specific sequence** (a Pindle run, a chest route) does not go in `core/`. Today `main.py` holds them; when there is more than one, a `routes/` package beside `core/` is the place, importing `core` the same way `main.py` does.
+- A new **game-specific sequence** (a Pindle run, a chest route) does not go in `core/`. It goes in `routes/`, which imports `core` the same way `main.py` does — and **never imports `main`**. `main.py` hands a route the few things it needs from the running pipeline (a frame grabber, `actions_allowed`, `in_play`) as plain callables, which is also what lets `test_route.py` drive one against saved frames with no pipeline running. (`quit_game`/`next_game` predate `routes/` and still live in `main.py`; moving them is the "Split `main.py`" item in the todo list.)
 - **Tools and tests are run directly** (`python tests/test_x.py`), so each begins with a two-line `sys.path` bootstrap to put the repo root on the path — `sys.path[0]` is the script's own folder, not the root.
 - **A test never reads `assets/zelScreenshots/`.** That is the owner's scratch space for sharing screenshots during a session, it is gitignored, and it gets cleared whenever it suits them. A test pointed at it does not fail when a file disappears - it *skips*, which is indistinguishable from passing. **That has already happened twice**: `test_presence.py`'s entire real-screenshot section silently stopped running, and `test_quit_game.py`'s button checks stayed off long enough that a refactor broke them unnoticed — the multi-reference change moved an attribute they used, and nothing caught it until `esc_menu.png` was committed here and they ran again. Real frames a test needs go in `tests/fixtures/`, committed, with an entry in its README.
 - **Fixtures are masked, not shrunk**: everything outside the regions the tests search is blacked out at the **same frame dimensions**, so every fraction and coordinate is unchanged while the files roughly halve. The rule when adding one is *preserve the numbers a test asserts on, not just the answers* - the first attempt masked the orb corners out of the lobby frames, every True/False still matched, and the in-play score fell from 0.272 to 0.038, which would have left the margin test measuring black pixels.

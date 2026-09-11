@@ -11,6 +11,8 @@ that tag rather than guessing from commit history - that's what these are for.
 ------------------------------------------------------------------------------
 AT A GLANCE - newest first. Full entries are below, oldest first.
 ------------------------------------------------------------------------------
+0.015  Walk to Nihlathak's portal (F7): locate the screen on a map of Harrogath
+       stitched from screenshots, click along the path actually walked. 3/3 live.
 0.014  The in-play check read NOT IN GAME in a dark room - the reference art
        included the game world behind the orbs, so the score tracked the light.
 0.013  next_game(): quit, read the lobby's game name, increment it, create the
@@ -1042,3 +1044,52 @@ a check that had quietly stopped checking anything:
 
 All eight test suites pass. No new dependencies, no code changes - the fix is
 two cropped PNGs and the documentation of why. Details in Error_history.txt #44.
+
+------------------------------------------------------------------------------
+0.015 - 2026-09-11
+------------------------------------------------------------------------------
+WALK TO NIHLATHAK'S PORTAL (F7). The first route: from where a new game
+starts in Harrogath, through the red portal into Nihlathak's Temple, with
+every step located by LOOKING rather than replayed from fixed offsets.
+Validated live by the project owner: 3 games out of 3.
+
+How it finds its way. The live frame is matched against a map of Harrogath
+stitched from screenshots of the owner walking the route - new
+core/localize.py, which is template matching with the roles swapped: where
+does the SCREEN sit inside a bigger reference, rather than where is a small
+reference on the screen. Each click aims at the furthest point along the
+recorded path that is within reach, on screen, off the HUD, and outside a
+keep-out zone round the waypoint (a click on its platform opens the waypoint
+menu, which swallows every click after it). A bump or a short click corrects
+itself, because each step starts from where the character really is -
+unlike legacy/pindle.py's fixed offsets, where one error shifted every click
+after it.
+
+It rests on one assumption, measured before anything was built on it: the
+camera moves by pure translation. Across every overlapping pair of 15
+screenshots, scale 1.000 +/- 0.0015, rotation within 0.07 degrees, and one set
+of camera offsets agreeing with every pair to 0.3px.
+
+Measured on screenshots the map was NOT built from: every one located within
+1.7-2.6px, weakest match 0.776 with a margin of 0.470. In a screenshot it
+never saw, the portal click lands 12px from the ring's measured centre.
+
+The portal is clicked only once its hover label is READ (OCR sees the font as
+"NIHLATHAK's TeEmMPLe" - either word counts), because anything standing in
+front of it shows a different label. Going through is confirmed by looking:
+the HUD is up and the Harrogath map no longer matches.
+
+KNOWN LIMITATION, found after validation while starting the next leg. The
+temple's arrival view scores 0.508 against the Harrogath map (threshold 0.55),
+and a frame a few steps further in scored 0.630 - a FALSE match. Both scenes
+are dark and both contain the same bright red portal, which dominates a
+normalised score. The confirmation reads the arrival view, so it held in all
+three live runs, but its real margin is ~0.04, not the ~0.50 the one temple
+fixture (pindle_pack.png, 0.275) suggested. A fixture from one corner of a
+place is not evidence about the rest of it. Local contrast normalisation
+measured a 0.636 gap on the same frames; that is the next version.
+
+New: core/localize.py, routes/pindle.py, tools/build_route_map.py,
+assets/routes/harrogath_to_nihlathak.png/.json, tests/test_route.py (36
+checks) and seven small fixtures; text_detection.ocr_available(). main.py's
+sequence lock now covers all three scripted sequences. No new dependencies.

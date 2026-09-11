@@ -27,6 +27,7 @@ from core import presence
 from core import user_config
 from core import frame_source
 from core.overlay import Overlay
+from routes import pindle
 
 #Globals
 w, h = pyautogui.size() #Captures Screen Resolution [1920x1080]
@@ -986,7 +987,10 @@ save_and_exit_button = presence.load(ASSETS_DIR / "save_and_exit.json")
 QUIT_MENU_TIMEOUT = 4.0    #how long to wait for the Esc menu to appear before giving up
 QUIT_CONFIRM_TIMEOUT = 20.0 #how long to wait to actually leave the game after clicking. Generous:
                              #this is a save + a map teardown + a lobby load, not a UI transition.
-_quit_lock = threading.Lock()  #one sequence at a time - see run_quit_game()
+#ONE SCRIPTED SEQUENCE AT A TIME, across all of them - quitting, making a game, walking a route.
+#Each drives the real mouse and keyboard for seconds at a stretch, and two interleaved would each
+#be clicking into a screen the other just changed. See run_quit_game().
+_sequence_lock = threading.Lock()
 
 
 #Characters a game name may contain. Anything else OCR produced is a misread, not a name - and a
@@ -1526,7 +1530,7 @@ def next_game():
 
 def run_next_game():
     """'F3' entry point. Runs next_game() on its own thread and never lets two overlap."""
-    if not _quit_lock.acquire(blocking=False):
+    if not _sequence_lock.acquire(blocking=False):
         print("next_game: already running.")
         return
 
@@ -1540,7 +1544,7 @@ def run_next_game():
             traceback.print_exc()
             print("next_game: stopped by the error above.")
         finally:
-            _quit_lock.release()
+            _sequence_lock.release()
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -1552,7 +1556,7 @@ def run_quit_game():
     thread, and this one blocks for seconds - holding that thread up would stall every other
     hotkey, including the 'End' that quits the program.
     """
-    if not _quit_lock.acquire(blocking=False):
+    if not _sequence_lock.acquire(blocking=False):
         print("quit_game: already running.")
         return
 
@@ -1563,7 +1567,60 @@ def run_quit_game():
             traceback.print_exc()
             print("quit_game: stopped by the error above.")
         finally:
-            _quit_lock.release()
+            _sequence_lock.release()
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+#--- The Pindle run (routes/pindle.py) ------------------------------------------------------------
+def _grab_client(sct):
+    """(frame, (x, y)): a full-resolution frame of the game's CLIENT AREA and its screen position.
+
+    Cropped to the anchor window rather than handing over the whole screen, because the route map
+    was recorded in the GAME's pixels - a windowed game has to be located as the window it is, not
+    as a desktop with a game somewhere in it. With no anchor this is the whole captured screen,
+    which is exactly the game when it runs fullscreen. (None, None) when the window hangs off the
+    captured monitor: a partial client area would be located as if it were whole, and be wrong.
+
+    The frame is a VIEW over mss's buffer (see _grab) - it is only good until the next grab.
+    """
+    frame = _grab(sct)
+    rect = anchor_rect()
+    if rect is None:
+        return frame, (CAPTURE_RECT[0], CAPTURE_RECT[1])
+    x, y, w, h = rect
+    fx, fy = x - CAPTURE_RECT[0], y - CAPTURE_RECT[1]
+    if fx < 0 or fy < 0 or fx + w > frame.shape[1] or fy + h > frame.shape[0]:
+        return None, None
+    return frame[fy:fy + h, fx:fx + w], (x, y)
+
+
+def walk_to_nihlathak():
+    """From the start of a new game in Harrogath, through Nihlathak's portal. See routes/pindle.py.
+
+    Its own full-resolution capture, like quit_game(), and for a related reason: this runs a few
+    times a second for a few seconds once per game, so it costs the fast path nothing, and it
+    needs the whole client area rather than the pipeline's 0.3x frame.
+    """
+    with mss.mss() as sct:
+        return pindle.walk_to_portal(grab=lambda: _grab_client(sct), can_act=actions_allowed,
+                                     in_play=in_play)
+
+
+def run_walk_to_nihlathak():
+    """'F7' entry point. Same pattern as run_next_game(): its own thread, never two at once."""
+    if not _sequence_lock.acquire(blocking=False):
+        print("walk: another sequence is already running.")
+        return
+
+    def worker():
+        try:
+            walk_to_nihlathak()
+        except Exception:
+            traceback.print_exc()
+            print("walk: stopped by the error above.")
+        finally:
+            _sequence_lock.release()
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -1734,7 +1791,9 @@ def run_overlay():
     #toggling the panel can never disturb item detection, the boxes, or auto-collect.
     keyboard.add_hotkey("f5", _toggle_debug_panel)
     keyboard.add_hotkey("f3", run_next_game)
+    keyboard.add_hotkey("f7", run_walk_to_nihlathak)
     print("Press 'F3' to quit this game and create the next one.")
+    print("Press 'F7' in Harrogath to walk to Nihlathak's portal and go through it.")
     print("Overlay running - press 'End' anytime to quit, 'F5' to toggle the game-state panel.")
 
     t0 = time.time()
