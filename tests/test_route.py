@@ -1,15 +1,19 @@
-"""Tests for the walk from a new game in Harrogath to Nihlathak's portal (routes/pindle.py).
+"""Tests for the routes of the Pindleskin run (routes/pindle.py): map localization and the walks.
 
-WHY THIS EXISTS: the walk clicks into a live game based on WHERE IT THINKS IT IS, and every way of
+WHY THIS EXISTS: a walk clicks into a live game based on WHERE IT THINKS IT IS, and every way of
 being wrong about that looks fine from outside until the character walks into a wall or talks to an
-NPC. So the thing tested hardest is the localization - against real screenshots the map was NOT
-built from, with ground truth from the registration that built it (0.3px worst disagreement).
+NPC. So the thing tested hardest is the localization - against real screenshots the maps were NOT
+built from, with ground truth from the registration that built them (0.3px worst disagreement).
 
-The held-out frames are the waypoint->portal walk, taken minutes before the start->portal walk
-the map was built from: NPCs elsewhere, a spell glowing on the character, and camera positions the
-map never saw - including one (route_harrogath_10) whose left edge hangs off the map entirely.
-They are stored at the map's own scale, which is exactly the array the live path produces after
-its resize, so these numbers are bit-for-bit what runs live.
+Harrogath's held-out frames are the waypoint->portal walk, taken minutes before the start->portal
+walk that map was built from - NPCs elsewhere, a spell glowing on the character, camera positions
+the map never saw, one hanging off the map's edge. The temple's held-out frames (21, 24, 28) were
+left out of its map on purpose for this. All are stored at the map's own scale, which is exactly
+the array the live path produces after its resize, so these numbers are bit-for-bit what runs live.
+
+Section 4 is the regression test for the one real failure found so far: with plain matching, a
+temple frame matched the HARROGATH map at 0.630, over its threshold, because both scenes are dark
+and share the same bright red portal. Local contrast normalisation took it to 0.090.
 """
 import sys
 from pathlib import Path
@@ -29,16 +33,29 @@ from routes import pindle
 failures = 0
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
-#Where each held-out screenshot's top-left sits on the map, in source pixels, from the
+#Where each held-out screenshot's top-left sits on its map, in source pixels, from the
 #registration solve - not from the thing under test.
-HELD_OUT = {
+HARROGATH_HELD_OUT = {
     "route_harrogath_01.png": (1238.4, 979.3),
-    "route_harrogath_05.png": (1180.8, 1209.7),   #the weakest match when measured: 0.758
+    "route_harrogath_05.png": (1180.8, 1209.7),
     "route_harrogath_06.png": (1008.0, 1497.7),
     "route_harrogath_09.png": (115.2, 1742.5),
     "route_harrogath_10.png": (-144.0, 1670.5),   #hangs 144px off the map's left edge
 }
+TEMPLE_HELD_OUT = {
+    "route_temple_21.png": (634.0, 705.8),    #on the path, halfway between two map frames
+    "route_temple_24.png": (1642.0, 0.0),     #at the doorway, Pindleskin's plate up
+    "route_temple_28.png": (1584.4, 57.6),    #at the fighting spot, mid-fight
+}
+#The arrival IS one of the temple map's own frames (there is only one screenshot of it), so the map
+#placing it proves little; the landmark placing it independently is the real test.
+TEMPLE_ARRIVAL = ("route_temple_19.png", (0.0, 1282.0))
+TEMPLE_FRAMES = ("route_temple_19.png", "route_temple_20.png", "route_temple_21.png",
+                 "route_temple_24.png", "route_temple_28.png")
 MAX_ERROR_PX = 8.0   #measured worst 3.2px; a click target is ~40px across, so 8 is still exact
+#The landmark is the portal ring's bounding box, which the character partly covers at the arrival
+#point - coarser than a map match, and only ever used for the first click or two.
+MAX_LANDMARK_ERROR_PX = 40.0
 #The portal's ring measured directly in Screenshot009 (bounding box of its saturated red), i.e.
 #independently of the map and the route file.
 PORTAL_IN_SHOT_09 = (730.0, 297.5)
@@ -59,14 +76,39 @@ def fixture(name):
     return image
 
 
-print("1. The route loads and is shaped as expected")
-route = pindle.Route.load()
+def located_within(route, held_out, label):
+    """Locates each held-out frame; returns their scores and a dict of name -> Where."""
+    scores, wheres = [], {}
+    for name, truth in held_out.items():
+        frame = fixture(name)
+        if frame is None:
+            continue
+        where = route.locate(frame, frame_scale=route.map_scale)
+        wheres[name] = where
+        if where.position is None:
+            check(f"{label} {name} located (score {where.fix.score}, margin {where.fix.margin})",
+                  False)
+            continue
+        error = float(np.linalg.norm(where.camera - np.array(truth)))
+        scores.append(where.fix.score)
+        check(f"{label} {name}: off by {error:.1f}px (score {where.fix.score:.3f}, "
+              f"margin {where.fix.margin:.3f})", error <= MAX_ERROR_PX)
+    return scores, wheres
+
+
+print("1. The routes load and are shaped as expected")
+route = pindle.Route.load(pindle.HARROGATH_ROUTE)
+temple = pindle.Route.load(pindle.TEMPLE_ROUTE)
 check("assets/routes/harrogath_to_nihlathak.json loads", route is not None)
-if route is None:
+check("assets/routes/nihlathak_temple.json loads", temple is not None)
+if route is None or temple is None:
     sys.exit(1)
+check("both are matched with local contrast normalisation",
+      route.locator.normalize_sigma and temple.locator.normalize_sigma)
 check("the path has been densified", len(route.path) > 20)
-check("the portal is a named point", "portal" in route.points)
-check("the waypoint is a keep-out zone", "waypoint" in route.keep_out)
+check("Harrogath's portal is a named point", "portal" in route.points)
+check("Harrogath's waypoint is a keep-out zone", "waypoint" in route.keep_out)
+check("the temple's town portal is its landmark", pindle.LANDMARK_POINT in temple.points)
 check("fits the recorded 1920x1080", route.fits(1920, 1080))
 check("fits the same shape at another size (2560x1440)", route.fits(2560, 1440))
 check("refuses a different shape (1280x800)", not route.fits(1280, 800))
@@ -74,9 +116,9 @@ check("refuses a different shape (1280x800)", not route.fits(1280, 800))
 print("\n2. Nothing to go on -> 'cannot tell', never a guess and never a crash")
 locator = route.locator
 query_shape = (172, 288)   #the live query at map scale: 0.64 x 270 by 0.6 x 480
-check("a None query -> cannot tell", locator.locate(None).found is None)
-check("an empty query -> cannot tell", locator.locate(np.zeros((0, 0), np.uint8)).found is None)
-check("a flat black query (a loading screen) -> cannot tell",
+check("a None frame -> cannot tell", locator.locate(None).found is None)
+check("an empty frame -> cannot tell", locator.locate(np.zeros((0, 0), np.uint8)).found is None)
+check("a flat black frame (a loading screen) -> cannot tell",
       locator.locate(np.zeros(query_shape, np.uint8)).found is None)
 rng = np.random.default_rng(7)
 check("a query bigger than the map -> cannot tell",
@@ -88,49 +130,72 @@ check("a black full-size BGRA frame -> no position",
       route.locate(np.zeros((1080, 1920, 4), np.uint8)).position is None)
 check("a frame of the wrong shape -> no position",
       route.locate(np.zeros((800, 1280, 3), np.uint8)).position is None)
+check("no red portal in a black frame",
+      pindle.find_red_portal(np.zeros((1080, 1920, 3), np.uint8)) is None)
 try:
     MapLocator(None)
     check("MapLocator refuses a missing map", False)
 except ValueError:
     check("MapLocator refuses a missing map", True)
 
-print("\n3. Screenshots the map was NOT built from are located where they really were")
-held_scores = []
-where_09 = None
-for name, truth in HELD_OUT.items():
-    frame = fixture(name)
-    if frame is None:
-        continue
-    where = route.locate(frame, frame_scale=route.map_scale)
-    if where.position is None:
-        check(f"{name} located (score {where.fix.score}, margin {where.fix.margin})", False)
-        continue
-    error = float(np.linalg.norm(where.camera - np.array(truth)))
-    held_scores.append(where.fix.score)
-    check(f"{name}: off by {error:.1f}px (score {where.fix.score:.3f}, "
-          f"margin {where.fix.margin:.3f})", error <= MAX_ERROR_PX)
-    if name == "route_harrogath_09.png":
-        where_09 = where
+print("\n3. Harrogath screenshots the map was NOT built from are located where they really were")
+harrogath_scores, harrogath_wheres = located_within(route, HARROGATH_HELD_OUT, "Harrogath")
 
-print("\n4. Anywhere else is NOT located - this is also how 'we went through the portal' is seen")
+print("\n4. Neither place is ever mistaken for the other")
+temple_on_harrogath = []
+for name in TEMPLE_FRAMES:
+    frame = fixture(name)
+    if frame is not None:
+        temple_on_harrogath.append((route.locate(frame, frame_scale=route.map_scale), name))
+if temple_on_harrogath:
+    worst, worst_name = max(temple_on_harrogath, key=lambda item: item[0].fix.score or 0)
+    #The frame that matched at 0.630 before normalisation is route_temple_20.
+    check(f"no temple frame is located on the Harrogath map (highest: {worst_name} at "
+          f"{worst.fix.score:.3f}; was 0.630 before normalisation)",
+          all(w.fix.found is not True for w, _ in temple_on_harrogath))
+    if harrogath_scores:
+        gap = min(harrogath_scores) - worst.fix.score
+        check(f"the weakest Harrogath match beats the best temple look-alike by {gap:.3f} "
+              f"(needs >= 0.30)", gap >= 0.30)
 pack = fixture("pindle_pack.png")
 if pack is not None:
-    inside = route.locate(pack)
-    check(f"Nihlathak's Temple is not Harrogath (score {inside.fix.score:.3f})",
-          inside.fix.found is False)
-    if held_scores:
-        #The margin, not just the answer - a threshold that still separates these by a hair is a
-        #threshold about to fail on the next dark corner.
-        gap = min(held_scores) - inside.fix.score
-        check(f"weakest Harrogath match beats the temple by {gap:.3f} (needs >= 0.30)", gap >= 0.30)
-        check(f"threshold {locator.threshold} sits between them",
-              inside.fix.score < locator.threshold < min(held_scores))
+    check("pindle_pack (inside the temple) is not located on Harrogath",
+          route.locate(pack).fix.found is not True)
 lobby = fixture("lobby.png")
 if lobby is not None:
     check("the lobby is not located", route.locate(lobby).fix.found is not True)
+for name in HARROGATH_HELD_OUT:
+    frame = fixture(name)
+    if frame is not None:
+        where = temple.locate(frame, frame_scale=temple.map_scale)
+        check(f"{name} is not located on the TEMPLE map ({where.fix.score:.3f})",
+              where.fix.found is not True)
 
-print("\n5. Where the route says the portal is, is where the portal is - in a screenshot it never saw")
-if where_09 is not None:
+print("\n5. Temple screenshots the map was NOT built from are located where they really were")
+temple_scores, _ = located_within(temple, TEMPLE_HELD_OUT, "temple")
+if pack is not None:
+    where = temple.locate(pack)
+    check(f"pindle_pack.png, from a different run, is located on the temple map "
+          f"({where.fix.score:.3f})", where.fix.found is True)
+
+print("\n6. The temple's arrival point: the red portal places it, independently of the map")
+frame = fixture(TEMPLE_ARRIVAL[0])
+if frame is not None:
+    by_map = temple.locate(frame, frame_scale=temple.map_scale)
+    #Informational only - this frame is part of the map, so the map finding it is not evidence.
+    print(f"       (by the map, in-sample: found={by_map.fix.found}, score {by_map.fix.score:.3f})")
+    by_portal = temple.locate_by_landmark(frame, frame_scale=temple.map_scale)
+    if by_portal.position is None:
+        check("the red portal is found at the arrival point", False)
+    else:
+        error = float(np.linalg.norm(by_portal.camera - np.array(TEMPLE_ARRIVAL[1])))
+        check(f"located by the portal, off by {error:.1f}px", error <= MAX_LANDMARK_ERROR_PX)
+    check("Harrogath has no landmark (its portal is its GOAL, not where it starts)",
+          route.locate_by_landmark(frame, frame_scale=route.map_scale).position is None)
+
+print("\n7. Where the route says the portal is, is where the portal is - in a screenshot it never saw")
+where_09 = harrogath_wheres.get("route_harrogath_09.png")
+if where_09 is not None and where_09.position is not None:
     x, y = route.to_screen(route.points["portal"], where_09.camera, (0, 0), where_09.zoom)
     miss = float(np.hypot(x - PORTAL_IN_SHOT_09[0], y - PORTAL_IN_SHOT_09[1]))
     check(f"portal click lands {miss:.0f}px from the ring's measured centre (ring is ~150x240)",
@@ -139,9 +204,9 @@ if where_09 is not None:
                                                                         where_09.camera))
 
 
-def simulate(start, step_px=150.0, max_steps=80):
+def simulate(the_route, start, goal="portal", step_px=150.0, max_steps=80):
     """Walk the Walker: the character covers step_px towards each target before the next click."""
-    walker = pindle.Walker(route)
+    walker = pindle.Walker(the_route, goal)
     position = np.array(start, float)
     problems, progress = [], 0
     for step in range(max_steps):
@@ -149,43 +214,59 @@ def simulate(start, step_px=150.0, max_steps=80):
         if walker.progress < progress:
             problems.append(f"step {step}: progress went backwards")
         progress = walker.progress
-        camera = position - route.anchor
-        if kind == "portal":
-            if not route.in_click_area(target, camera):
+        camera = position - the_route.anchor
+        if kind in ("portal", "arrived"):
+            if kind == "portal" and not the_route.in_click_area(target, camera):
                 problems.append(f"step {step}: portal chosen while off screen")
-            return step, problems
-        if not route.in_click_area(target, camera):
+            return step, kind, problems
+        if not the_route.in_click_area(target, camera):
             problems.append(f"step {step}: target {target.round()} is off the click area")
-        if route.in_keep_out(target):
+        if the_route.in_keep_out(target):
             problems.append(f"step {step}: target {target.round()} is on the waypoint")
         offset = target - position
         distance = float(np.linalg.norm(offset))
         position = target if distance <= step_px else position + offset / distance * step_px
-    return None, problems
+    return None, None, problems
 
 
-print("\n6. The walk's decisions, simulated - no game, no mouse")
-steps, problems = simulate(route.path[0])
-check(f"from the start it reaches the portal ({steps} clicks)", steps is not None)
+print("\n8. The walks' decisions, simulated - no game, no mouse")
+steps, kind, problems = simulate(route, route.path[0])
+check(f"Harrogath: from the start it reaches the portal ({steps} clicks)", kind == "portal")
 check("every click is on screen, off the HUD and off the waypoint", not problems)
 for problem in problems[:5]:
     print("       ", problem)
-steps, problems = simulate(route.path[0], step_px=50.0, max_steps=200)
-check(f"a slow character gets there too ({steps} clicks)", steps is not None and not problems)
-#Pushed off the path (an NPC in the way): it must head back rather than aim somewhere unclickable.
+steps, kind, problems = simulate(route, route.path[0], step_px=50.0, max_steps=200)
+check(f"a slow character gets there too ({steps} clicks)", kind == "portal" and not problems)
 direction = route.path[16] - route.path[14]
 sideways = np.array([direction[1], -direction[0]]) / np.linalg.norm(direction)
 for push in (200.0, -200.0):
-    steps, problems = simulate(route.path[15] + sideways * push)
+    steps, kind, problems = simulate(route, route.path[15] + sideways * push)
     check(f"pushed {push:+.0f}px off the path, it still gets there ({steps} clicks)",
-          steps is not None and not problems)
+          kind == "portal" and not problems)
 kind, _ = pindle.Walker(route).decide(route.path[0])
 check("at the start, the portal is not in reach yet", kind == "move")
+steps, kind, problems = simulate(temple, temple.path[0], goal=None)
+check(f"temple: from the arrival it reaches the fighting spot and STOPS ({steps} clicks)",
+      kind == "arrived" and not problems)
+for problem in problems[:5]:
+    print("       ", problem)
+kind, _ = pindle.Walker(temple, None).decide(temple.path[0])
+check("the temple walk never tries to go through a portal", kind == "move")
 
-print("\n7. The portal is only clicked once its label is READ")
+print("\n9. 'F4' stops a walk outright, without waiting for anything")
+started = time.perf_counter()
+stopped = pindle.walk(route, grab=lambda: (None, None), can_act=lambda: True,
+                      in_play=lambda: None, log=lambda *_: None, cancelled=lambda: True)
+elapsed = time.perf_counter() - started
+#Without the cancel it would sit here for LOST_SECONDS before giving up on a blind grab, so the
+#timing is the check: it has to return immediately, not eventually.
+check(f"a cancelled walk returns False at once ({elapsed * 1000:.0f}ms)",
+      stopped is False and elapsed < 1.0)
+
+print("\n10. The portal is only clicked once its label is READ")
 if not text_detection.ocr_available():
     print("  NOT RUNNING - no OCR backend installed, so the label check cannot be tested here.")
-    print("  (Live, walk_to_portal() then clicks WITHOUT reading the label, and says so.)")
+    print("  (Live, the walk then clicks WITHOUT reading the label, and says so.)")
 else:
     labelled = fixture("portal_label.png")
     plain = fixture("portal_no_label.png")
@@ -197,7 +278,7 @@ else:
     check("a black frame has no label", not pindle.label_showing(np.zeros((360, 660, 3),
                                                                           np.uint8), 330, 230))
 
-print("\n8. Cost of one live locate (full-size frame, including its resize) - informational")
+print("\n11. Cost of one live locate (full-size frame, including its resize) - informational")
 if pack is not None:
     frame = cv.cvtColor(pack, cv.COLOR_BGR2BGRA)
     route.locate(frame)

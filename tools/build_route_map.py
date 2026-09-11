@@ -59,21 +59,38 @@ ROUTES_DIR = REPO_ROOT / "assets" / "routes"
 #                   map), while this crop located every one of 15 screenshots within 3.2px.
 DEFAULT_VIEWPORT = (0.0, 0.11, 1.0, 0.69)
 DEFAULT_CHARACTER_BOX = (0.4375, 0.30, 0.125, 0.22)
+#  overlays       - things drawn at a fixed place on the SCREEN inside the viewport, which must be
+#                   left out for the same reason as the character, only worse: they are pixel-for-
+#                   pixel identical in every screenshot, so they match perfectly at ZERO shift.
+#                   Diablo II's chat and system messages ("[Game] Zelgy says: ...") sit bottom-left.
+#                   Measured: one chat line produced 474 agreeing feature matches between two
+#                   screenshots whose cameras were really 438px apart, and the solve put them at the
+#                   same place. Pass more with --ignore (the F5 debug panel, if it was up).
+DEFAULT_OVERLAYS = ((0.0, 0.62, 0.30, 0.18),)
 DEFAULT_ANCHOR = (0.5, 0.485)
 DEFAULT_QUERY_VIEW = (0.2, 0.12, 0.6, 0.64)
 #0.25 is the measured sweet spot: 0.2 / 0.25 / 0.33 all located every held-out screenshot within
 #4px, at 8 / 13 / 29 ms per locate. Below 0.25 the error starts to grow; above, the cost doubles.
 DEFAULT_SCALE = 0.25
-#Located back on the finished map, the weakest of 7 held-out screenshots scored 0.758 with a margin
-#of 0.454, and a dungeon interior scored 0.278 - so 0.55 / 0.2 sit well clear of both sides.
-DEFAULT_THRESHOLD = 0.55
-DEFAULT_MIN_MARGIN = 0.2
+#Local contrast normalisation - see core/localize.py for the false match it exists to stop. 6 map
+#pixels was the measured best of 3 / 6 / 10.
+DEFAULT_NORMALIZE_SIGMA = 6
+#Normalised scores sit on a different scale from plain ones. Measured: true matches 0.67-0.88 with
+#margins 0.59-0.82; the other area's frames at most 0.10. So 0.4 / 0.25 sit well clear of both.
+DEFAULT_THRESHOLD = 0.4
+DEFAULT_MIN_MARGIN = 0.25
 
 #A pair needs this many agreeing feature matches before its offset is believed. Repeating
 #textures (stone walls, cobbles) produce 25-45 "matches" between screenshots that do not overlap at
 #all; genuinely overlapping pairs measured 170-2400. Letting the weak ones in put errors of over a
 #thousand pixels into the solve.
 MIN_INLIERS = 150
+#Once a pair's shift is estimated, the overlapping PIXELS must actually agree - not just the feature
+#matches. Every match can come from one thing that is not the scene (the chat line above), and
+#RANSAC will happily call that a consensus. A real overlap makes the whole picture line up.
+#Measured on 38 pairs: the chat-line pair correlated 0.142; every genuine pair 0.539-0.939, the
+#lowest being mid-fight screenshots full of spell flashes.
+EDGE_MIN_CORRELATION = 0.4
 MAX_SCALE_ERROR = 0.01   #measured 0.0015 worst on real pairs
 MAX_ROTATION_DEG = 0.5   #measured 0.07 worst
 EDGE_RESIDUAL_LIMIT = 15.0  #px; measured 0.3 worst once the weak pairs are out
@@ -86,14 +103,36 @@ def fractions(text, count):
     return values
 
 
-def world_mask(shape, viewport, character_box):
+def world_mask(shape, viewport, character_box, overlays=DEFAULT_OVERLAYS):
     h, w = shape[:2]
     mask = np.zeros((h, w), np.uint8)
     vx, vy, vw, vh = viewport
     mask[int(vy * h):int((vy + vh) * h), int(vx * w):int((vx + vw) * w)] = 255
-    cx, cy, cw, ch = character_box
-    mask[int(cy * h):int((cy + ch) * h), int(cx * w):int((cx + cw) * w)] = 0
+    for bx, by, bw, bh in (character_box, *overlays):
+        mask[int(by * h):int((by + bh) * h), int(bx * w):int((bx + bw) * w)] = 0
     return mask
+
+
+def overlap_correlation(gray_a, gray_b, mask_a, mask_b, offset, scale=0.25):
+    """How well two screenshots' overlapping pixels agree once b is shifted by `offset` onto a
+    (a point at p in a is at p + offset in b). Pearson correlation of the masked overlap at
+    `scale`, or None when the overlap is too small or too flat to say."""
+    small = [cv.resize(g, None, fx=scale, fy=scale, interpolation=cv.INTER_AREA).astype(np.float32)
+             for g in (gray_a, gray_b)]
+    masks = [cv.resize(m, (small[0].shape[1], small[0].shape[0]),
+                       interpolation=cv.INTER_NEAREST) > 0 for m in (mask_a, mask_b)]
+    dx, dy = (int(round(v * scale)) for v in offset)
+    h, w = small[0].shape
+    x0, x1 = max(0, -dx), min(w, w - dx)
+    y0, y1 = max(0, -dy), min(h, h - dy)
+    if x1 - x0 < 20 or y1 - y0 < 20:
+        return None
+    keep = masks[0][y0:y1, x0:x1] & masks[1][y0 + dy:y1 + dy, x0 + dx:x1 + dx]
+    va = small[0][y0:y1, x0:x1][keep]
+    vb = small[1][y0 + dy:y1 + dy, x0 + dx:x1 + dx][keep]
+    if va.size < 400 or va.std() < 1 or vb.std() < 1:
+        return None
+    return float(np.corrcoef(va, vb)[0, 1])
 
 
 def register(grays, masks, names):
@@ -127,6 +166,14 @@ def register(grays, masks, names):
             continue
         keep = inliers.ravel().astype(bool)
         offset = np.median(pb[keep] - pa[keep], axis=0)
+        agreement = overlap_correlation(grays[a], grays[b], masks[a], masks[b], offset)
+        if agreement is None or agreement < EDGE_MIN_CORRELATION:
+            shown = "too little overlap to check" if agreement is None else f"{agreement:.2f}"
+            print(f"  WARNING: {names[a]} -> {names[b]}: {count} features agree on a shift of "
+                  f"({offset[0]:+.0f}, {offset[1]:+.0f}) but the pictures do not ({shown}) - "
+                  f"pair ignored. Usually something drawn on the SCREEN rather than in the world "
+                  f"(chat, a panel) - see --ignore.")
+            continue
         edges.append((a, b, offset, count))
 
     def solve(edges):
@@ -199,7 +246,10 @@ def stitch(frames, masks, cams, scale):
         warnings.simplefilter("ignore", RuntimeWarning)   #"All-NaN slice": spots nothing covers
         merged = np.nanmedian(stack, axis=0)
     covered = ~np.isnan(merged)
-    merged[~covered] = 0
+    #0 MEANS "NEVER SEEN", so nothing that was seen may be 0. core/localize.py tells the mapped
+    #area apart by exactly that, and a genuinely black pixel of a dark scene - most of Nihlathak's
+    #Temple's arrival point, for instance - would otherwise be thrown away as unmapped.
+    merged = np.where(covered, np.clip(np.round(merged), 1, 255), 0)
     return merged.astype(np.uint8), origin, float(covered.mean())
 
 
@@ -230,7 +280,11 @@ def main():
                         default=DEFAULT_CHARACTER_BOX)
     parser.add_argument("--anchor", type=lambda s: fractions(s, 2), default=DEFAULT_ANCHOR)
     parser.add_argument("--query-view", type=lambda s: fractions(s, 4), default=DEFAULT_QUERY_VIEW)
+    parser.add_argument("--ignore", action="append", type=lambda s: fractions(s, 4),
+                        help="x,y,w,h fractions of a screen-fixed overlay to leave out; replaces "
+                             "the default (the chat area) - repeat for several")
     args = parser.parse_args()
+    overlays = tuple(args.ignore) if args.ignore else DEFAULT_OVERLAYS
 
     paths = [Path(p) for p in args.screenshots]
     names = [p.name for p in paths]
@@ -243,7 +297,7 @@ def main():
     h, w = frames[0].shape[:2]
 
     print(f"Registering {len(frames)} screenshots ({w}x{h})...")
-    masks = [world_mask(f.shape, args.viewport, args.character_box) for f in frames]
+    masks = [world_mask(f.shape, args.viewport, args.character_box, overlays) for f in frames]
     grays = [cv.cvtColor(f, cv.COLOR_BGR2GRAY) for f in frames]
     cams, n_pairs, residual = register(grays, masks, names)
     print(f"  {n_pairs} overlapping pairs, all agreeing to within {residual:.1f}px")
@@ -257,14 +311,14 @@ def main():
     #the stitching, not evidence the map generalises - tests/test_route.py does that with
     #screenshots the map was NOT built from.
     print("Locating each screenshot back on the map:")
-    locator = MapLocator(map_gray, DEFAULT_THRESHOLD, DEFAULT_MIN_MARGIN)
+    locator = MapLocator(map_gray, DEFAULT_THRESHOLD, DEFAULT_MIN_MARGIN, DEFAULT_NORMALIZE_SIGMA)
     vx, vy, vw, vh = args.query_view
     for name, frame, cam in zip(names, frames, cams_on_map):
         small = cv.cvtColor(cv.resize(frame, None, fx=args.scale, fy=args.scale,
                                       interpolation=cv.INTER_AREA), cv.COLOR_BGR2GRAY)
         sh, sw = small.shape
         x0, y0 = int(vx * sw), int(vy * sh)
-        fix = locator.locate(small[y0:y0 + int(vh * sh), x0:x0 + int(vw * sw)])
+        fix = locator.locate(small, (x0, y0, int(vw * sw), int(vh * sh)))
         if fix.found:
             error = np.linalg.norm(np.array([(fix.x - x0), (fix.y - y0)]) / args.scale - cam)
             print(f"  {name}: score {fix.score:.3f}, margin {fix.margin:.3f}, off by {error:.1f}px")
@@ -302,6 +356,7 @@ def main():
         "source_size": [w, h],
         "query_view": list(args.query_view),
         "character_anchor": list(args.anchor),
+        "normalize_sigma": DEFAULT_NORMALIZE_SIGMA,
         "threshold": DEFAULT_THRESHOLD,
         "min_margin": DEFAULT_MIN_MARGIN,
         "path": [(cam + anchor).round(1).tolist() for cam in cams_on_map],

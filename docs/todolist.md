@@ -15,11 +15,11 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 
 ## Now
 
-- [ ] **Automate the Pindleskin kill.** (2026-09-11) The walk through the portal (`F7`) is done and validated live. Next leg: arrive in Nihlathak's Temple -> move to the fighting spot -> attack until Pindleskin is dead -> auto-collect picks up -> `F3`. Same rule as the walk: every step waits on something SEEN, never on a clock.
-  - the temple entrance is a fixed layout, so getting to the fighting spot can reuse `core/localize.py` + `tools/build_route_map.py` as a second route
-  - "is he dead?" needs a detector. Candidates: OCR on the monster name + health bar D2R draws at the top of the screen for a hovered monster; item labels appearing (Alt); the monster detector (not built). Decide from real screenshots of the fight
-  - needs an abort: low health -> `quit_game()`. The "chicken" item in the parking lot stops being optional once the fight is automated
-  - waiting on the owner: build + skill keys, and screenshots of the temple walk, the fight, and a dead Pindleskin
+- [ ] **Validate the potion thresholds against real damage.** (Back in NOW 2026-09-11, with the Pindle run on hold - and the run is where these finally get exercised, since an automated fight is exactly where they matter.) The last thing in the potion stack that has never been tested. Everything guarding it is confirmed live - foreground, in-play, the noise floor - but `user_config.txt`'s numbers (`rejuvenation <=30%`, `health <=70%`, `mana <=25%`) are still guesses.
+  - 70% is high; it will drink often. Does the belt last a run?
+  - does the emergency tier beat the ordinary one on a burst?
+  - does it double-drink on one dip? If so the 4.0s health cooldown is too short
+  - `F6` snoozes for 10s; `enabled = no` stops it outright
 
 ---
 
@@ -27,11 +27,11 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 
 *In order — each depends on the one above it.*
 
-- [ ] **Validate the potion thresholds against real damage.** (Moved back to Next 2026-09-11 for the Pindle kill - which will exercise them anyway, since an automated fight is exactly where they matter.) The last thing in the potion stack that has never been tested. Everything guarding it is confirmed live - foreground, in-play, the noise floor - but `user_config.txt`'s numbers (`rejuvenation <=30%`, `health <=70%`, `mana <=25%`) are still guesses.
-  - 70% is high; it will drink often. Does the belt last a run?
-  - does the emergency tier beat the ordinary one on a burst?
-  - does it double-drink on one dip? If so the 4.0s health cooldown is too short
-  - `F6` snoozes for 10s; `enabled = no` stops it outright
+- [ ] **The Pindle run - ON HOLD (owner's call, 2026-09-11), and what is left when it resumes.** `F7` walks to the portal, through it, to the doorway and kills the pack, confirmed live. Open threads, none urgent:
+  - **the unverified assumption**: does the monster name plate stay red while a monster is hurt, or drain with its health? If it drains, a nearly-dead monster stops being cast at and gets re-found by motion instead - watch for casts that stop early
+  - `CHICKEN_BELOW` (20%) was chosen by the program, not by the owner
+  - chain `F7` onto the end of `next_game()` so one key runs game after game
+  - `F8` (fight only) was removed as not useful - `routes/pindle.py`'s `fight_here()` is still there if a hotkey is ever wanted again
 
 - [ ] **Validate potion drinking in real gameplay.** Thresholds in `user_config.txt` are still unvalidated starting points. `F6` snoozes for 10s; `enabled = no` in that file turns it off. Watch the `F5` panel while taking real damage: does the ordinary tier fire near 35%, does the emergency tier beat it on a burst, does it double-drink on one dip (if so the 4.0s health cooldown is too low)?
 
@@ -135,6 +135,8 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 ---
 
 ## Done
+
+- [x] **2026-09-11 — the Pindleskin fight, and the whole run on `F7`. Confirmed live: "it walks to the portal, and kills the monsters at the correct location".** Through the portal -> Conviction (`E`) -> the temple route to the owner's doorway spot -> Fist of the Heavens (`R`) until nothing is left -> auto-collect takes the loot. No monster detector was needed: standing still the camera is static, so **what moves between two frames is something alive** (the pack was the biggest moving region, 1px from its centre), and **Diablo II's red name plate says whether the cursor is on a monster** (87-88% plate-red hovered, <=2% not) - so `R` is pressed only with the plate up, re-checked before every press. Leaves the game below 20% health. `F4` now stops a run outright as well as snoozing auto-collect. Two real bugs found on the way, both in what the walk was already doing: a temple frame matched the HARROGATH map at 0.630 (`Error_history.txt` #45, fixed with local contrast normalisation - the "through the portal" check had been standing on a 0.04 margin), and a line of chat stitched two screenshots 438px apart on top of each other (#46). A third was caught by a test before it ever ran: pressing Save and Exit twice when health collapsed mid-attack.
 
 - [x] **2026-09-11 — walk to Nihlathak's portal (`F7`), validated live 3 games out of 3.** From where a new game starts in Harrogath, through the red portal, every step located by LOOKING: the live frame is matched against a map stitched from screenshots of the owner walking the route (`core/localize.py`), and each click aims at the next point along that recorded path. Rests on the camera moving by pure translation, which was measured first (scale 1.000 +/- 0.0015, rotation within 0.07 degrees, 0.3px agreement across 15 screenshots). Held-out screenshots located within 1.7-2.6px; the temple interior scores 0.275 against a 0.55 threshold. The waypoint is a keep-out zone, the portal is only clicked once its hover label is read, and going through is confirmed by the map no longer matching while the HUD is up. New: `core/localize.py`, `routes/pindle.py`, `tools/build_route_map.py`, `assets/routes/`, `tests/test_route.py` (36 checks).
 

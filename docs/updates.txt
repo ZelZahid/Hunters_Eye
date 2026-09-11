@@ -11,6 +11,9 @@ that tag rather than guessing from commit history - that's what these are for.
 ------------------------------------------------------------------------------
 AT A GLANCE - newest first. Full entries are below, oldest first.
 ------------------------------------------------------------------------------
+0.016  The Pindleskin fight on F7: what MOVES says where to look, the monster
+       name plate says whether to cast. F4 stops a run. Two stitching/matching
+       bugs found in the v0.015 walk and fixed.
 0.015  Walk to Nihlathak's portal (F7): locate the screen on a map of Harrogath
        stitched from screenshots, click along the path actually walked. 3/3 live.
 0.014  The in-play check read NOT IN GAME in a dark room - the reference art
@@ -1093,3 +1096,73 @@ New: core/localize.py, routes/pindle.py, tools/build_route_map.py,
 assets/routes/harrogath_to_nihlathak.png/.json, tests/test_route.py (36
 checks) and seven small fixtures; text_detection.ocr_available(). main.py's
 sequence lock now covers all three scripted sequences. No new dependencies.
+
+------------------------------------------------------------------------------
+0.016 - 2026-09-11
+------------------------------------------------------------------------------
+THE PINDLESKIN FIGHT, AND THE WHOLE RUN ON F7. Confirmed live by the project
+owner: "it walks to the portal, and kills the monsters at the correct
+location". The run is now: new game in Harrogath -> walk to the red portal and
+through it -> Conviction (E) -> walk the temple to the doorway the owner fights
+from -> Fist of the Heavens (R) until nothing is left -> auto-collect takes the
+loot.
+
+FIGHTING WITHOUT A MONSTER DETECTOR. The trained detector is still only a plan
+(docs/monster_detection_plan.txt), and two things this program can already see
+turned out to cover the job between them:
+
+  - WHERE to look: standing still, the camera does not move, so anything that
+    changes between two frames 0.12s apart is something alive. Measured on the
+    real fight, the biggest moving region was the pack itself - 1px from its
+    centre. Snow and torch flicker are filtered by size.
+  - WHETHER it is a monster: Diablo II draws a red name plate at the top of the
+    screen for the monster under the cursor and for nothing else (the mercenary
+    gets a floating name instead). Measured: 87-88% of the plate's middle is
+    plate-red with a monster hovered, at most 2% without - a sub-millisecond
+    colour test, with OCR reading the name only to report whether Pindleskin
+    was seen.
+
+So the cursor visits the moving spots biggest-first and R is pressed only while
+the plate is up, re-checked BEFORE EVERY PRESS - monsters move, and a spot that
+had one a moment ago may be bare floor. Which monster does not matter: Fist of
+the Heavens spreads to everything near its target.
+
+It leaves the game (Save and Exit) at or below 20% health, and an unreadable
+orb (None) is never treated as low - the game_state.py rule. F4 now stops a run
+outright as well as snoozing auto-collect: the snooze re-arms itself, a stopped
+run stays stopped, because whoever pressed it has stopped watching the screen
+the run was acting on. F8 (fight-only) was removed as not useful.
+
+TWO REAL BUGS, BOTH IN WHAT THE v0.015 WALK WAS ALREADY DOING, found while
+building the temple leg rather than in play:
+
+  - A temple frame matched the HARROGATH map at 0.630, over its 0.55 threshold.
+    Both places are dark and contain the same bright red portal, and a
+    whole-patch normalised score is carried by whatever is brightest. The walk
+    decides it went through the portal by the Harrogath map no longer matching,
+    so that check had been standing on a ~0.04 margin in all three live runs.
+    Fixed with local contrast normalisation before matching: weakest true match
+    0.776 -> 0.726, strongest false 0.630 -> 0.090, gap 0.146 -> 0.636.
+    Error_history.txt #45.
+  - A line of chat stitched two screenshots 438px apart on top of each other.
+    "[Game] Zelgy says: ..." is drawn at a fixed place on the SCREEN, so it gave
+    474 feature matches agreeing perfectly on a shift of zero - clean RANSAC
+    consensus, scale 1.000, rotation 0.00. build_route_map.py now masks
+    screen-fixed overlays (--ignore for more) AND requires each pair's aligned
+    pixels to correlate >= 0.4 (that pair: 0.142; genuine pairs 0.539-0.939).
+    Error_history.txt #46.
+
+A third was caught by a test before it ever ran live: on a health collapse
+mid-attack, fight() left the game and then went round the outer loop and left
+AGAIN - pressing Esc into whatever the first exit had left on screen.
+
+MEASURED, on screenshots the temple map was not built from: located within
+1.6-2.7px; pindle_pack.png (a different run entirely) 0.783. The arrival point
+is placed to within 8.1px by finding the red portal ring, independently of the
+map - kept as a second opinion after the mis-stitched map above made the map's
+own answer there worthless.
+
+New: assets/routes/nihlathak_temple.png/.json, tests/test_pindle_fight.py (the
+plate, motion spots, and the fight loop driven through a fake game), nine
+fixtures. routes/pindle.py gained the temple walk, the landmark fallback, the
+fight and cancellation. No new dependencies.

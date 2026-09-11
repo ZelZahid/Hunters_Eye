@@ -23,6 +23,9 @@ If a new test needs a real frame, add it here.
 | `pindle_pack.png` | Nihlathak's Temple entrance, ~8-9 Defiled Warriors | the monster-detection experiments - see `docs/monster_detection_plan.txt` section 9; also `test_route.py`'s "not Harrogath" case |
 | `route_harrogath_01/05/06/09/10.png` | Harrogath, the waypoint->portal walk, **stored at 0.25x** | `test_route.py`: locating frames the route map was *not* built from, against ground truth from the registration |
 | `portal_label.png` / `portal_no_label.png` | full-resolution crops round Nihlathak's portal, hovered (label showing) and not | `test_route.py`: the portal is only clicked once its label is read |
+| `route_temple_19/20/21/24/28.png` | Nihlathak's Temple, arrival -> fighting spot, **stored at 0.25x** like the Harrogath ones | `test_route.py`: 21/24/28 are held out of the temple map; 19 is the arrival (found by the portal landmark); 20 is the frame that once matched the *Harrogath* map at 0.630 |
+| `plate_pindleskin.png` / `plate_defiled_warrior.png` / `plate_none.png` | full-size frames masked to the top strip, with Pindleskin, a Defiled Warrior, and nothing hovered | `test_pindle_fight.py`: the red monster plate is the "a monster is under the cursor" signal |
+| `fight_motion_27.png` / `fight_motion_28.png` | two frames from the fighting spot with the same camera, **stored at 0.5x** | `test_pindle_fight.py`: what moves between them points the cursor at the pack |
 
 The `route_harrogath_*` frames are the other exception, in the opposite direction: they are
 **downscaled rather than masked**, to exactly the map's scale (`map_scale` in

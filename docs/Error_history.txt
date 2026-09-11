@@ -1492,3 +1492,70 @@ Lesson: a reference template must contain ONLY pixels that cannot change, and
   occlusion if their failure modes are independent, and these two shared one -
   both included game world, so a dark room took out both at once. Check what a
   reference is MADE of, not just where it is.
+
+------------------------------------------------------------------------------
+45. Nihlathak's Temple matched the Harrogath map, because one bright portal
+    dominated a dark scene
+------------------------------------------------------------------------------
+Where: core/localize.py (MapLocator), assets/routes/harrogath_to_nihlathak.json
+Symptom: found while starting the temple route, not in play. Screenshot020 -
+  inside the temple, a few steps from the arrival - located on the HARROGATH
+  map at 0.630, over the 0.55 threshold; the arrival view itself scored 0.508.
+  The F7 walk decides it has gone through the portal by the Harrogath map NO
+  LONGER matching, so this was the margin that check had been standing on:
+  ~0.04. It held in all three live runs. The one temple fixture there was
+  (pindle_pack.png, 0.275) had suggested ~0.5.
+Cause: TM_CCOEFF_NORMED normalises over the whole query, so in a dark frame the
+  few bright pixels carry almost the entire score. Harrogath and the temple are
+  both dark and snowy, and both contain the same glowing red portal - the two
+  sides of it. Two dark scenes that share their one bright object look alike.
+Fix: local contrast normalisation before matching, on map and query alike -
+  every neighbourhood divided down to its own mean and contrast (sigma 6 map
+  pixels, the best of 3/6/10 measured), so each patch of stone counts as much
+  as the portal. Measured on the same frames:
+
+                           weakest true match   strongest false   gap
+      plain                      0.776               0.630        0.146
+      normalised                 0.726               0.090        0.636
+
+  Scores are on a new scale, so threshold/margin were re-derived (0.4 / 0.25).
+  test_route.py section 4 now asserts no temple frame locates on Harrogath.
+Lesson: a normalised score is dominated by whatever has the most contrast, and
+  in a dark scene that can be ONE object - so two places sharing it look alike.
+  And a single negative fixture from one corner of a place says nothing about
+  the rest of it: the negatives worth testing are the ones nearest the
+  positive, which here meant the other side of the very portal being clicked.
+
+------------------------------------------------------------------------------
+46. Two screenshots 438px apart were stitched on top of each other, because of
+    one line of chat
+------------------------------------------------------------------------------
+Where: tools/build_route_map.py (registration)
+Symptom: the temple map put its arrival screenshot (19) at exactly the same
+  camera position as the next one (20), although the portal sits at about
+  (910,310) in one and (702,678) in the other. The arrival then "could not be
+  located" on its own map (0.325). That was blamed on the scene being nearly
+  black, and a portal-landmark workaround was written for it - which reported
+  itself "off by 446px" against the ground truth. The ground truth was the
+  wrong part.
+Cause: the chat line "[Game] Zelgy says: By the Light! What is this place?" is
+  drawn at a fixed place on the SCREEN, inside the viewport, identical in both
+  screenshots. That is 474 feature matches agreeing perfectly on a shift of
+  zero, against a handful of real ones in the dark - so RANSAC reported a clean
+  consensus, scale 1.000, rotation 0.00, and every check the tool had passed.
+Fix: two defences, because either alone would let the next one through.
+  (1) Screen-fixed overlays are masked (the chat area by default; --ignore for
+      others, e.g. the F5 panel).
+  (2) Every pair's estimated shift must make the PIXELS agree, not just the
+      features: the correlation of the aligned overlap must reach 0.4.
+      Measured over 38 pairs: the chat pair 0.142, every genuine pair
+      0.539-0.939 (the lowest mid-fight, full of spell flashes).
+  With the chat masked, 19->20 registers at (-202, +389), correlation 0.939,
+  and the arrival locates on its map at 0.865. The landmark stays, as an
+  independent second opinion.
+Lesson: feature-match consensus measures how well the MATCHES agree with each
+  other, not how well they agree with the scene. If every match comes from one
+  thing that is not the scene, the consensus is perfect and wrong. Check a
+  registration with a different kind of evidence - the pixels themselves. And
+  when a failure gets explained as "that frame is just hard", check the ground
+  truth before building around it.

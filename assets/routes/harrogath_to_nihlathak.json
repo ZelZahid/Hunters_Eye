@@ -9,6 +9,7 @@
   ],
   "map": "harrogath_to_nihlathak.png",
   "map_scale": 0.25,
+  "normalize_sigma": 6,
   "source_size": [
     1920,
     1080
@@ -23,8 +24,8 @@
     0.5,
     0.485
   ],
-  "threshold": 0.55,
-  "min_margin": 0.2,
+  "threshold": 0.4,
+  "min_margin": 0.25,
   "path": [
     [
       3062.4,

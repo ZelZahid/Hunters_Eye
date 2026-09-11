@@ -710,6 +710,22 @@ def _snooze_auto_collect():
     print(f"Auto-collect snoozed for {SNOOZE_SECONDS:.0f}s")
 
 
+def _snooze_and_stop():
+    """'F4': snooze auto-collect AND stop a running route outright.
+
+    ONE KEY, TWO DIFFERENT KINDS OF STOP, and the difference is deliberate. The snooze re-arms
+    itself after SNOOZE_SECONDS, because a toggle you forget to flip back on silently costs you
+    every pickup for the rest of the session. A stopped ROUTE stays stopped, for the opposite
+    reason: whoever pressed this has stopped watching the screen the run was acting on, so resuming
+    a walk or a fight ten seconds later would click and cast into whatever is there by then. Press
+    'F7' to start a run again.
+    """
+    _snooze_auto_collect()
+    if _sequence_lock.locked():
+        print("Stopping the run.")
+    sequence_cancel.set()
+
+
 def _native_collectible_tracks():
     """Returns [(name, x, y, w, h)] for current to-collect OCR tracks, in real screen pixels."""
     with text_tracks_lock:
@@ -742,8 +758,9 @@ def _is_abandoned(abandoned, name, cx, cy):
 
 
 def run_auto_collect():
-    keyboard.add_hotkey('f4', _snooze_auto_collect)
-    print(f"Auto-collect running - press 'F4' anytime to snooze it for {SNOOZE_SECONDS:.0f}s.")
+    keyboard.add_hotkey('f4', _snooze_and_stop)
+    print(f"Auto-collect running - press 'F4' anytime to snooze it for {SNOOZE_SECONDS:.0f}s "
+          f"and stop a running route.")
 
     #Items we gave up on (5s of clicking, still on the ground): (name, x, y) at the moment we gave
     #up, so we don't immediately re-attempt the same physical item every poll tick. Pruned below
@@ -991,6 +1008,11 @@ QUIT_CONFIRM_TIMEOUT = 20.0 #how long to wait to actually leave the game after c
 #Each drives the real mouse and keyboard for seconds at a stretch, and two interleaved would each
 #be clicking into a screen the other just changed. See run_quit_game().
 _sequence_lock = threading.Lock()
+#Set by 'F4' to stop a running route outright - see _snooze_and_stop(). Cleared when a sequence
+#starts, so a press with nothing running cannot kill the next one. quit_game()/next_game()
+#deliberately do NOT watch it: those are chains of steps that each assume the one before happened,
+#so stopping halfway (Esc pressed, menu open, nothing clicked) leaves a worse state than finishing.
+sequence_cancel = threading.Event()
 
 
 #Characters a game name may contain. Anything else OCR produced is a misread, not a name - and a
@@ -1595,34 +1617,51 @@ def _grab_client(sct):
     return frame[fy:fy + h, fx:fx + w], (x, y)
 
 
-def walk_to_nihlathak():
-    """From the start of a new game in Harrogath, through Nihlathak's portal. See routes/pindle.py.
+def _current_health():
+    """Health as 0-1, or None when it cannot be read - never 0.0 for "unknown" (see game_state)."""
+    return current_game_state().get("health")
+
+
+def pindle_run():
+    """The whole Pindleskin run from the start of a new game. See routes/pindle.py.
 
     Its own full-resolution capture, like quit_game(), and for a related reason: this runs a few
-    times a second for a few seconds once per game, so it costs the fast path nothing, and it
+    times a second for a minute or so once per game, so it costs the fast path nothing, and it
     needs the whole client area rather than the pipeline's 0.3x frame.
     """
     with mss.mss() as sct:
-        return pindle.walk_to_portal(grab=lambda: _grab_client(sct), can_act=actions_allowed,
-                                     in_play=in_play)
+        return pindle.run(grab=lambda: _grab_client(sct), can_act=actions_allowed,
+                          in_play=in_play, health=_current_health, bail=quit_game,
+                          cancelled=sequence_cancel.is_set)
 
 
-def run_walk_to_nihlathak():
-    """'F7' entry point. Same pattern as run_next_game(): its own thread, never two at once."""
+def _run_sequence(label, sequence):
+    """Runs a scripted sequence on its own thread, never two at once - the run_next_game() pattern.
+
+    Its own thread because the `keyboard` package runs a hotkey callback on its listener thread,
+    and holding that up for a minute would stall every other hotkey, including 'End'.
+    """
     if not _sequence_lock.acquire(blocking=False):
-        print("walk: another sequence is already running.")
+        print(f"{label}: another sequence is already running.")
         return
+    #A stale 'F4' from before this run must not stop it the moment it starts.
+    sequence_cancel.clear()
 
     def worker():
         try:
-            walk_to_nihlathak()
+            sequence()
         except Exception:
             traceback.print_exc()
-            print("walk: stopped by the error above.")
+            print(f"{label}: stopped by the error above.")
         finally:
             _sequence_lock.release()
 
     threading.Thread(target=worker, daemon=True).start()
+
+
+def run_pindle():
+    """'F7' entry point."""
+    _run_sequence("pindle", pindle_run)
 
 
 WINDOW_NAME = "Hunters Eye"
@@ -1791,9 +1830,9 @@ def run_overlay():
     #toggling the panel can never disturb item detection, the boxes, or auto-collect.
     keyboard.add_hotkey("f5", _toggle_debug_panel)
     keyboard.add_hotkey("f3", run_next_game)
-    keyboard.add_hotkey("f7", run_walk_to_nihlathak)
+    keyboard.add_hotkey("f7", run_pindle)
     print("Press 'F3' to quit this game and create the next one.")
-    print("Press 'F7' in Harrogath to walk to Nihlathak's portal and go through it.")
+    print("Press 'F7' in Harrogath for the Pindleskin run, 'F4' to stop it.")
     print("Overlay running - press 'End' anytime to quit, 'F5' to toggle the game-state panel.")
 
     t0 = time.time()
