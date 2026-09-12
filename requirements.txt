@@ -54,8 +54,28 @@ pywin32>=306 ; sys_platform == "win32"
 # (or if DXGI fails mid-session), so the pipeline runs either way - just slower without it.
 bettercam>=1.0 ; sys_platform == "win32"
 
-# --- Monster detection experiments (tools/benchmark_detector.py,
-#     tools/zeroshot_check.py) - DEVELOPMENT ONLY, NOT INSTALLED ABOVE ---
+# --- Monster detection, RUNTIME half (core/monster_detection.py) ---
+# OPTIONAL, and the ONLY runtime dependency the neural detector has. It loads
+# assets/monsters/monsters.onnx and runs it; the model is built offline by
+# tools/train_monster.py using ultralytics + torch, neither of which is ever
+# imported by anything the pipeline runs. That split is deliberate and load-
+# bearing: torch alone is well over a gigabyte, and design priority #2 is that
+# this runs on modest hardware.
+# Without it, core/monster_detection.py reports itself unavailable and returns no
+# detections - one warning, no crash, exactly as text_detection.py does without
+# Tesseract. Everything else in the pipeline is unaffected.
+# CPU is the default and is what the measurements support: 33-35ms per call at
+# 640px on an i9-11900K, which at the few-Hz rate the detector runs is well under
+# half a core. A GPU build is opt-in (load(prefer_gpu=True)) - see the note in
+# core/monster_detection.py on why merely ASKING for CUDA is not free.
+#   python -m pip install onnxruntime              # CPU, works everywhere
+#   python -m pip install onnxruntime-directml     # any DX12 GPU (Windows)
+#   python -m pip install onnxruntime-gpu          # NVIDIA CUDA (see caveat below)
+onnxruntime>=1.17
+
+# --- Monster detection, TRAINING half (tools/train_monster.py,
+#     tools/benchmark_detector.py, tools/zeroshot_check.py)
+#     - DEVELOPMENT ONLY, NOT INSTALLED ABOVE ---
 # Deliberately not plain requirements: these are heavy (torch alone is well over
 # a gigabyte) and the pipeline never imports any of them. Both scripts print the
 # exact install command and exit cleanly when one is missing, so skipping this

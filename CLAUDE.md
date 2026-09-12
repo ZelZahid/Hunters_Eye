@@ -79,7 +79,7 @@ python tools/calibrate_meters.py
 
 This is a setup/validation tool, not a second pipeline — the rule that there's exactly one `main.py` still holds, and this is the "distinctly-named new file" case that rule allows for. Re-run it after any resolution or UI-scale change, since the meter regions are tied to where the orbs appear on screen.
 
-There is no linter config or CI in this repo. There are ten test files in `tests/` — `test_game_state.py`, `test_next_game.py`, `test_overlay.py`, `test_pindle_fight.py`, `test_potions.py`, `test_presence.py`, `test_quit_game.py`, `test_route.py`, `test_targets.py` and `test_user_config.py` (run each with `python tests/<file>`). `test_game_state.py` — synthetic, no game required, covering `game_state.py`'s fill measurement. It exists because that measurement drives automatic actions and fails silently with a plausible-but-wrong number rather than an error; its adversarial cases caught two real bugs (`Error_history.txt` #19, #20). Other modules have no tests.
+There is no linter config or CI in this repo. There are twelve test files in `tests/` — `test_game_state.py`, `test_label_monsters.py`, `test_monster_detection.py`, `test_next_game.py`, `test_overlay.py`, `test_pindle_fight.py`, `test_potions.py`, `test_presence.py`, `test_quit_game.py`, `test_route.py`, `test_targets.py` and `test_user_config.py` (run each with `python tests/<file>`). `test_game_state.py` — synthetic, no game required, covering `game_state.py`'s fill measurement. It exists because that measurement drives automatic actions and fails silently with a plausible-but-wrong number rather than an error; its adversarial cases caught two real bugs (`Error_history.txt` #19, #20). Other modules have no tests.
 
 ## Architecture
 
@@ -353,6 +353,26 @@ The temple arrival also has a **landmark fallback**: the red portal ring, the on
 
 **The map is only valid at the aspect ratio it was recorded at** (16:9, 1920x1080). A different shape shows a different slice of world, so `Route.fits()` refuses it with a message to re-record. Same aspect at a different size is *assumed* to scale uniformly and is **not yet verified** on Diablo II — the walk prints a note when it happens. **To record a new route**: walk it taking a screenshot every second or so (consecutive shots must overlap by about half a screen), then run `tools/build_route_map.py` — its docstring has the exact command used for this one. The screenshots themselves are scratch (`zelScreenshots/`); the map and JSON it writes are what gets committed.
 
+### `monster_detection.py` — the sixth detector, and the first one that LEARNED what to look for
+
+Every other detector is handed a rule someone wrote: template matching a picture, OCR a word list, `game_state.py` a colour range, `presence.py` a reference image, `localize.py` a map. This one is handed a *trained model*, which is what lets it find a thing that never looks the same twice — an animated 3D creature that idles, walks, attacks, turns and gets knocked back. Template matching was considered and **rejected for monsters, not on cost but on invariance**: `TM_CCOEFF_NORMED` has no tolerance for scale, rotation or deformation, so one template covers one animation frame at one facing at one zoom. The full design record is `docs/monster_detection_plan.txt`; read it before changing anything here.
+
+**ONE model with N classes, never one model per monster.** The backbone is ~99% of the compute and is byte-for-byte identical whether it knows 1 class or 500; adding a class adds one number per grid cell to the output tensor. So **cost is flat in the number of monsters** — the per-class cost is *training examples*, paid offline. One model per monster would be linear in forward passes, would relearn the visual vocabulary from scratch off a small dataset each time, and — the part that matters most here — could never learn "Pindle, **not** Defiled Warrior", because a single-class model only ever learns "this vs. background". Telling look-alikes apart is an argument *for* one multi-class model.
+
+**Measured** (i9-11900K, CPU, yolo11n at 640px, 2 classes): **33–35 ms per call**. The pipeline runs detection on its own thread at a few Hz, so the figure that decides the design is cores, not milliseconds — **0.28 cores at 8 Hz**. A GPU is *merely nice*, not required, which is why `load()` defaults to CPU and `prefer_gpu=True` is opt-in: merely *asking* for CUDA on a machine that cannot provide it prints a wall of provider-bridge errors to stderr on every startup and then silently falls back anyway. `yolo11n` beats `yolov8n` at every input size, which settled the model choice.
+
+**Inference is FULL-FRAME, and this is the one place the project does not crop the HUD.** Every other detector wanted that crop — OCR for cost (0.9s → 0.42s), `presence.py` for sanity, the zero-shot auto-labeller for accuracy. This one must not, because the model was **trained** on whole frames (`label_monsters.py` writes full-frame coordinates), so cropping at inference would shift every coordinate and change the letterbox scale — a train/test mismatch. It also turns out to buy something: with HUD pixels present in training as unlabelled background, the model learned the carved gargoyles beside the orbs are not monsters, which is the exact false positive that made the zero-shot experiment unusable. **A negative example only teaches if the model sees it.**
+
+**NMS is class-aware, and that is not a detail.** A super-unique boss stands *in* its own pack, so its box overlaps its minions' heavily. Class-agnostic suppression reads that overlap as a duplicate and deletes whichever scored lower — which for a rare class with few training examples is almost always the boss. Suppression happens only *within* a class.
+
+**Two bugs already found here, both silent, both caught by tests rather than by looking at pictures:**
+- **`cv.dnn.NMSBoxes`' score threshold must be `0.0`, not the minimum confidence.** The per-class thresholds have already decided what is a candidate; this call must only merge overlaps. Passing `min(confidences)` — the obvious-looking choice — **drops the lowest-scoring detection on every call**, because NMSBoxes compares strictly and a box scoring exactly the threshold is discarded. It cost the faintest detection in every frame, which is precisely what a distant or partly occluded monster produces, and nothing anywhere reported a box going missing. On the held-out fixture it was silently eating the only `pindle` detection.
+- **A box must be clipped to the frame**, or a caller slicing the frame with it gets a short or empty array.
+
+`Detection` is a tuple subclass, so it unpacks as `(x, y, w, h, name, confidence)` like every other detector's match while also carrying `.box` and `.centre` — the project's standard contract, now tested by a third *kind* of detector. **Rate and threading are the caller's job**, deliberately: `detect()` is a plain synchronous call, and baking a thread into it would make it untestable and useless to a caller with one still image.
+
+`tools/diagnose_monsters.py` is the counterpart to `diagnose_ocr.py` — `--show-all` separates "never saw it" from "saw it and was unsure", and `--compare-labels` scores the model against the boxes you drew. Note what that number means: **the dataset frames were trained on**, so a poor score there is a *data* problem, not a capacity one — it is a floor, not a measure of live performance.
+
 ### `calibrate_meters.py` — one-time setup + live validation tool
 
 `python tools/calibrate_meters.py` — waits out a countdown so you can switch to the game, grabs a screenshot, lets you drag a box around each orb, and writes `assets/meters.json`. `--preview` skips straight to the preview against the saved config; `--delay` changes the countdown.
@@ -388,6 +408,7 @@ core/                    # THE ENGINE. Knows nothing about any particular game.
   frame_source.py        #   where pixels come from - DXGI or mss, with graceful fallback
   game_state.py          #   HUD meter reading - health/mana as a 0.0-1.0 number
   localize.py            #   "where on this map is the camera looking?" - position on a stitched map
+  monster_detection.py   #   neural detector: find the classes a model was trained on
   overlay.py             #   transparent click-through output layer (Windows-only)
   presence.py            #   "is this reference art on screen?" - the in-play check
   text_detection.py      #   OCR: find listed names, or read a line of text as-is
@@ -400,12 +421,17 @@ routes/                  # GAME-SPECIFIC scripted sequences, built on core/. Nev
 tools/                   # run by hand, never by the pipeline
   build_route_map.py     #   stitch screenshots of a walked route into assets/routes/<name>.png/.json
   calibrate_meters.py    #   one-time setup: define + live-validate the HUD meters
+  label_monsters.py      #   draw the boxes the monster detector trains on; --import frames
+  train_monster.py       #   labelled frames -> assets/monsters/monsters.onnx
+  diagnose_monsters.py   #   "why wasn't this monster detected?" - and model vs. your labels
   diagnose_ocr.py        #   "why wasn't this item detected?" - what Tesseract actually read
   diagnose_lobby.py      #   "why was the game name misread?" - dumps the crop it OCR'd
 
 tests/                   # none of them need the game running
   fixtures/              #   REAL frames the tests measure against - committed, see its README
   test_game_state.py     #   meter fill measurement + Smoother
+  test_label_monsters.py #   the YOLO label file: round trip, empty-vs-missing, stable ids
+  test_monster_detection.py # letterbox mapping, class-aware NMS, graceful degradation
   test_next_game.py      #   name increment/validation, lobby form location, OCR field read
   test_overlay.py        #   panel layout (needs a display; skips otherwise)
   test_potions.py        #   the potion decision

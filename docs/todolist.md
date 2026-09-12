@@ -30,7 +30,7 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 - [ ] **The Pindle run - ON HOLD (owner's call, 2026-09-11), and what is left when it resumes.** `F7` walks to the portal, through it, to the doorway and kills the pack, confirmed live. Open threads, none urgent:
   - **the unverified assumption**: does the monster name plate stay red while a monster is hurt, or drain with its health? If it drains, a nearly-dead monster stops being cast at and gets re-found by motion instead - watch for casts that stop early
   - `CHICKEN_BELOW` (20%) was chosen by the program, not by the owner
-  - chain `F7` onto the end of `next_game()` so one key runs game after game
+  - chaining `F7` onto the end of `next_game()` so one key runs game after game - **NOT yet** (owner, 2026-09-11): runs stay hand-started while this is being debugged. See Decisions.
   - `F8` (fight only) was removed as not useful - `routes/pindle.py`'s `fight_here()` is still there if a hotkey is ever wanted again
 
 - [ ] **Validate potion drinking in real gameplay.** Thresholds in `user_config.txt` are still unvalidated starting points. `F6` snoozes for 10s; `enabled = no` in that file turns it off. Watch the `F5` panel while taking real damage: does the ordinary tier fire near 35%, does the emergency tier beat it on a burst, does it double-drink on one dip (if so the 4.0s health cooldown is too low)?
@@ -45,7 +45,19 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
   - needs: an "am I in town / in the pit" state check of some kind
   - needs: an abort condition (low health, timeout, unexpected screen)
 
-- [ ] **Monster detection.** **Design is now DECIDED and written up in [`monster_detection_plan.txt`](monster_detection_plan.txt) (2026-09-02) — read that before starting.** Short version: one small fine-tuned neural detector (YOLOv8n/11n class), **one model with N classes, not one model per monster**, trained offline by `tools/train_monster.py` from folders of example images under `assets/monsters/` (those folders now exist, empty). Template matching was considered and rejected — not on cost, on *invariance*: monsters are animated 3D models and `TM_CCOEFF_NORMED` has no scale/rotation/deformation tolerance.
+- [ ] **Monster detection — THE LOOP IS PROVEN END TO END (2026-09-11). The blocker is now TRAINING FRAMES, and nothing else.**
+
+  **What exists and works:** label → train → load → detect, all of it. `tools/label_monsters.py` (draw boxes), `tools/train_monster.py` (builds `monsters.onnx`), `core/monster_detection.py` (runs it), `tools/diagnose_monsters.py` (why didn't it detect / model vs. your labels). 29 + 19 checks across two test files.
+
+  **The good half — precision.** On `tests/fixtures/pindle_pack.png`, a frame from a *different run* never trained on: **7 detections, every one on a real monster, zero false positives** — in a frame full of torches, carved statues and HUD gargoyles, which is exactly what the zero-shot experiment boxed by mistake. Empty-negative frames return nothing. **33–35 ms/call on CPU = 0.28 cores at 8 Hz**; a GPU is not needed.
+
+  **The bad half — recall, and the fix is frames, not tuning.** Against its own training labels it finds only **68%** (defiled_warrior 48/67, pindle **4/9**). Validation mAP50 0.342, still rising at the last epoch. 14 images is 11 train / 3 val, and pindle has *nine* example boxes against a target of 300–500. A model that can't reproduce its own training labels has a data problem — no threshold, epoch count or input size reaches that.
+
+  - **NEXT ACTION: collect frames.** `python tools/capture_frames.py` during real Pindle runs, then `label_monsters.py`, then retrain. Aim at a few hundred boxes per class, ~1 in 5 frames an empty negative.
+  - **then** wire it into `main.py` (own thread, few Hz, publish to shared state — the pattern OCR proved) and measure the true live FPS cost. Not before: nothing gets integrated before it is measured.
+  - `tools/autolabel.py` drafts boxes (~4 in 5 right) and is worth using once there are a hundred-plus frames to get through — needs torch + transformers and the GPU
+  - grow the class list only after the first class is actually good
+  - **Design record: [`monster_detection_plan.txt`](monster_detection_plan.txt) — read it before changing anything here.** Sections 7 (what trains, and how many) and 9 step 3 (the measured result) are the current ones. Short version: one small fine-tuned neural detector (YOLOv8n/11n class), **one model with N classes, not one model per monster**, trained offline by `tools/train_monster.py` from folders of example images under `assets/monsters/` (those folders now exist, empty). Template matching was considered and rejected — not on cost, on *invariance*: monsters are animated 3D models and `TM_CCOEFF_NORMED` has no scale/rotation/deformation tolerance.
   - still start with a **benchmark, not an integration** — standalone script, imports nothing from the pipeline
   - measure ms/frame on CPU, and on GPU if available, at 640/416/320
   - budget: ~30–60 ms/frame CPU, ~5–10 ms GPU. Mitigated by design: infer at ~5–10 Hz and reuse `_relocalize_track()` between inferences, the pattern OCR already proved
@@ -188,5 +200,6 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 - **Detectors stay independent**, and none is ever removed for being out of focus. See CLAUDE.md → "Detector independence."
 - **Templates for fixed UI art** (portals, buttons, icons); **a neural detector for monsters** (they animate, rotate, recolor, overlap — templates fail there). Neural cost is constant in class count; template cost is linear.
 - **Tesla-style multi-camera BEV fusion / occupancy networks are out of scope.** The useful half is just "one net, many objects per frame" = YOLO. The rest is for driving a car with eight cameras through 3D space.
+- **The run is started BY HAND (`F7`), not chained onto `F3`** (2026-09-11, owner's call, while it is still being debugged). One keypress = one run, so the console output belongs to a run someone chose to start and was watching. Chaining would bury a failure inside an automatically created next game, where the first sign of trouble is a character standing somewhere odd several games later. Revisit once the run has been boring for a while.
 - **No "humanised" input to get past anti-cheat** (2026-09-11). Randomised timing and mouse paths exist to hide automation from Blizzard's detection, and that is not something this project builds. The answer to ban risk is the Open question below - play offline - not disguise.
 - **One Claude session at a time, not parallel agents.** The bottleneck on this project is live in-game validation, which is inherently serial and human-only.

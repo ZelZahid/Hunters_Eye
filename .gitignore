@@ -30,3 +30,10 @@ tools/_benchmark_models/
 *.onnx
 zeroshot_result*.png
 zeroshot_scene.png
+
+# Pretrained starting weights, downloaded on demand by ultralytics when
+# tools/train_monster.py runs. It lands in the working directory rather than
+# anywhere chosen, it is ~6MB, and it is re-fetched automatically if deleted -
+# a cache, not a source file.
+yolo11n.pt
+yolov8n.pt

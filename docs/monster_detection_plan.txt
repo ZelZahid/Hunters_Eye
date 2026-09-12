@@ -136,8 +136,10 @@ runtime to build time.
 
   tools/capture_frames.py   record gameplay frames to train on
   tools/autolabel.py        draft boxes for them, for a human to correct
-  tools/train_monster.py    rebuilds monsters.onnx  [NOT WRITTEN YET]
+  tools/label_monsters.py   draw/correct those boxes by hand; also --import
+  tools/train_monster.py    rebuilds monsters.onnx
   core/<detector>.py        loads monsters.onnx, returns box + centre
+                            [NOT WRITTEN YET - blocked on a trained model]
 
 TWO FOLDER SHAPES, and why both are needed. This came up building step 3 and is
 worth stating plainly, because the per-class folders alone cannot express a
@@ -237,10 +239,61 @@ hundreds of frames:
 Probably both: hand-label a base set, synthesise the rest. Decide after the
 first monster, not now.
 
-WHAT GOES IN THE FOLDERS IS NOT YET FIXED. It may be full frames, or tight
-crops, or crops with alpha. That is deliberately left open until section 9's
-experiments say which the pipeline wants. Put whatever is convenient in there
-for now; the trainer will be written to match reality.
+WHAT GOES IN THE FOLDERS - DECIDED 2026-09-11, closing the section 10 question.
+
+FULL FRAMES PLUS BOX COORDINATES TRAIN. CROPS ARE A RECORD, NOT DATA.
+tools/label_monsters.py is where a person draws those boxes, and what it writes
+to _dataset/labels/ is the training set. The per-class folders stay exactly what
+the README calls them - the registration surface, and a human-readable record of
+what each name means - filled as a by-product by --export-crops. The trainer
+never reads them.
+
+The reason is not file-format tidiness. A crop deletes most of what the model
+has to learn:
+  - THE REST OF THE FRAME IS THE NEGATIVE SET. The torch, the statue, the
+    mercenary and the player are in that frame being NOT-a-monster. The measured
+    autolabel run boxed a torch and the player - precisely the mistake a model
+    makes when it has never been shown either one labelled as background.
+  - SCALE IS INFORMATION. A Defiled Warrior is ~69x105px in a 1920x1080 frame. A
+    crop is 100% monster at whatever size it was saved, so the model loses any
+    sense of how big the thing appears on screen.
+  - A CROP'S RECTANGULAR EDGE IS A FEATURE, and a model will happily learn the
+    edge instead of the monster. This is the same failure that makes cut-paste
+    synthesis want alpha mattes.
+
+LABEL EVERY MONSTER IN THE FRAME, NOT ONLY THE ONE YOU CAME FOR. An unlabelled
+monster is not neutral: YOLO reads unlabelled pixels as background, so leaving
+Pindleskin unboxed in a frame full of Defiled Warriors actively teaches the model
+that a skeleton like that is scenery. Give the look-alike its own class and box
+it. This is the finer-grained version of the missing-label-file warning
+train_monster.py already prints, and it is the case FOR one multi-class model -
+telling two similar classes apart is the one thing separate per-monster models
+can never learn (section 3).
+
+AN EMPTY FRAME IS A REAL LABEL. A frame with no monsters, saved as an empty label
+file, is a hard negative - how the model learns that a torch-lit corridor of
+statues holds nothing to shoot at. A frame with NO label file is the opposite
+intent and the trainer warns about it, because YOLO cannot tell them apart.
+
+HOW MANY - COUNT INSTANCES, NOT SCREENSHOTS. The useful unit is boxes per class,
+not frames, because one Pindle-pack frame yields 8-9 Defiled Warriors at once
+while a lone Mephisto frame yields one. Working targets, to be revised against
+the first real training run rather than trusted:
+    ~50 instances    enough to prove the loop end to end, not to trust
+    ~300-500         the practical target per class
+    ~1000+           diminishing, unless the class has many visual variants
+For Defiled Warriors that is roughly 40-60 labelled pack frames; for a single
+boss like Mephisto it is closer to 300 frames, because each gives one box.
+
+VARIETY BEATS COUNT, and the axes that matter here are animation pose, facing,
+zoom, lighting (a lit town vs an unlit catacomb - the mistake that broke the
+in-play check, Error_history #44), occlusion and pack density. Fifty frames of
+one standing pose is one example fifty times.
+
+AND BUDGET REAL NEGATIVES: frames of torches, statues, the mercenary, the player
+and empty corridors, saved as empty labels. Roughly one in five frames is a
+sensible starting ratio. These are the cheapest frames to produce and they are
+what stops the detector shooting at scenery.
 
 
 ------------------------------------------------------------------------------
@@ -429,10 +482,31 @@ install command and exits cleanly if something is missing. See requirements.txt.
          TOOLING WRITTEN AND SMOKE-TESTED 2026-09-03. Blocked only on frames.
 
            python tools/capture_frames.py                    <- YOU DO THIS
-           python tools/autolabel.py --class defiled_warrior
-           (review assets/monsters/_dataset/preview/ by eye)
+             or: python tools/label_monsters.py --import assets/zelScreenshots
+           python tools/autolabel.py --class defiled_warrior   (optional draft)
+           python tools/label_monsters.py                    <- YOU DO THIS
            python tools/train_monster.py --check
            python tools/train_monster.py
+
+         label_monsters.py  ADDED 2026-09-11, and it is the step that was
+                            missing: autolabel drafts boxes and gets ~4 in 5
+                            right, but nothing existed for a human to fix the
+                            fifth, so no correct dataset could be produced at
+                            all. Draw, delete, classify, mark a frame empty;
+                            autosaves per frame. Also --import, which copies
+                            frames off assets/zelScreenshots/ (gitignored scratch
+                            that is cleared at will, and already destroyed this
+                            plan's inputs once - see section 9's process note),
+                            deduplicating by content hash.
+                            Class ids resolve at SAVE time, so classes.txt gains
+                            a line only when a class is first actually used -
+                            selecting a class and changing your mind leaves no
+                            trace, and an existing id can never shift.
+                            tests/test_label_monsters.py covers the label file
+                            (19 checks): the pixel->normalised->pixel round trip,
+                            empty-vs-missing staying distinct, append-only ids,
+                            and edge clipping. Tested because a wrong label does
+                            not fail - it trains, and costs a run to discover.
 
          capture_frames.py  mss (NOT DXGI - singleton, would steal frames from
                             a running main.py), skips near-identical frames so
@@ -455,8 +529,39 @@ install command and exits cleanly if something is missing. See requirements.txt.
          head's finest 8px stride. Inference rate buys speed back later;
          resolution cannot be bought back at all.
 
-         STILL TO DO once frames exist: train for real, then detect live and
-         measure the true FPS cost. Only after that does the class list grow.
+         RESULT, 2026-09-11 - TRAINED FOR REAL, AND THE LOOP IS PROVEN END TO
+         END. 14 hand-labelled frames -> 76 boxes (67 defiled_warrior, 9 pindle,
+         4 empty negatives) -> yolo11n at 640px, 100 epochs -> monsters.onnx.
+         core/monster_detection.py now loads and runs it.
+
+         WHAT WORKS, measured on tests/fixtures/pindle_pack.png - a frame from a
+         DIFFERENT RUN that was never trained on, so a genuine held-out test:
+           7 detections, and EVERY ONE on a real monster. Zero false positives,
+           in a frame containing many torches, carved stone statues and the HUD
+           gargoyles - the exact things the zero-shot experiment boxed. 33-35ms
+           per call on CPU, matching the benchmark. Empty-negative frames return
+           zero detections, so the hard negatives did their job.
+         The precision half of this is genuinely good, and it is the half that
+         decides whether anything can be ACTED on.
+
+         WHAT DOES NOT WORK YET: RECALL. Against its own training labels the
+         model finds only 68% (52 of 76; defiled_warrior 48/67, pindle 4/9, and
+         18 boxes matching no label). Validation mAP50 was 0.342 and still
+         RISING at the last epoch. Both point the same way, and neither is a bug:
+           - 14 images is 11 train / 3 val. Three validation frames make every
+             metric statistically meaningless as well as low.
+           - pindle has NINE example boxes. The plan's own figure is 300-500.
+           - still improving at epoch 100 = undertrained, so more epochs help,
+             but only up to what 11 frames can teach.
+         THE FIX IS FRAMES, NOT TUNING. A model that cannot reproduce its own
+         training labels has a data problem; no threshold, epoch count or input
+         size reaches that. Nothing here invalidates the design - the loop runs
+         and the precision is real - it is simply the far end of "~50 instances
+         proves the loop, it does not make it trustworthy" (section 7).
+
+         STILL TO DO: collect frames properly (capture_frames.py during real
+         runs), retrain, and only then wire it into main.py and measure the true
+         live FPS cost. The class list grows after that, not before.
 
 
 ------------------------------------------------------------------------------
@@ -464,8 +569,10 @@ install command and exits cleanly if something is missing. See requirements.txt.
 ------------------------------------------------------------------------------
   - ~~YOLOv8n or YOLO11n?~~ ANSWERED 2026-09-03: YOLO11N, faster at every
     input size on the benchmark. See section 9.
-  - What exactly goes in the folders (full frames / crops / alpha crops)?
-    See section 7.
+  - ~~What exactly goes in the folders (full frames / crops / alpha crops)?~~
+    ANSWERED 2026-09-11: full frames + box coordinates are the training data;
+    per-class folders hold crops as a human-readable RECORD only. Written up in
+    section 7, and implemented by tools/label_monsters.py.
   - Does the detection thread gate on the foreground/in-play guards? Detection
     is currently deliberately ungated (boxes are display-only) but a neural net
     is far more expensive than a matchTemplate call, so this may become a

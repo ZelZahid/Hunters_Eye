@@ -11,8 +11,11 @@ behind it. This file is the short version.
 HOW TO ADD A MONSTER
 --------------------
   1. Make a folder here named after it.
-  2. Put images of it in that folder.
-  3. Re-run:  python tools/train_monster.py     (not written yet)
+  2. Label some frames containing it:  python tools/label_monsters.py
+     (the folder you made shows up there as a class you can assign boxes to)
+  3. Re-run:  python tools/train_monster.py
+
+Step 2 is the real work, and "put images in the folder" is NOT it - see below.
 
 THE FOLDER NAME IS THE CLASS NAME.
   - lowercase_with_underscores, no spaces:  defiled_warrior, not "Defiled
@@ -33,16 +36,46 @@ it does not cost FPS.
 Section 3 of docs/monster_detection_plan.txt explains why in detail.
 
 
-WHAT TO PUT IN THEM
--------------------
-NOT FIXED YET - deliberately. It may end up being full game frames, tight crops
-of the monster, or crops with the background removed, and that gets decided by
-the experiments in section 9 of the plan rather than guessed now.
+WHAT TO PUT IN THEM - AND WHAT ACTUALLY TRAINS
+----------------------------------------------
+THESE FOLDERS DO NOT TRAIN ANYTHING. Decided 2026-09-11; section 7 of the plan
+has the reasoning. They are the registration surface and a human-readable record
+of what each class name means - crops you can flip through to check that
+'defiled_warrior' means what you think it means.
 
-For the moment: put in whatever is convenient, favour VARIETY over quantity.
-Different animation poses, facings, zoom levels, lighting and backgrounds are
-worth far more than fifty near-identical screenshots. The trainer will be
-written to match whatever is actually here.
+WHAT TRAINS is a whole gameplay frame plus the coordinates of a box drawn on it,
+in _dataset/. You produce those with:
+
+    python tools/label_monsters.py --import assets/zelScreenshots   # frames in
+    python tools/label_monsters.py                                  # draw boxes
+    python tools/label_monsters.py --export-crops   # also fill these folders
+
+A crop cannot train a detector, because a crop throws away the very things the
+model needs: the rest of the frame is the NEGATIVE set (the torch, the statue,
+the mercenary, the player - all of them being not-a-monster), and the frame is
+also what tells the model how BIG a monster looks on screen.
+
+
+HOW MANY IMAGES - COUNT BOXES, NOT SCREENSHOTS
+----------------------------------------------
+One frame of a Pindle pack gives 8-9 Defiled Warriors; one frame of Mephisto
+gives one. So the unit that matters is boxes per class:
+
+    ~50 boxes       enough to prove the loop works, not to trust it
+    ~300-500        the practical target per class
+    ~1000+          diminishing returns, unless the monster has many variants
+
+VARIETY BEATS COUNT. Different animation poses, facings, zoom levels, lighting
+and backgrounds are worth far more than fifty near-identical screenshots.
+
+AND LABEL EVERY MONSTER IN A FRAME, not only the one you came for. An unlabelled
+monster teaches the model that it is scenery. If a look-alike keeps appearing
+(Pindleskin standing among Defiled Warriors), give it its own folder and box it -
+that is how the model learns to tell them apart.
+
+Frames with NO monsters are worth collecting too: torches, statues, empty
+corridors, saved with the 'e' key as empty labels. Those are what stop the
+detector shooting at scenery. About one in five frames is a good ratio.
 
 
 WHAT IS NOT COMMITTED
