@@ -101,8 +101,12 @@ below = 70%
 keys = 1
 cooldown = 4.0
 
-[mana]
-meter = mana
-below = 25%
-keys = 4
-cooldown = 4.0
+# TEMPORARILY DISABLED 2026-09-12 at the owner's request - commented out rather
+# than deleted so the tuned numbers survive. Remove the "#" from the four lines
+# below to turn mana potions back on.
+#
+# [mana]
+# meter = mana
+# below = 25%
+# keys = 4
+# cooldown = 4.0

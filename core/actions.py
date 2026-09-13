@@ -45,11 +45,75 @@ CLICK_HOLD_SECONDS = 0.05 #how long the mouse button stays down before releasing
                            #on the mouseDown/mouseUp call below for why this can't be 0
 
 
-def click_until_gone(get_position, timeout=5.0, click_interval=0.8, poll_interval=0.15,
-                     is_paused=None, pause_budget=PAUSE_BUDGET_SECONDS):
-    """Clicks whatever get_position() reports is the target's current center, repeating until
+def click_at(x, y):
+    """Moves the cursor to (x, y) and clicks it. The default action for act_until_gone().
+
+    Three separate steps, each with its own real gap - not one mouseDown(x, y) call:
+
+    1. Move first, then wait MOVE_SETTLE_SECONDS before pressing. mouseDown(x, y)
+       repositions the cursor AND presses the button in one call, with nothing
+       separating them - the game can receive "cursor moved" and "button down" in
+       the same input instant and resolve the click against where the cursor WAS,
+       not where it just arrived. Moving first and pausing gives the game a chance
+       to actually process the new cursor position before any click event referring
+       to it shows up.
+    2. Then press and hold for CLICK_HOLD_SECONDS before releasing. On Windows,
+       pyautogui.click() sends MOUSEEVENTF_LEFTDOWN and MOUSEEVENTF_LEFTUP combined
+       into ONE mouse_event() call (verified by reading pyautogui's
+       _pyautogui_win.py: MOUSEEVENTF_LEFTCLICK is literally
+       MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP) - down and up in the same instant,
+       zero time held. A game polling input once per frame can miss a press/release
+       that lands in the same instant entirely, even with the cursor in the right
+       place. Holding it down for a beat is long enough that no reasonable per-frame
+       poll rate can miss it.
+
+    _pause=False on all three skips pyautogui's own post-call sleep (default 0.1s) -
+    MOVE_SETTLE_SECONDS/CLICK_HOLD_SECONDS are the only intended delays here, not an
+    incidental side effect of the wrong default.
+    """
+    pyautogui.moveTo(x, y, _pause=False)
+    time.sleep(MOVE_SETTLE_SECONDS)
+    pyautogui.mouseDown(_pause=False)
+    time.sleep(CLICK_HOLD_SECONDS)
+    pyautogui.mouseUp(_pause=False)
+
+
+def press_at(key, hold=None):
+    """An act_until_gone() action that moves the cursor to the target and presses `key` there.
+
+    For anything aimed with the mouse but triggered from the keyboard. The Diablo II case it was
+    written for: a sorceress with Telekinesis bound to a key takes an item from across the room,
+    so pointing at it and pressing that key beats clicking it and walking over. Nothing here
+    knows that - it points and presses, and the caller decides what the key does.
+
+    The cursor still has to move FIRST and settle, for exactly the reason click_at explains: the
+    game resolves the skill against where it believes the cursor is, and a keypress arriving in
+    the same instant as the move can be resolved against the old position.
+
+    Returns the action rather than being one, so the key is bound once at the call site:
+        act_until_gone(get_position, act=press_at("e"))
+    """
+    def act(x, y):
+        pyautogui.moveTo(x, y, _pause=False)
+        time.sleep(MOVE_SETTLE_SECONDS)
+        if hold is None:
+            press_key(key)
+        else:
+            press_key(key, hold=hold)
+    return act
+
+
+def act_until_gone(get_position, act=None, timeout=5.0, click_interval=0.8, poll_interval=0.15,
+                   is_paused=None, pause_budget=PAUSE_BUDGET_SECONDS):
+    """Acts on whatever get_position() reports is the target's current center, repeating until
     either get_position() returns None (target gone - success) or `timeout` seconds elapse with
     it still present (gave up).
+
+    `act` is the action taken at that position, and defaults to click_at. WHAT is done to a
+    target and HOW LONG to keep doing it are separate questions, so they are separate arguments:
+    the retry/abandon logic below, the pause handling and the "is it gone yet" polling are the
+    same whether the target is clicked, keyed, or handed to a robot arm. press_at() is the other
+    action shipped here. An action takes (x, y) in real screen pixels and returns nothing.
 
     Checking "is it gone yet" (poll_interval) and actually issuing a new click (click_interval)
     are deliberately different cadences. Many games (Diablo II included) treat a click on an
@@ -67,9 +131,10 @@ def click_until_gone(get_position, timeout=5.0, click_interval=0.8, poll_interva
         on the current attempt. Bounded by `pause_budget` - see PAUSE_BUDGET_SECONDS.
     Returns True on success (target disappeared), False on timeout or on staying paused too long.
     """
+    act = click_at if act is None else act
     elapsed_active = 0.0
     elapsed_paused = 0.0
-    time_since_click = click_interval #click immediately on the first iteration
+    time_since_click = click_interval #act immediately on the first iteration
     while elapsed_active < timeout:
         if is_paused is not None and is_paused():
             if elapsed_paused >= pause_budget:
@@ -83,33 +148,7 @@ def click_until_gone(get_position, timeout=5.0, click_interval=0.8, poll_interva
             return True
 
         if time_since_click >= click_interval:
-            # Three separate steps, each with its own real gap - not one mouseDown(x, y) call:
-            #
-            # 1. Move first, then wait MOVE_SETTLE_SECONDS before pressing. mouseDown(x, y)
-            #    repositions the cursor AND presses the button in one call, with nothing
-            #    separating them - the game can receive "cursor moved" and "button down" in
-            #    the same input instant and resolve the click against where the cursor WAS,
-            #    not where it just arrived. Moving first and pausing gives the game a chance
-            #    to actually process the new cursor position before any click event referring
-            #    to it shows up.
-            # 2. Then press and hold for CLICK_HOLD_SECONDS before releasing. On Windows,
-            #    pyautogui.click() sends MOUSEEVENTF_LEFTDOWN and MOUSEEVENTF_LEFTUP combined
-            #    into ONE mouse_event() call (verified by reading pyautogui's
-            #    _pyautogui_win.py: MOUSEEVENTF_LEFTCLICK is literally
-            #    MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP) - down and up in the same instant,
-            #    zero time held. A game polling input once per frame can miss a press/release
-            #    that lands in the same instant entirely, even with the cursor in the right
-            #    place. Holding it down for a beat is long enough that no reasonable per-frame
-            #    poll rate can miss it.
-            #
-            # _pause=False on all three skips pyautogui's own post-call sleep (default 0.1s) -
-            # MOVE_SETTLE_SECONDS/CLICK_HOLD_SECONDS are the only intended delays here, not an
-            # incidental side effect of the wrong default.
-            pyautogui.moveTo(pos[0], pos[1], _pause=False)
-            time.sleep(MOVE_SETTLE_SECONDS)
-            pyautogui.mouseDown(_pause=False)
-            time.sleep(CLICK_HOLD_SECONDS)
-            pyautogui.mouseUp(_pause=False)
+            act(pos[0], pos[1])
             time_since_click = 0.0
 
         time.sleep(poll_interval)
@@ -117,6 +156,12 @@ def click_until_gone(get_position, timeout=5.0, click_interval=0.8, poll_interva
         time_since_click += poll_interval
 
     return get_position() is None
+
+
+def click_until_gone(get_position, **kwargs):
+    """act_until_gone() with the default click action - the original name, kept because it is
+    what every caller that clicks actually means, and reads better than passing click_at in."""
+    return act_until_gone(get_position, act=click_at, **kwargs)
 
 
 def press_key(key, hold=KEY_HOLD_SECONDS):

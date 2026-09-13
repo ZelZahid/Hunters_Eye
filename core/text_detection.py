@@ -168,17 +168,54 @@ NAMED_COLORS = {
     "white": (255, 255, 255),
 }
 
-_COLOR_TAG_RE = re.compile(r"\[([A-Za-z]+)\]\s*$")
+#HOW an item marked "*" should be collected, as plain data - this module parses it, it never
+#acts on it (that is main.py's auto-collect thread, via core/actions.py). Kept generic on purpose:
+#"point at it and click" and "point at it and press this key" describe a game, a kiosk and a robot
+#arm equally well. What the key MEANS is the caller's business and the user's - in Diablo II a
+#sorceress can press her Telekinesis key to take an item from across the room instead of walking
+#to it, so "[key:e]" on a potion is worth a great deal; nothing here needs to know that.
+COLLECT_BY_CLICK = "click"
+COLLECT_BY_KEY_PREFIX = "key:"
+DEFAULT_COLLECT_WITH = COLLECT_BY_CLICK
+
+#One grammar for every trailing "[...]" tag, resolved by what is written inside it rather than by
+#position, so "[purple] [key:e]" and "[key:e] [purple]" both work and neither needs its own
+#syntax. Tags are read right to left off the end of the line and stripped as they are consumed.
+_TAG_RE = re.compile(r"\[\s*([^\[\]]+?)\s*\]\s*$")
+
+
+def _resolve_tag(tag, line, color, collect_with):
+    """One "[...]" tag applied to (color, collect_with). An unrecognized tag warns and changes
+    nothing - the same choice NAMED_COLORS makes, and for the same reason: a hand-edited file
+    should fall back visibly, not fail or silently mean something else."""
+    lowered = tag.lower()
+    if lowered in NAMED_COLORS:
+        return NAMED_COLORS[lowered], collect_with
+    if lowered == COLLECT_BY_CLICK:
+        return color, COLLECT_BY_CLICK
+    if lowered.startswith(COLLECT_BY_KEY_PREFIX):
+        key = tag[len(COLLECT_BY_KEY_PREFIX):].strip()
+        if key:
+            return color, COLLECT_BY_KEY_PREFIX + key
+        print(f"WARNING: targets.txt: '[{tag}]' names no key (line: {line!r}) - "
+              f"collecting by {DEFAULT_COLLECT_WITH} instead")
+        return color, collect_with
+    print(f"WARNING: targets.txt: unrecognized tag '[{tag}]' (line: {line!r}) - ignored. "
+          f"Expected a color from NAMED_COLORS, '[{COLLECT_BY_CLICK}]', or '[key:<key>]'.")
+    return color, collect_with
 
 
 def load_target_items(path):
-    """Returns {item_name: {"to_collect": bool, "ignore": bool, "color": (r, g, b)}}.
+    """Returns {item_name: {"to_collect": bool, "ignore": bool, "color": (r, g, b),
+    "collect_with": str}}.
 
-    A trailing '*' marks an item "to collect" (see main.py's auto-collect thread) and a
-    trailing "[color]" tag (e.g. "[purple]", checked against NAMED_COLORS) sets its detection
-    box color, defaulting to DEFAULT_BOX_COLOR if omitted or unrecognized. Both are stripped
-    before matching - OCR output never contains '*', '[', or ']' (see _clean_text), so leaving
-    either in the name would mean that item could never fuzzy-match.
+    A trailing '*' marks an item "to collect" (see main.py's auto-collect thread). Trailing
+    "[...]" tags set the rest, in any order and any number: a color from NAMED_COLORS (e.g.
+    "[purple]") for the detection box, defaulting to DEFAULT_BOX_COLOR if omitted or
+    unrecognized, and how to collect it - "[click]" (the default) or "[key:e]" meaning "put the
+    cursor on it and press e". All of it is stripped before matching - OCR output never contains
+    '*', '[', or ']' (see _clean_text), so leaving any of it in the name would mean that item
+    could never fuzzy-match.
 
     A LEADING '-' marks an item "ignore": it takes part in matching but is never reported.
     That sounds pointless and is in fact the mechanism that makes fuzzy matching safe. Fuzzy
@@ -203,15 +240,13 @@ def load_target_items(path):
                 line = line[1:].strip()
 
             color = DEFAULT_BOX_COLOR
-            color_match = _COLOR_TAG_RE.search(line)
-            if color_match:
-                color_name = color_match.group(1).lower()
-                if color_name in NAMED_COLORS:
-                    color = NAMED_COLORS[color_name]
-                else:
-                    print(f"WARNING: targets.txt: unrecognized color '{color_name}' "
-                          f"(line: {line!r}) - using default green")
-                line = line[:color_match.start()].strip()
+            collect_with = DEFAULT_COLLECT_WITH
+            while True:
+                tag_match = _TAG_RE.search(line)
+                if not tag_match:
+                    break
+                color, collect_with = _resolve_tag(tag_match.group(1), line, color, collect_with)
+                line = line[:tag_match.start()].strip()
 
             to_collect = line.endswith("*")
             name = line[:-1].strip() if to_collect else line
@@ -235,7 +270,8 @@ def load_target_items(path):
                       f"Delete one of them.")
             seen_on_line[key] = line_number
 
-            items[key] = {"to_collect": to_collect, "ignore": ignore, "color": color}
+            items[key] = {"to_collect": to_collect, "ignore": ignore, "color": color,
+                          "collect_with": collect_with}
     return items
 
 

@@ -12,7 +12,21 @@
 # red, blue, yellow, cyan, pink, gold, white). Omit it, or misspell it, and the box just
 # falls back to the default green. If both "*" and "[color]" apply to one item, "*" comes
 # first, e.g. "ITEM NAME* [purple]".
-Full Rejuvenation Potion* [purple]
+#
+# HOW an item marked "*" gets collected is a tag too, so it can differ per item:
+#
+#   [click]   move the mouse onto it and left-click - the default, used when no tag is given.
+#             In Diablo II that means "walk over there and pick it up on arrival", so it costs
+#             the time of the walk.
+#   [key:e]   move the mouse onto it and press 'e' instead of clicking. This is for a skill
+#             that is AIMED with the cursor but TRIGGERED from the keyboard - on a sorceress,
+#             'e' is Telekinesis, which grabs the item from across the room with no walking.
+#             Change the letter to match your own key binding; any key name works.
+#
+# Tags can be given in any order and any number: "ITEM NAME* [purple] [key:e]" and
+# "ITEM NAME* [key:e] [purple]" mean the same thing. An unrecognized tag warns on the console
+# and is ignored, and an unrecognized key falls back to clicking - neither is ever silent.
+Full Rejuvenation Potion* [purple] [key:e]
 Rejuvenation Potion [purple]
 Flawless Amethyst*
 Lum Rune* [darkorange]

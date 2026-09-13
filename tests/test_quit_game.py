@@ -207,5 +207,69 @@ try:
 finally:
     main.actions_allowed = saved
 
+print("\n9. What is done to a target is separate from how long to keep doing it")
+#Added 2026-09-12 with targets.txt's "[key:e]" tag. A sorceress collects a potion by pointing at
+#it and pressing her Telekinesis key rather than clicking and walking over, so the ACTION varies
+#per item while the retry/give-up/pause logic around it must not.
+seen = []
+present = {"n": 3}
+
+
+def vanishing():
+    present["n"] -= 1
+    return (40, 50) if present["n"] > 0 else None
+
+
+ok = actions.act_until_gone(vanishing, act=lambda x, y: seen.append((x, y)),
+                            timeout=1.0, click_interval=0.0, poll_interval=0.02)
+check("a custom action is used instead of clicking", ok is True and seen == [(40, 50), (40, 50)])
+check("and it is given the position get_position reported", all(p == (40, 50) for p in seen))
+
+#press_at MOVES FIRST and only then presses, for the same reason click_at does: the game resolves
+#the skill against where it believes the cursor is, and a keypress arriving in the same input
+#instant as the move can be resolved against the old position.
+order = []
+saved_move, saved_press = actions.pyautogui.moveTo, actions.press_key
+try:
+    actions.pyautogui.moveTo = lambda x, y, **kw: order.append(("move", x, y))
+    actions.press_key = lambda key, **kw: order.append(("press", key))
+    actions.press_at("e")(11, 22)
+finally:
+    actions.pyautogui.moveTo, actions.press_key = saved_move, saved_press
+check(f"press_at moves to the target, then presses the key ({order})",
+      order == [("move", 11, 22), ("press", "e")])
+
+#The old name still works and still clicks - every caller that means "click" uses it.
+clicked = []
+saved_click = actions.click_at
+try:
+    actions.click_at = lambda x, y: clicked.append((x, y))
+    present["n"] = 2
+    actions.click_until_gone(vanishing, timeout=1.0, click_interval=0.0, poll_interval=0.02)
+finally:
+    actions.click_at = saved_click
+check("click_until_gone still clicks", clicked == [(40, 50)])
+
+#main.py is where a tag becomes an action, and it resolves every key ONCE at startup. The
+#alternative is finding out mid-pickup: `keyboard` raises on a name it does not recognise, and an
+#exception inside the auto-collect thread would take the thread down and stop every pickup for the
+#session, with one line on a console nobody is watching.
+resolved = main._collect_actions({
+    "KEYED": {"to_collect": True, "collect_with": "key:e"},
+    "CLICKED": {"to_collect": True, "collect_with": "click"},
+    "PLAIN": {"to_collect": True},
+    "NOT COLLECTED": {"to_collect": False, "collect_with": "key:e"},
+    "BAD KEY": {"to_collect": True, "collect_with": "key:nosuchkey"},
+})
+check("an item with a key tag gets a key action", resolved["KEYED"][1] == "key:e")
+check("clicking is the absence of an entry, not an entry",
+      "CLICKED" not in resolved and "PLAIN" not in resolved)
+check("an item not marked to collect gets no action at all", "NOT COLLECTED" not in resolved)
+check("an unknown key falls back to clicking rather than raising later",
+      "BAD KEY" not in resolved)
+check("the label reports what was resolved, not what was asked for",
+      main._collect_action("BAD KEY")[1] == "click"
+      and main._collect_action("NOT A LISTED ITEM")[1] == "click")
+
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

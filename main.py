@@ -757,6 +757,47 @@ def _is_abandoned(abandoned, name, cx, cy):
     )
 
 
+#HOW each item is collected, resolved ONCE at startup from targets.txt's "[click]"/"[key:e]"
+#tags rather than per attempt. Resolving it here is what keeps the D2R knowledge in the
+#integration layer: text_detection.py parses the tag as a string and core/actions.py knows how to
+#point-and-press, and neither of them has heard of Telekinesis.
+#Every key is validated NOW, because the alternative is finding out mid-pickup. `keyboard` raises
+#on a name it does not recognise, and an exception inside the auto-collect thread would take the
+#thread down and stop every pickup for the session with one line on a console nobody is watching.
+#A bad key falls back to clicking - which still collects the item, just the slow way - and says so
+#loudly, rather than leaving auto-collect silently doing nothing for that item.
+def _collect_actions(items):
+    """{ITEM NAME: action for actions.act_until_gone}, for every item marked to collect."""
+    resolved = {}
+    for name, spec in items.items():
+        if not spec.get("to_collect"):
+            continue
+        how = spec.get("collect_with", text_detection.DEFAULT_COLLECT_WITH)
+        if how.startswith(text_detection.COLLECT_BY_KEY_PREFIX):
+            key = how[len(text_detection.COLLECT_BY_KEY_PREFIX):]
+            try:
+                keyboard.key_to_scan_codes(key)
+            except Exception as exc:  # noqa: BLE001 - a targets.txt typo must not stop the program
+                print(f"WARNING: targets.txt: '{name}' is set to collect with '[{how}]', but "
+                      f"'{key}' is not a key this system recognises ({exc}) - clicking it "
+                      f"instead.")
+                continue
+            resolved[name] = (actions.press_at(key), how)
+    return resolved
+
+
+collect_actions = _collect_actions(target_items)
+
+
+def _collect_action(name):
+    """(action, label) for one matched item name - clicking unless targets.txt said otherwise.
+
+    The label is what was actually RESOLVED, not what the file asked for, so a key that failed
+    validation above reports the clicking it fell back to instead of the telekinesis it is not
+    doing."""
+    return collect_actions.get(name, (actions.click_at, text_detection.COLLECT_BY_CLICK))
+
+
 def run_auto_collect():
     keyboard.add_hotkey('f4', _snooze_and_stop)
     print(f"Auto-collect running - press 'F4' anytime to snooze it for {SNOOZE_SECONDS:.0f}s "
@@ -811,7 +852,9 @@ def run_auto_collect():
             candidates, key=lambda t: (t[1] + t[3] // 2 - cursor_x) ** 2 + (t[2] + t[4] // 2 - cursor_y) ** 2
         )
         last_known = {"x": tx + tw // 2, "y": ty + th // 2}
-        print(f"Auto-collect: attempting '{target_name}' at ({last_known['x']}, {last_known['y']})")
+        collect_act, collect_label = _collect_action(target_name)
+        print(f"Auto-collect: attempting '{target_name}' at "
+              f"({last_known['x']}, {last_known['y']}) [{collect_label}]")
 
         def get_position(name=target_name, last_known=last_known):
             match = _track_near(_native_collectible_tracks(), name, last_known["x"], last_known["y"])
@@ -821,8 +864,9 @@ def run_auto_collect():
             last_known["x"], last_known["y"] = mx + mw // 2, my + mh // 2
             return last_known["x"], last_known["y"]
 
-        success = actions.click_until_gone(
-            get_position, timeout=COLLECT_TIMEOUT_SECONDS, click_interval=CLICK_RETRY_INTERVAL_SECONDS,
+        success = actions.act_until_gone(
+            get_position, act=collect_act,
+            timeout=COLLECT_TIMEOUT_SECONDS, click_interval=CLICK_RETRY_INTERVAL_SECONDS,
             poll_interval=AUTO_COLLECT_POLL_SECONDS,
             #Also mid-attempt, not just before starting one: an attempt runs for up to
             #COLLECT_TIMEOUT_SECONDS and clicks repeatedly throughout, so alt-tabbing one click

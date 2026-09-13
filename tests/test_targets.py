@@ -77,9 +77,12 @@ check("an unrelated entry is untouched", items["OTHER THING"]["ignore"] is False
 items, output = load("Alpha\nBravo\nCharlie\n")
 check("no warning when there are no duplicates", "listed twice" not in output)
 
-print("\n3. An unrecognised colour warns and falls back, it does not crash")
+print("\n3. An unrecognised tag warns and falls back, it does not crash")
+#Since 2026-09-12 a "[...]" tag can be a colour OR how to collect the item, so an unknown
+#word in one is no longer specifically a bad colour - the warning names the tag and lists
+#what is accepted, and the line still loads.
 items, output = load("Thing [nosuchcolour]\n")
-check("warns", "unrecognized color" in output)
+check("warns, naming the tag", "unrecognized tag" in output and "nosuchcolour" in output)
 check("falls back to the default", items["THING"]["color"] == td.DEFAULT_BOX_COLOR)
 check("the item is still usable", items["THING"]["ignore"] is False)
 
@@ -139,6 +142,43 @@ check("'Jah Rune' is a real, collected target",
       real["JAH RUNE"]["ignore"] is False and real["JAH RUNE"]["to_collect"] is True)
 check("a 'Ral Rune' line wins its own match rather than becoming a Jah Rune",
       winner("RAL RUNE", ("RAL RUNE", "JAH RUNE", "MAL RUNE")) == "RAL RUNE")
+
+print("\n7. How to collect an item is a tag, like its colour")
+#Added 2026-09-12. A sorceress with Telekinesis bound to a key takes an item from across the
+#room, so for her a potion is collected by pointing at it and pressing that key, not by clicking
+#it and walking over. That is per-item, and it is data - the parser only carries the string.
+tagged, out = load(
+    "Default Item*\n"
+    "Keyed Item* [key:e]\n"
+    "Explicit Click* [click]\n"
+    "Both Tags* [purple] [key:f1]\n"
+    "Reversed* [key:f1] [purple]\n"
+    "Not A Tag* [banana]\n"
+    "Empty Key* [key:]\n"
+)
+check("no tag means click", tagged["DEFAULT ITEM"]["collect_with"] == td.COLLECT_BY_CLICK)
+check("'[key:e]' is carried through", tagged["KEYED ITEM"]["collect_with"] == "key:e")
+check("'[click]' says the default out loud", tagged["EXPLICIT CLICK"]["collect_with"] == "click")
+check("a colour and a key tag coexist",
+      tagged["BOTH TAGS"]["collect_with"] == "key:f1"
+      and tagged["BOTH TAGS"]["color"] == td.NAMED_COLORS["purple"])
+check("and the order of the two does not matter",
+      tagged["REVERSED"]["collect_with"] == tagged["BOTH TAGS"]["collect_with"]
+      and tagged["REVERSED"]["color"] == tagged["BOTH TAGS"]["color"])
+#A tag is stripped whether it was understood or not: OCR output never contains '[' or ']', so a
+#leftover tag would make that item impossible to match rather than merely oddly coloured.
+check("an unrecognized tag is stripped from the name, not left in it", "NOT A TAG" in tagged)
+check("...and warns rather than failing, naming what is accepted",
+      "banana" in out and "key:" in out)
+check("'[key:]' names no key, so it falls back to clicking",
+      tagged["EMPTY KEY"]["collect_with"] == td.COLLECT_BY_CLICK and "no key" in out)
+#The real file is what actually runs, so assert on it too.
+check("targets.txt collects Full Rejuvenation Potions with a key, not a click",
+      real["FULL REJUVENATION POTION"]["collect_with"].startswith(td.COLLECT_BY_KEY_PREFIX))
+check("and everything else still clicks",
+      all(spec["collect_with"] == td.COLLECT_BY_CLICK
+          for name, spec in real.items()
+          if spec["to_collect"] and name != "FULL REJUVENATION POTION"))
 
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)
