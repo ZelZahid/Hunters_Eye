@@ -271,16 +271,6 @@ def move_to(x, y):
     pyautogui.moveTo(x, y, _pause=False)
 
 
-def click_at(x, y):
-    """Clicks once at a screen position. Same three separated steps as everywhere else here -
-    move, settle, press, hold, release - see click_until_gone() for why none of them collapse."""
-    pyautogui.moveTo(x, y, _pause=False)
-    time.sleep(MOVE_SETTLE_SECONDS)
-    pyautogui.mouseDown(_pause=False)
-    time.sleep(CLICK_HOLD_SECONDS)
-    pyautogui.mouseUp(_pause=False)
-
-
 def press_combo(combo):
     """Presses a key combination written the way a person would say it: 'ctrl+a', 'alt+f4'.
 

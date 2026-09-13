@@ -172,13 +172,35 @@ check("...and warns rather than failing, naming what is accepted",
       "banana" in out and "key:" in out)
 check("'[key:]' names no key, so it falls back to clicking",
       tagged["EMPTY KEY"]["collect_with"] == td.COLLECT_BY_CLICK and "no key" in out)
-#The real file is what actually runs, so assert on it too.
-check("targets.txt collects Full Rejuvenation Potions with a key, not a click",
-      real["FULL REJUVENATION POTION"]["collect_with"].startswith(td.COLLECT_BY_KEY_PREFIX))
-check("and everything else still clicks",
-      all(spec["collect_with"] == td.COLLECT_BY_CLICK
-          for name, spec in real.items()
-          if spec["to_collect"] and name != "FULL REJUVENATION POTION"))
+#The real file is what actually runs, so assert on it too - but on the SHAPE of what is in it,
+#never on which items happen to carry which tag. targets.txt is the file the user is expected to
+#edit, so a test that pins its exact contents fails on an ordinary edit and teaches everyone to
+#ignore it. (That happened the day this was written: marking a second potion "[key:e]" broke a
+#check that had hard-coded "only one item uses a key".)
+collected = {name: spec["collect_with"] for name, spec in real.items() if spec["to_collect"]}
+check(f"every collected item resolves to click or a key ({len(collected)} items)",
+      all(how == td.COLLECT_BY_CLICK
+          or (how.startswith(td.COLLECT_BY_KEY_PREFIX) and how[len(td.COLLECT_BY_KEY_PREFIX):])
+          for how in collected.values()))
+#The one worth catching, and the reason to look at the shipped file at all: a typo'd key name is
+#invisible in the file and only surfaces as "auto-collect quietly does nothing for that item".
+_keyboard = None
+try:
+    import keyboard as _keyboard
+except Exception:  # noqa: BLE001 - no keyboard package here is not a test failure
+    print("  ..   (keyboard package unavailable - skipping the key-name check)")
+if _keyboard is not None:
+    bad = []
+    for name, how in collected.items():
+        if not how.startswith(td.COLLECT_BY_KEY_PREFIX):
+            continue
+        key = how[len(td.COLLECT_BY_KEY_PREFIX):]
+        try:
+            _keyboard.key_to_scan_codes(key)
+        except Exception:  # noqa: BLE001
+            bad.append((name, key))
+    check(f"every key named in targets.txt is one this system recognises ({bad or 'all valid'})",
+          not bad)
 
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

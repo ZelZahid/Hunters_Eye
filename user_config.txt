@@ -107,6 +107,6 @@ cooldown = 4.0
 #
 # [mana]
 # meter = mana
-# below = 25%
+# below = 15%
 # keys = 4
 # cooldown = 4.0

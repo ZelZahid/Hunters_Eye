@@ -430,6 +430,7 @@ tools/                   # run by hand, never by the pipeline
   train_monster.py       #   labelled frames -> assets/monsters/monsters.onnx
   diagnose_monsters.py   #   "why wasn't this monster detected?" - and model vs. your labels
   diagnose_ocr.py        #   "why wasn't this item detected?" - what Tesseract actually read
+  diagnose_quit.py       #   "why didn't F3 click Save and Exit?" - the guards, live
   diagnose_lobby.py      #   "why was the game name misread?" - dumps the crop it OCR'd
 
 tests/                   # none of them need the game running

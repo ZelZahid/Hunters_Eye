@@ -27,7 +27,7 @@
 # "ITEM NAME* [key:e] [purple]" mean the same thing. An unrecognized tag warns on the console
 # and is ignored, and an unrecognized key falls back to clicking - neither is ever silent.
 Full Rejuvenation Potion* [purple] [key:e]
-Rejuvenation Potion [purple]
+Rejuvenation Potion* [purple] [key:e]
 Flawless Amethyst*
 Lum Rune* [darkorange]
 Ko Rune* [darkorange]
