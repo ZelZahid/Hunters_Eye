@@ -20,6 +20,7 @@ If a new test needs a real frame, add it here.
 | `in_game_dim.png` | in game, Catacombs Level 2 - an unlit room, both orbs clear | the in-play check must not track how well-lit the scene is (`Error_history.txt` #44) |
 | `lobby_form_crop.png` | a close crop of the Create Game form | reading a game name out of the text box |
 | `lobby_zze9.png` | the lobby with game name `zze9` | the per-character name vote - no single OCR threshold reads this name correctly (`Error_history.txt` #43) |
+| `lobby_zelgt0.png` | the lobby with game name `zelgt0`, the owner's crop of the form pasted into a full-size black frame at the position the form occupies at 1920x1080 | the name whose last character NO threshold can read - '0' and 'O' are one shape, so it is resolved from the name the program itself typed (`Error_history.txt` #47) |
 | `pindle_pack.png` | Nihlathak's Temple entrance, ~8-9 Defiled Warriors | the monster-detection experiments - see `docs/monster_detection_plan.txt` section 9; also `test_route.py`'s "not Harrogath" case |
 | `route_harrogath_01/05/06/09/10.png` | Harrogath, the waypoint->portal walk, **stored at 0.25x** | `test_route.py`: locating frames the route map was *not* built from, against ground truth from the registration |
 | `portal_label.png` / `portal_no_label.png` | full-resolution crops round Nihlathak's portal, hovered (label showing) and not | `test_route.py`: the portal is only clicked once its label is read |

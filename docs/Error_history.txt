@@ -1559,3 +1559,52 @@ Lesson: feature-match consensus measures how well the MATCHES agree with each
   registration with a different kind of evidence - the pixels themselves. And
   when a failure gets explained as "that frame is just hard", check the ground
   truth before building around it.
+
+------------------------------------------------------------------------------
+47. A game name ending in '0' could not be read, and no threshold was ever
+    going to fix it
+------------------------------------------------------------------------------
+Where: main.py (_read_lobby_game_name, clean_game_name)
+Symptom: reported live, twice over. First a hand-made game "Zelg1" was read as
+  "zelgt" - the '1' came back as a 't' - so the program typed "zelgt0" and
+  farmed under a name the owner never chose. Then F3 stopped working at all:
+  the box held "zelgt0" and next_game printed "could not be read confidently at
+  character 5" every time. Reproduced exactly off the owner's screenshot: the
+  four thresholds read zelgtO / zelgt0 / zelgiO / zolgiO, so the per-character
+  vote (#43) tied 2-2 on the 't' and refused.
+Cause: TWO separate things wearing the same symptom, which is why the first
+  guess - "tune it" - was wrong.
+  (a) The vote tie on the 't' is an ordinary misread and more evidence fixes it.
+  (b) The trailing character is not a misread at all. '0' and 'O' are the SAME
+      SHAPE in this font, and the field gives no context to break the tie the
+      way a dictionary word would. Measured on the real crop, every threshold
+      from 80 to 180 read 'O'; only 120 read '0'. Upscaling before thresholding
+      was measured too (2x/3x/4x, cubic/linear/lanczos/nearest, 7 threshold
+      sets = 35 configurations, scored against all three real lobby names) and
+      made it WORSE, not better - best 2 of 3, same as shipped, while several
+      configs pulled the box's arrow marker in as a stray '-'. There is no
+      reading of those pixels that settles it.
+Fix: stop trying to reconstruct the name and check the one already known.
+  _read_lobby_game_name() now takes `known` - what the program typed last time
+  (_last_created_name) and what the user configured (game_name) - and asks
+  "could the field be showing this?" before asking "what does it say?".
+  _readings_support() answers position by position: the known name's character
+  has to appear in at least one reading, or be the same shape in a deliberately
+  tiny fold table (o/O/0, l/I/1) covering only glyphs that are identical at
+  this size. The disagreement BETWEEN readings does the rest without a table -
+  't' vs 'i' and 'e' vs 'o' each show up somewhere, so they need no entry.
+  Guarded three ways so it can only ever resolve, never override: a known name
+  that does not fit every reading is ignored (renaming by hand still takes
+  effect immediately), two known names that both fit resolve to neither, and a
+  frame that reads cleanly on its own is untouched.
+  clean_game_name() also strips a leading/trailing '-': the box has a gold
+  arrow at each end, and "- zelgt0" is a perfectly valid name that would be
+  typed in and incremented from forever.
+  tests/fixtures/lobby_zelgt0.png is the real frame; test_next_game.py 17/18.
+Lesson: there is a difference between a character that was MISREAD and one that
+  cannot be read, and only the first responds to tuning. When two glyphs are
+  the same shape, no amount of threshold, scale or crop work separates them -
+  the answer has to come from outside the pixels. Here it was sitting in a
+  variable: the program had typed that exact string into that exact box one
+  game earlier, so the easy question ("could this be zelgt0?") was available
+  all along while the hard one ("what does this say?") was being asked.

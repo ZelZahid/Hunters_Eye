@@ -1057,6 +1057,11 @@ def clean_game_name(raw):
         return None
     #OCR likes to hallucinate a trailing cursor or field edge as punctuation.
     text = raw.strip().strip("|").strip()
+    #The Game Name box has a small gold arrow at each end. When one clips into the crop it reads
+    #as a dash, and "- zelgt0" passes every other check here - it is a valid name, so it would be
+    #typed in and incremented from forever. A name that starts or ends with the marker is the
+    #marker, not something anyone typed; a dash in the MIDDLE is left alone.
+    text = text.strip("-").strip()
     if not text or len(text) > MAX_GAME_NAME_LENGTH:
         return None
     if not _GAME_NAME_OK.match(text):
@@ -1293,7 +1298,51 @@ def _lobby_form(frame_bgra):
     }
 
 
-def _read_lobby_game_name(frame_bgra, form):
+#GLYPHS THAT ARE THE SAME SHAPE IN THIS FIELD, folded together before a reading is compared with
+#a name this program already knows. Deliberately TINY - only the pairs that no threshold, scale or
+#crop can separate because the font draws them identically at this size, measured on the real
+#field: 'zelgt0' read as 'zelgtO' at every threshold tried from 80 to 180 except one. Everything
+#else OCR gets wrong here ('t' as 'i', 'e' as 'o', '9' as 'Q') is handled by _readings_support()
+#without a table, because those misreads are NOT consistent - the right character shows up in at
+#least one of the readings, which is evidence this frame supplies and a guessed table would not.
+#Case is folded for the reason _last_created_name exists: 'z' and 'Z' are one glyph at two sizes.
+_GLYPH_FOLD = {"o": "0", "l": "1", "i": "1"}
+
+
+def _fold_glyph(ch):
+    ch = ch.lower()
+    return _GLYPH_FOLD.get(ch, ch)
+
+
+def _readings_support(readings, name):
+    """Whether every one of `readings` could be a reading of `name`.
+
+    The point of this is that the program usually already KNOWS what should be in the box - it
+    typed it there itself last time round (_last_created_name), or the user spelled it out in
+    user_config.txt. Checking a known name against the readings is a far easier question than
+    reconstructing an unknown one from them, and it is the question actually being asked.
+
+    Position by position: the known name's character has to appear in at least one reading, or be
+    the same shape as what every reading saw. So 'zelgt0' is supported by
+    ('zelgtO', 'zelgt0', 'zelgiO', 'zolgiO') - the 't' and the 'e' each show up somewhere, and the
+    '0' matches 'O' by shape - while 'zelgt9' is not, because no reading ever saw a 9.
+
+    Uses the disagreement between readings as evidence rather than throwing it away, the same way
+    the per-character vote below does and for the same reason: WHERE two readings differ says more
+    than how many of them match.
+    """
+    if not name:
+        return False
+    same = [r for r in readings if len(r) == len(name)]
+    #A majority of the readings have to agree on the length, and never fewer than two - one lone
+    #reading must not be able to carry a name, here any more than in the vote below.
+    if len(same) < 2 or len(same) * 2 <= len(readings):
+        return False
+    return all(any(_fold_glyph(r[i]) == _fold_glyph(want) for r in same)
+               for i, want in enumerate(name))
+
+
+def _read_lobby_game_name(frame_bgra, form, known=()):
     """The text currently in the lobby's Game Name box, or None if it cannot be read.
 
     Diablo II pre-fills this with the last game you made, which is where the number to increment
@@ -1302,6 +1351,14 @@ def _read_lobby_game_name(frame_bgra, form):
     could not be read exactly by any combination of threshold, scale or segmentation mode tried
     (closest: 'Game: 225pIN a8.' for 'Game: z25pin35'). Upscaling made it worse. The lobby's own
     text box reads exactly - see text_detection.read_line().
+
+    `known` is the names this program already has reason to expect - what it typed last time, and
+    what the user configured. A reading is reconciled against those before anything is
+    reconstructed from scratch, because some characters CANNOT be read: '0' and 'O' are the same
+    shape in this font, so a name ending in '0' is a coin flip no threshold fixes. Live failure
+    this exists for: the box held 'zelgt0', the four thresholds read zelgtO / zelgt0 / zelgiO /
+    zolgiO, no character reached a majority, and next_game stopped - while the program itself had
+    typed 'zelgt0' into that box one game earlier.
     """
     spacing = form["row_spacing"]
     lx, ly, _lh = form["name_label"]
@@ -1334,6 +1391,21 @@ def _read_lobby_game_name(frame_bgra, form):
         print("next_game: nothing readable in the game name box at any threshold "
               f"({list(NAME_READ_THRESHOLDS)}).")
         return None
+
+    #RECONCILE AGAINST A NAME WE ALREADY KNOW BEFORE TRYING TO REBUILD AN UNKNOWN ONE. This is
+    #not a shortcut past the vote - it answers a question the vote cannot, because a character can
+    #be genuinely unreadable rather than merely misread ('0' vs 'O'). Only a single match is
+    #accepted: if two known names both fit, the field is ambiguous and the vote below gets to
+    #refuse, exactly as it would with no known names at all.
+    supported = [n for n in known if n and _readings_support(readings, n)]
+    if len(supported) == 1:
+        if supported[0] not in readings:
+            print(f"next_game: read {sorted(set(readings))} - reconciled to the known name "
+                  f"{supported[0]!r}.")
+        return supported[0]
+    if len(supported) > 1:
+        print(f"next_game: the readings {sorted(set(readings))} fit more than one known name "
+              f"({supported}) - not guessing.")
 
     #VOTE PER CHARACTER, NOT PER WHOLE STRING. Counting whole readings throws away where they
     #disagree, and that is where the evidence is. Measured on a real failure: 'zze9' read as
@@ -1498,7 +1570,8 @@ def next_game():
             print("next_game: reached the lobby but could not find the Create Game form.")
             return False
 
-        current = _preferred_case(_read_lobby_game_name(frame, form))
+        current = _preferred_case(_read_lobby_game_name(
+            frame, form, known=(_last_created_name, potion_config.game_name)))
         if current is None:
             #A misread name is still a VALID name, so it would be typed in, created, and
             #incremented from forever after. Refuse rather than guess - the configured name is

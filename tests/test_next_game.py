@@ -227,5 +227,57 @@ else:
         check("'zze9' read despite no single threshold winning outright",
               main._read_lobby_game_name(_frame, _form) == "zze9")
 
+print("\n17. A name with an unreadable character is resolved from what we already typed")
+#Regression, 2026-09-12. Live failure: the box held 'zelgt0' and next_game refused to read it.
+#The four thresholds gave zelgtO / zelgt0 / zelgiO / zolgiO, so the per-character vote of section
+#16 tied at the 't' and refused. This one is NOT a voting problem: '0' and 'O' are the same shape
+#in this font, so no threshold, scale or crop separates them - measured, every threshold from 80
+#to 180 read 'O' except 120. What breaks the tie is that the program TYPED 'zelgt0' into that box
+#itself one game earlier, so the question is "could this be zelgt0?", not "what does this say?".
+zelgt0 = os.path.join(FIXTURES, "lobby_zelgt0.png")
+if not os.path.exists(zelgt0):
+    print("  FIXTURE MISSING - this should not happen")
+    failures += 1
+else:
+    import cv2 as _cv
+    _f = _cv.cvtColor(_cv.imread(zelgt0), _cv.COLOR_BGR2BGRA)
+    _fm = main._lobby_form(_f)
+    check("form located on the zelgt0 lobby", _fm is not None)
+    if _fm is not None:
+        check("with nothing known, it still refuses rather than guessing",
+              main._read_lobby_game_name(_f, _fm) is None)
+        check("the name this program last created resolves it",
+              main._read_lobby_game_name(_f, _fm, known=("zelgt0",)) == "zelgt0")
+        check("and it increments to 'zelgt1'",
+              main.next_game_name(
+                  main._read_lobby_game_name(_f, _fm, known=("zelgt0",))) == "zelgt1")
+        #The known name supplies the case as well, for the same reason section 13 exists.
+        check("a configured spelling wins over OCR's case",
+              main._read_lobby_game_name(_f, _fm, known=("Zelgt0",)) == "Zelgt0")
+        #SELF-CORRECTING: renaming the game by hand has to take effect immediately, so a known
+        #name that does not fit what is actually on screen is ignored, not forced on.
+        check("a stale known name is ignored, not forced onto the reading",
+              main._read_lobby_game_name(_f, _fm, known=("zelgt9",)) is None)
+        check("an unrelated known name is ignored",
+              main._read_lobby_game_name(_f, _fm, known=("runx12",)) is None)
+        #Two names that both fit is the ambiguous case, and a guess there gets typed in and
+        #incremented forever - so it refuses, exactly as it does with nothing known.
+        check("two known names that both fit resolve to neither",
+              main._read_lobby_game_name(_f, _fm, known=("zelgt0", "zelgtO")) is None)
+        #And it must not be able to override a frame that reads perfectly well on its own.
+        _lob = _cv.cvtColor(_cv.imread(lobbies[0]), _cv.COLOR_BGR2BGRA)
+        check("a known name cannot override a clearly-read different name",
+              (main._read_lobby_game_name(_lob, main._lobby_form(_lob),
+                                          known=("z25pin12",)) or "").lower() == "z25pin38")
+
+print("\n18. The Game Name box's arrow marker is not read as part of the name")
+#The box has a small gold arrow at each end; clipping one into the crop reads as a dash, and
+#'- zelgt0' passes every other check in clean_game_name - it is a valid name, so it would be
+#typed in and incremented from forever after.
+check("a leading marker is stripped", main.clean_game_name("- zelgt0") == "zelgt0")
+check("a trailing marker is stripped", main.clean_game_name("z25pin38 -") == "z25pin38")
+check("a dash inside a name is left alone", main.clean_game_name("my-run07") == "my-run07")
+check("a marker on its own is not a name", main.clean_game_name("-") is None)
+
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)
