@@ -11,6 +11,11 @@ that tag rather than guessing from commit history - that's what these are for.
 ------------------------------------------------------------------------------
 AT A GLANCE - newest first. Full entries are below, oldest first.
 ------------------------------------------------------------------------------
+0.017  Auto-collect grew up: teleport onto a far drop, priority by targets.txt
+       order, a faster retry for skill-collected items, and items already in the
+       inventory or stash ignored. Blue item labels had NEVER been readable - the
+       binarizer weighted blue at a tenth. Plus the monster detector and the
+       lobby-name read, both built since 0.016.
 0.016  The Pindleskin fight on F7: what MOVES says where to look, the monster
        name plate says whether to cast. F4 stops a run. Two stitching/matching
        bugs found in the v0.015 walk and fixed.
@@ -1166,3 +1171,126 @@ New: assets/routes/nihlathak_temple.png/.json, tests/test_pindle_fight.py (the
 plate, motion spots, and the fight loop driven through a fake game), nine
 fixtures. routes/pindle.py gained the temple walk, the landmark fallback, the
 fight and cancellation. No new dependencies.
+
+0.017 - 2026-09-13
+------------------------------------------------------------------------------
+AUTO-COLLECT GREW UP, AND ONE DETECTOR TURNED OUT TO HAVE BEEN HALF-BLIND SINCE
+IT WAS WRITTEN. Confirmed live by the project owner across a session of real
+play: every change below "holds up as of this moment". This version also picks
+up the monster detector and the lobby-name read, which were built after 0.016
+and never had a version of their own.
+
+TELEPORT ONTO A FAR DROP (user_config.txt's teleport_key, blank = off). On a
+public game an item on the ground belongs to whoever gets there first, so
+arriving instantly and picking up a beat later beats walking over. It never
+fires on an item tagged [key:e] - telekinesis already takes that from across the
+room, so teleporting would spend mana removing the exact distance the skill
+exists to cover - and never on an item within teleport_min_distance, where
+walking is simply faster.
+
+THE HARD PART WAS AFTERWARDS, NOT THE KEYPRESS. The camera is locked to the
+character, so teleporting moves the whole scene: the item's SCREEN position
+shifts by however far we travelled, which is by construction the distance that
+made teleporting worth doing. Every coordinate the pipeline holds is stale the
+instant the key lands. That is worse than it sounds because of what
+act_until_gone takes a missing track to MEAN - get_position() returning None is
+"picked up", i.e. success - so a lost track reads as a pickup that never
+happened while the click goes to where the item used to be.
+
+The first attempt at this shipped with a subtler version of the same bug and the
+owner caught it live: the re-find asked "is there a track for this item?", which
+is always true and, for the first fraction of a second, always answered with the
+pre-teleport coordinates. The click fired instantly and missed. A longer delay
+would have been a bet on the cast animation, the OCR thread's phase and the
+frame time all at once; instead it now waits for EVIDENCE - the item must be
+seen to have moved by about as far as we travelled. A teleport that never
+happened (no mana, blocked ground) moves nothing, times out, and ends the
+attempt WITHOUT clicking anywhere.
+
+PRIORITY IS THE ORDER OF assets/targets.txt, FURTHER DOWN WINNING. Only one item
+is collected at a time, and nearest-to-cursor - the old rule - is the wrong
+question when two items are not worth the same: a rejuvenation potion at your
+feet was collected before a Ber rune across the room, and the rune is the one
+another player can reach while you are busy. Nearest-to-cursor now only breaks
+ties. The file's order carries meaning now, which is called out at the top of it.
+
+A KEY-COLLECTED ITEM RETRIES ON ITS OWN CLOCK (user_config.txt's
+key_collect_retry, 0.35s). The 0.8s between clicks exists because a click means
+"walk there", and nothing about a cast does. One number was wrong the moment a
+second kind of action existed.
+
+BLUE ITEM LABELS WERE NEVER DETECTED, AND THE THRESHOLD WAS INNOCENT. The owner
+added "Grand Charm" and "Small Charm" and neither was ever seen, while every
+rune in the same list worked. _preprocess binarized with COLOR_BGR2GRAY, which
+computes luminance - 0.299*R + 0.587*G + 0.114*B - and Diablo II draws magic
+items in BLUE. Measured on a real frame, a Grand Charm label's text pixels
+averaged 119 with a MAXIMUM of 127, against a threshold of 150: the whole label
+was erased before Tesseract saw it. Sweeping the threshold from 150 to 220 never
+read it at any value, on either of two frames - the information was destroyed by
+the conversion, not by the comparison, which is the tell. It now thresholds the
+strongest channel (HSV's V), which read and matched both charms at every value
+from 180 to 210. Error_history.txt #48.
+
+The threshold had to be re-derived for the new channel, and doing so caught a
+regression on its own: at 180 the lobby's "A Game Already Exists With That Name"
+reads as "ALReapy". Dim UI chrome on a flat panel needs a LOW threshold; a label
+over terrain needs a high one to keep the terrain out. read_lines() now takes a
+threshold and the lobby readers pass DIM_UI_TEXT_THRESHOLD - the same split
+read_line() already had.
+
+"[exact]" IN targets.txt matches a name only as a whole label, never inside a
+longer one. Both charms use it: a plain "Grand Charm" is worth taking,
+"Serpent's Grand Charm of Vita" is a different item. It keeps the ordinary
+tolerance for a stylised font, so a one-character misread of the plain label
+still matches.
+
+ITEMS ALREADY IN THE INVENTORY OR STASH ARE IGNORED, AND NOTHING WAS BROKEN
+THERE EITHER. Hovering an item in the bag draws a TOOLTIP, which is genuine
+on-screen text reading exactly "Full Rejuvenation Potion". OCR read it
+correctly, the matcher matched it correctly, and auto-collect drove the mouse to
+a potion the player already owned. The text simply does not mean on a panel what
+it means on the ground, so the filter is positional: matches inside a panel are
+dropped while presence.py says that panel is open. Sound because the panels are
+OPAQUE - a ground item behind one could not be seen or clicked anyway. Only
+while OPEN: masking those regions permanently would quietly cost a large share
+of all drops, which is worse than what it fixes.
+
+The stash arrived a day after the inventory, which turned this into a LIST of
+panels (UI_PANEL_CONFIGS) rather than a second special case - character, skills,
+merc and the Horadric Cube are each now a JSON file and a PNG with no code to
+write. Each reference is the panel's TITLE BAR: for the stash it must not
+include the tab row, since the selected tab is highlighted and a template
+covering it would match on one tab and fail on the others (measured: 1.000 on
+Materials, 0.982 on Runes). The two panels do not match each other - the stash
+reference scores 0.10-0.17 where only the inventory is open - and a test pins
+that, because if it flips the left third of the screen silently stops
+collecting. In town both are open and the world is the strip between them, which
+another test asserts stays collectable.
+
+ALSO IN THIS VERSION, built after 0.016 and never separately released:
+
+  - monster_detection.py, the sixth detector and the first that LEARNED what to
+    look for: one ONNX model with N classes (never one per monster - the
+    backbone is ~99% of the compute and identical either way, so cost is flat in
+    the number of monsters), plus tools/label_monsters.py, train_monster.py and
+    diagnose_monsters.py. Two silent bugs caught by tests rather than by looking
+    at pictures: NMSBoxes' score threshold must be 0.0, not the minimum
+    confidence, or it drops the lowest-scoring detection on every call; and a
+    box must be clipped to the frame.
+  - next_game() reads the lobby's game name by reconciling it with the name it
+    typed last time. '0' and 'O' are the same glyph in that font and no
+    threshold separates them - measured across 35 scale/interpolation/threshold
+    combinations. Asking "could the field be showing this?" is a far easier
+    question than "what does it say?". Error_history.txt #47.
+  - auto-collect acts on an item with a KEY, chosen per item in targets.txt
+    ([key:e]), for telekinesis; and AIM_SETTLE_SECONDS was split from the
+    click's settle, because a click's button-down carries the cursor position in
+    its own Win32 message and a keypress carries nothing.
+  - tools/diagnose_quit.py, for "why didn't F3 click Save and Exit?".
+
+New tests: test_auto_collect.py (teleport decision, freshness, ranking, retry
+cadences, the panel filter), plus new sections in test_targets.py and
+test_user_config.py. New fixtures: charm_grand.png, charm_small.png,
+inventory_open.png, stash_open.png - all masked at full dimensions so every
+coordinate a test asserts on is unchanged. Thirteen test files, all passing.
+No new dependencies.
