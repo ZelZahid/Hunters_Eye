@@ -92,7 +92,45 @@ print("\n6. The re-find window can actually outlast one OCR cycle")
 check("re-find outlasts one OCR interval",
       main.TELEPORT_REACQUIRE_SECONDS > main.OCR_INTERVAL_SECONDS)
 
-print("\n7. Which item to go for when several are on the ground")
+print("\n7. After a teleport, a position is only believed once it has MOVED")
+#Seen live: the click fired the instant the teleport was issued and missed the item completely.
+#shared_text_tracks still held the pre-teleport coordinates - published milliseconds earlier by
+#detect_text - so "is there a track for this item?" was true, and answered with the stale
+#position. The camera is locked to the character, so a real teleport shifts the item's screen
+#position by about as far as we travelled; nothing having moved means we are still looking at a
+#pre-teleport frame, whatever the clock says. A longer delay cannot express that - it is a bet on
+#the cast animation, the OCR thread's phase and the frame time all at once.
+WAS_AT = (500, 500)          #where the item was when the key was pressed
+MIN_SHIFT = 150              #half of a 300px hop
+
+
+def track_at(x, y, name="ITEM"):
+    return (name, x - 30, y - 12, 60, 24)  #a box centred on (x, y)
+
+
+check("the stale position is refused",
+      not main._teleport_moved(track_at(*WAS_AT), *WAS_AT, MIN_SHIFT))
+check("a position that barely drifted is refused",
+      not main._teleport_moved(track_at(560, 540), *WAS_AT, MIN_SHIFT))
+check("one pixel short of the shift is still refused",
+      not main._teleport_moved(track_at(500, 500 + MIN_SHIFT - 1), *WAS_AT, MIN_SHIFT))
+check("a full hop away is accepted",
+      main._teleport_moved(track_at(500, 500 + MIN_SHIFT), *WAS_AT, MIN_SHIFT))
+check("direction does not matter - the test is radial",
+      main._teleport_moved(track_at(500 - 200, 500 - 200), *WAS_AT, MIN_SHIFT))
+#A teleport that never happened (no mana, blocked ground) shifts nothing, so every poll refuses,
+#the re-find times out, and the attempt ends WITHOUT clicking. That is the point of the rule:
+#a missed pickup rather than a click into empty ground.
+check("a teleport that did not happen can never satisfy it",
+      not any(main._teleport_moved(track_at(*WAS_AT), *WAS_AT, MIN_SHIFT) for _ in range(5)))
+#The freshness window has to outlast what it is waiting for, or the rule only converts a wrong
+#click into a guaranteed miss.
+check("the re-find window outlasts a full OCR cycle",
+      main.TELEPORT_REACQUIRE_SECONDS > main.OCR_INTERVAL_SECONDS)
+check("the required shift leaves slack for a short landing",
+      0.0 < main.TELEPORT_MOVED_FRACTION < 1.0)
+
+print("\n8. Which item to go for when several are on the ground")
 #Priority is the order of targets.txt, further down winning, and nearest-to-cursor only breaks
 #ties. Nearest-to-cursor ALONE was the old rule, and it is exactly the thing being fixed: a
 #rejuvenation potion at your feet would be taken before a Ber rune across the room, and the rune
@@ -121,7 +159,7 @@ check("a tie is broken by nearest to the cursor",
 check("an item with no entry at all ranks below everything listed",
       main._pick_target([track("NOT A LISTED ITEM", 500, 500), FAR_AWAY], 500, 500)[0] == HIGH)
 
-print("\n8. Every collectable item has a distinct rank")
+print("\n9. Every collectable item has a distinct rank")
 #Two items sharing a rank would silently fall back to nearest-to-cursor between them, which is
 #the behaviour this replaced. They cannot share one while rank is the line number, so this is
 #really a check that nothing has started handing out ranks some other way.
@@ -136,7 +174,7 @@ check("every rejuvenation potion ranks below every other collected item",
       potions and others and
       max(main._collect_priority(n) for n in potions) < min(main._collect_priority(n) for n in others))
 
-print("\n9. A key-collected item retries on its own clock, not the click's")
+print("\n10. A key-collected item retries on its own clock, not the click's")
 #0.8s between clicks exists because a click means "walk there"; a cast is over the instant it
 #lands. Sharing one number made every failed telekinesis grab wait out a walk that never happened.
 check("the key retry is a real number", isinstance(main.potion_config.key_collect_retry, float))
@@ -147,7 +185,7 @@ check("it is faster than re-clicking", main.potion_config.key_collect_retry < ma
 check("it is not shorter than one attempt's own settle",
       main.potion_config.key_collect_retry >= actions.AIM_SETTLE_SECONDS)
 
-print("\n10. The shipped user_config.txt is usable")
+print("\n11. The shipped user_config.txt is usable")
 #Not asserting the owner's chosen values - those exist to be retuned - only that whatever is in
 #the file could not break the feature.
 cfg = main.potion_config
@@ -161,6 +199,61 @@ if cfg.teleport_key:
     except Exception:
         recognised = False
     check(f"teleport_key {cfg.teleport_key!r} is a key this system recognises", recognised)
+
+print("\n12. An item already in the open inventory is not chased")
+#The bug this guards was not a detection failure, which is what makes it worth a fixture: an item
+#in the bag draws a hover TOOLTIP, which is real on-screen text reading exactly "Full Rejuvenation
+#Potion". OCR read it correctly and the matcher matched it correctly - the text simply does not
+#mean on a panel what it means on the ground. So the filter is positional, and it is sound only
+#because the panel is OPAQUE: a ground item behind it could not be seen or clicked anyway.
+import os
+
+import cv2 as cv
+import numpy as np
+
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+fixture = os.path.join(FIXTURES, "inventory_open.png")
+frame = cv.imread(fixture)
+if frame is None or not text_detection.ocr_available():
+    check("inventory_open.png present and OCR available", False)
+else:
+    gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
+    check("the panel is recognised as open", main._inventory_open(gray) is True)
+
+    found = text_detection.find_text_matches(frame, main.target_items)
+    check(f"both potions are detected first ({len(found)} found)", len(found) == 2)
+    kept = main._outside_inventory(found, gray)
+    check("exactly one survives the filter", len(kept) == 1)
+    if kept:
+        cx = kept[0][0] + kept[0][2] // 2
+        x0, _y0, _x1, _y1 = main._inventory_keep_out_px(frame.shape)
+        #The one that survives has to be the one on the GROUND, not merely "one of them".
+        check(f"and it is the one on the ground (x={cx} < panel edge {x0})", cx < x0)
+
+#With the panel CLOSED the filter must be completely inert, or a third of the screen stops being
+#collectable - which is a far worse bug than the one being fixed, and a silent one.
+closed = cv.imread(os.path.join(FIXTURES, "pindle_pack.png"))
+if closed is None:
+    check("pindle_pack.png present", False)
+else:
+    closed_gray = cv.cvtColor(closed, cv.COLOR_BGR2GRAY)
+    check("a normal in-game frame is not read as an open inventory",
+          main._inventory_open(closed_gray) is False)
+    x0, y0, x1, y1 = main._inventory_keep_out_px(closed.shape)
+    inside = [((x0 + x1) // 2 - 20, (y0 + y1) // 2 - 10, 40, 20, "ITEM", True, (0, 255, 0))]
+    check("a match inside the panel's region survives while the panel is closed",
+          main._outside_inventory(inside, closed_gray) == inside)
+
+#No config, no filtering - the same None-means-behave-as-before rule the rest of the pipeline
+#follows. A missing asset must never quietly stop items being collected.
+_saved = main.inventory_check
+main.inventory_check = None
+try:
+    probe = [(1500, 600, 40, 20, "ITEM", True, (0, 255, 0))]
+    check("with no inventory config, nothing is filtered",
+          main._outside_inventory(probe, np.zeros((1080, 1920), np.uint8)) == probe)
+finally:
+    main.inventory_check = _saved
 
 print(f"\n{'ALL PASSED' if not failures else str(failures) + ' FAILED'}")
 sys.exit(1 if failures else 0)

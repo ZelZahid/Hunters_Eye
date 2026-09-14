@@ -59,27 +59,72 @@ PREPROCESS_NONE = "none"                    #hand the frame to Tesseract untouch
 PREPROCESS_LIGHT_ON_DARK = "light_on_dark"  #bright glyphs on dark: threshold, then invert
 PREPROCESS_AUTO = "auto"                    #pick per frame from its median brightness
 
-BRIGHT_TEXT_THRESHOLD = 150 #pixels brighter than this are treated as glyph, the rest as background.
-                             #Tuned on real gameplay: 130-160 all worked, below 120 let terrain back
-                             #in and above 170 dropped the fainter labels entirely.
+#"BRIGHT" IS MEASURED AS THE STRONGEST COLOUR CHANNEL, NOT AS PERCEIVED BRIGHTNESS, and the
+#difference is not academic - it decided whether a whole class of label was readable at all.
+#
+#cv.COLOR_BGR2GRAY computes LUMINANCE: 0.299*R + 0.587*G + 0.114*B. Those weights are how bright a
+#colour looks to a human eye, and blue is weighted at barely a tenth. Diablo II draws magic items
+#in blue, and measured on the owner's own screenshot a "Grand Charm" label's text pixels averaged
+#BGR (241, 110, 87) - plainly bright, unmistakable on screen - which is luminance 119, with a
+#MAXIMUM of 127 anywhere in the label. Against a threshold of 150 the entire label was erased
+#before Tesseract saw it. NO THRESHOLD COULD HAVE FIXED THAT: swept from 150 down to 150 and up
+#to 220, luminance never read the label on either of two real frames, because the information was
+#destroyed by the conversion, not by the comparison. The same sweep on the max channel read and
+#MATCHED both charms at every threshold from 180 to 210.
+#
+#So the question a binarizer is really asking is "is this pixel a lit glyph?", and for light text
+#of ANY hue on dark that is the strongest channel - exactly HSV's V - not how bright it looks.
+#Luminance is the right measure for a different question, which is why it is still used just below
+#to decide whether the frame is dark-on-light or light-on-dark.
+#
+#THE THRESHOLD HAD TO BE RE-DERIVED FOR THE NEW CHANNEL, not carried across - the same rule this
+#module's cutoff ladder already records. Measured end to end (real frames, real matcher):
+#  160/170  the charm is seen but misread ("Smatt CHARM") and so does not match
+#  180-210  both charms matched on both frames
+#  200+     starts eating into the range Diablo II's dimmer gold/orange label text lives in
+#180 is the bottom of the working band, which is the safe end: it keeps the most headroom under
+#the dimmer labels that already worked, and the extra terrain it admits cost ~10% of one OCR call
+#(135ms -> 150ms on a busy frame), not a doubling.
+BRIGHT_TEXT_THRESHOLD = 180 #channel value above this is treated as glyph, the rest as background
+#AND THE SAME NUMBER IS WRONG FOR DIM UI CHROME, which is how raising the one above was caught.
+#Diablo II's lobby dialogs are grey-white text at roughly half the brightness of an item label:
+#measured on the real "A Game Already Exists With That Name" dialog, 180 reads it as "ALReapy"
+#while 150 and 160 read it exactly. That is the opposite direction to the charm - a label over
+#terrain needs a HIGH threshold to keep the terrain out, a dialog on a flat dark panel has no
+#terrain to keep out and only loses glyph. One number cannot serve both, and read_line() already
+#carries its own FIELD_TEXT_THRESHOLD for exactly this reason. Callers reading game chrome rather
+#than the game world pass this instead.
+DIM_UI_TEXT_THRESHOLD = 150
 DARK_FRAME_MEDIAN = 128 #a frame whose median pixel is darker than this is treated as light-on-dark
 
 
-def _preprocess(frame, mode):
+def _preprocess(frame, mode, threshold=BRIGHT_TEXT_THRESHOLD):
     """Returns the image to hand Tesseract - either the frame itself, or a binarized version.
 
     Never rescales, so every box coordinate Tesseract reports still refers to the caller's
-    original pixel grid and needs no translation."""
+    original pixel grid and needs no translation.
+
+    `threshold` is how bright a pixel must be to count as glyph; see BRIGHT_TEXT_THRESHOLD for
+    the default and DIM_UI_TEXT_THRESHOLD for when a caller should override it."""
     if mode == PREPROCESS_NONE:
         return frame
 
-    gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+    if frame.ndim == 2:
+        lit = brightness = frame
+    else:
+        #TWO DIFFERENT MEASURES, FOR TWO DIFFERENT QUESTIONS - see BRIGHT_TEXT_THRESHOLD above.
+        #"Is this pixel a lit glyph?" is the strongest channel, so a blue label counts as brightly
+        #as a white one. "Is this frame dark overall?" is perceived brightness, which is what
+        #separates a document from a night-time game scene, and is left on luminance because that
+        #is what the four cases it was verified against were chosen with.
+        lit = frame.max(axis=2)
+        brightness = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
     if mode == PREPROCESS_AUTO:
         #Subsampled: the median only has to be roughly right to pick a branch, and every 8th
         #pixel gets that for ~1/64th of the cost on a full-screen frame.
-        if np.median(gray[::8, ::8]) >= DARK_FRAME_MEDIAN:
+        if np.median(brightness[::8, ::8]) >= DARK_FRAME_MEDIAN:
             return frame #light background already - this is what Tesseract wants
-    return 255 - cv.threshold(gray, BRIGHT_TEXT_THRESHOLD, 255, cv.THRESH_BINARY)[1]
+    return 255 - cv.threshold(lit, threshold, 255, cv.THRESH_BINARY)[1]
 
 
 def _find_tessdata_dir():
@@ -174,6 +219,24 @@ NAMED_COLORS = {
 #arm equally well. What the key MEANS is the caller's business and the user's - in Diablo II a
 #sorceress can press her Telekinesis key to take an item from across the room instead of walking
 #to it, so "[key:e]" on a potion is worth a great deal; nothing here needs to know that.
+#"[exact]": match this name only when it is the WHOLE of the line, never as part of a longer one.
+#The default is the opposite, and deliberately so - every contiguous run of words on a line is
+#tried, which is what lets "GUL" be found inside "GUL RUNE" and what stops Tesseract's unstable
+#line grouping from deciding whether an item matches. This tag is for the case where the extra
+#words CHANGE WHAT THE THING IS rather than decorating it: a Diablo II charm with affixes
+#("Serpent's Grand Charm of Vita") is a different item from a plain "Grand Charm", and the owner
+#wants only the plain one. Nothing game-specific about that shape - a sign reading "EXIT" is not
+#the same as one reading "NO EXIT", and a plate "AB12CDE" is not "AB12CDE TRAILER".
+#
+#THE KNOWN LIMITATION, because it decides which way this fails: "the whole line" is Tesseract's
+#idea of a line, and it does sometimes sweep a neighbouring label onto one (see the span comment
+#in find_text_matches). When that happens an [exact] item is NOT matched that scan. That is the
+#safe direction - a missed pickup rather than a wrong one - and the next scan usually groups it
+#alone, but it does mean an [exact] item in a crowded pile of drops can take a few scans to be
+#seen. Measured on the owner's own frames: both charms came back as their own clean line even
+#with six overlapping labels on screen.
+COLLECT_EXACT_TAG = "exact"
+
 COLLECT_BY_CLICK = "click"
 COLLECT_BY_KEY_PREFIX = "key:"
 DEFAULT_COLLECT_WITH = COLLECT_BY_CLICK
@@ -184,30 +247,33 @@ DEFAULT_COLLECT_WITH = COLLECT_BY_CLICK
 _TAG_RE = re.compile(r"\[\s*([^\[\]]+?)\s*\]\s*$")
 
 
-def _resolve_tag(tag, line, color, collect_with):
-    """One "[...]" tag applied to (color, collect_with). An unrecognized tag warns and changes
-    nothing - the same choice NAMED_COLORS makes, and for the same reason: a hand-edited file
+def _resolve_tag(tag, line, color, collect_with, exact):
+    """One "[...]" tag applied to (color, collect_with, exact). An unrecognized tag warns and
+    changes nothing - the same choice NAMED_COLORS makes, and for the same reason: a hand-edited file
     should fall back visibly, not fail or silently mean something else."""
     lowered = tag.lower()
     if lowered in NAMED_COLORS:
-        return NAMED_COLORS[lowered], collect_with
+        return NAMED_COLORS[lowered], collect_with, exact
+    if lowered == COLLECT_EXACT_TAG:
+        return color, collect_with, True
     if lowered == COLLECT_BY_CLICK:
-        return color, COLLECT_BY_CLICK
+        return color, COLLECT_BY_CLICK, exact
     if lowered.startswith(COLLECT_BY_KEY_PREFIX):
         key = tag[len(COLLECT_BY_KEY_PREFIX):].strip()
         if key:
-            return color, COLLECT_BY_KEY_PREFIX + key
+            return color, COLLECT_BY_KEY_PREFIX + key, exact
         print(f"WARNING: targets.txt: '[{tag}]' names no key (line: {line!r}) - "
               f"collecting by {DEFAULT_COLLECT_WITH} instead")
-        return color, collect_with
+        return color, collect_with, exact
     print(f"WARNING: targets.txt: unrecognized tag '[{tag}]' (line: {line!r}) - ignored. "
-          f"Expected a color from NAMED_COLORS, '[{COLLECT_BY_CLICK}]', or '[key:<key>]'.")
-    return color, collect_with
+          f"Expected a color from NAMED_COLORS, '[{COLLECT_BY_CLICK}]', '[key:<key>]' or "
+          f"'[{COLLECT_EXACT_TAG}]'.")
+    return color, collect_with, exact
 
 
 def load_target_items(path):
     """Returns {item_name: {"to_collect": bool, "ignore": bool, "color": (r, g, b),
-    "collect_with": str, "line": int}}.
+    "collect_with": str, "line": int, "exact": bool}}.
 
     "line" is the line of the file the item was defined on. It is recorded rather than
     interpreted: this module has no opinion about whether a file's order means anything, but a
@@ -218,8 +284,9 @@ def load_target_items(path):
     A trailing '*' marks an item "to collect" (see main.py's auto-collect thread). Trailing
     "[...]" tags set the rest, in any order and any number: a color from NAMED_COLORS (e.g.
     "[purple]") for the detection box, defaulting to DEFAULT_BOX_COLOR if omitted or
-    unrecognized, and how to collect it - "[click]" (the default) or "[key:e]" meaning "put the
-    cursor on it and press e". All of it is stripped before matching - OCR output never contains
+    unrecognized; how to collect it - "[click]" (the default) or "[key:e]" meaning "put the
+    cursor on it and press e"; and "[exact]", which refuses to match the name as part of a longer
+    line (see COLLECT_EXACT_TAG). All of it is stripped before matching - OCR output never contains
     '*', '[', or ']' (see _clean_text), so leaving any of it in the name would mean that item
     could never fuzzy-match.
 
@@ -247,11 +314,13 @@ def load_target_items(path):
 
             color = DEFAULT_BOX_COLOR
             collect_with = DEFAULT_COLLECT_WITH
+            exact = False
             while True:
                 tag_match = _TAG_RE.search(line)
                 if not tag_match:
                     break
-                color, collect_with = _resolve_tag(tag_match.group(1), line, color, collect_with)
+                color, collect_with, exact = _resolve_tag(tag_match.group(1), line, color,
+                                                          collect_with, exact)
                 line = line[:tag_match.start()].strip()
 
             to_collect = line.endswith("*")
@@ -277,7 +346,7 @@ def load_target_items(path):
             seen_on_line[key] = line_number
 
             items[key] = {"to_collect": to_collect, "ignore": ignore, "color": color,
-                          "collect_with": collect_with, "line": line_number}
+                          "collect_with": collect_with, "line": line_number, "exact": exact}
     return items
 
 
@@ -588,7 +657,7 @@ def ocr_available():
     return _tesserocr_api is not None or _pytesseract_available
 
 
-def read_lines(frame, preprocess=PREPROCESS_AUTO):
+def read_lines(frame, preprocess=PREPROCESS_AUTO, threshold=BRIGHT_TEXT_THRESHOLD):
     """Every line of text OCR can find in `frame`, as [(text, (x, y, w, h)), ...].
 
     The other half of this module's job. find_text_matches() answers "is one of MY strings on
@@ -606,8 +675,11 @@ def read_lines(frame, preprocess=PREPROCESS_AUTO):
 
     Returns lines in no particular order - Tesseract's own block/paragraph/line grouping decides
     what a line is, and the box is the union of the words in it.
+
+    `threshold` defaults to what an item label over game terrain needs. A caller reading dim UI
+    chrome instead should pass DIM_UI_TEXT_THRESHOLD - see the note there.
     """
-    frame = _preprocess(frame, preprocess)
+    frame = _preprocess(frame, preprocess, threshold)
 
     if _tesserocr_api is not None:
         try:
@@ -699,7 +771,14 @@ def find_text_matches(frame, target_items, match_cutoff=0.75, preprocess=PREPROC
                 text = _clean_text(" ".join(w[0] for w in window))
                 if not text:
                     continue
+                whole_line = (start == 0 and end == n)
                 for name in target_items:
+                    # "[exact]" means this name is only itself when it is the whole line - see
+                    # COLLECT_EXACT_TAG. Skipping it as a candidate (rather than rejecting it
+                    # afterwards) is what lets a longer span for some OTHER target still win the
+                    # line normally.
+                    if target_items[name].get("exact") and not whole_line:
+                        continue
                     # Not difflib.get_close_matches() and not a bare whole-string ratio - see
                     # _match_ratio() for why matching has to happen word by word.
                     ratio = _match_ratio(text, name, match_cutoff)

@@ -11,6 +11,8 @@ import pyautogui
 import mss
 import numpy as np
 import time
+import math
+import json
 import threading
 import traceback
 import re
@@ -188,6 +190,95 @@ def anchor_rect():
 #Measured separation on real frames: 0.951 in game and 0.835 with the ESC menu open (HUD still
 #drawn, correctly still "in play") against 0.343 and 0.329 in two different lobbies.
 in_play_check = presence.load(ASSETS_DIR / "in_play.json")
+
+#--- "Is the inventory panel open, and what does it cover?" ---------------------------------------
+#A SECOND USE OF THE SAME DETECTOR, ANSWERING A DIFFERENT QUESTION: not "are we in a game" but
+#"is this part of the screen UI right now". The two share no code beyond presence.py itself.
+#
+#The problem it solves is one that looks like a detection bug and is not: an item already in the
+#bag draws a hover TOOLTIP, which is real on-screen text reading exactly "Full Rejuvenation
+#Potion". OCR read it correctly, the matcher matched it correctly, and auto-collect then drove the
+#mouse to a potion the player already owns. Nothing was wrong with any of those steps - the text
+#simply did not mean what it means on the ground.
+#
+#So the filter is positional, not textual: while the panel is open, anything whose label sits
+#inside it is UI. That is sound because THE PANEL IS OPAQUE - a ground item underneath it cannot
+#be seen or clicked anyway, so excluding the region costs nothing real. It is deliberately only
+#applied while the panel is OPEN; blanking that third of the screen permanently would throw away
+#every drop on the right-hand side.
+inventory_check = presence.load(ASSETS_DIR / "inventory.json")
+INVENTORY_KEEP_OUT = None
+if inventory_check is not None:
+    try:
+        with open(ASSETS_DIR / "inventory.json", encoding="utf-8") as _handle:
+            INVENTORY_KEEP_OUT = json.load(_handle).get("keep_out")
+    except (OSError, ValueError) as _exc:  # noqa: BLE001 - a bad asset must not stop the program
+        print(f"WARNING: could not read inventory keep_out ({_exc}) - "
+              f"inventory items will not be filtered.")
+if INVENTORY_KEEP_OUT is None and inventory_check is not None:
+    print("WARNING: assets/inventory.json has no keep_out region - "
+          "inventory items will not be filtered.")
+    inventory_check = None
+
+
+def _inventory_open(frame_gray):
+    """True/False/None - is the inventory panel on screen? None means "cannot tell", which every
+    caller must treat as "behave exactly as before this check existed"."""
+    if inventory_check is None:
+        return None
+    rect = anchor_rect()
+    if rect is not None:
+        scale = frame_gray.shape[1] / CAPTURE_RECT[2]
+        resolver = lambda r: window_region.to_frame_fractions(rect, CAPTURE_RECT, r)
+        hud_width = rect[2] * scale
+    else:
+        resolver = None
+        hud_width = frame_gray.shape[1]
+    found, _score = inventory_check.check(frame_gray, hud_width, resolve_region=resolver)
+    return found
+
+
+def _inventory_keep_out_px(frame_shape):
+    """The panel's rectangle as (x0, y0, x1, y1) in this frame's own pixels, or None.
+
+    Routed through the window anchor the same way the HUD meters and the in-play art are: the
+    panel is at a fixed place in the WINDOW, so a windowed or moved game would otherwise mask a
+    rectangle of bare desktop while the real panel sat somewhere else entirely.
+    """
+    if INVENTORY_KEEP_OUT is None:
+        return None
+    region = INVENTORY_KEEP_OUT
+    rect = anchor_rect()
+    if rect is not None:
+        region = window_region.to_frame_fractions(rect, CAPTURE_RECT, region)
+    h, w = frame_shape[:2]
+    fx, fy, fw, fh = region
+    return int(fx * w), int(fy * h), int((fx + fw) * w), int((fy + fh) * h)
+
+
+def _outside_inventory(matches, frame_gray):
+    """`matches` with anything drawn inside an OPEN inventory panel removed.
+
+    A match is judged by its CENTRE, which is what auto-collect would click. A tooltip that
+    straddles the panel's edge is therefore kept or dropped by where the bulk of it is, which is
+    the right answer for both - and in the measured case the tooltip sits well inside.
+    """
+    if not matches or _inventory_open(frame_gray) is not True:
+        return matches
+    box = _inventory_keep_out_px(frame_gray.shape)
+    if box is None:
+        return matches
+    x0, y0, x1, y1 = box
+    kept = []
+    for match in matches:
+        mx, my, mw, mh = match[:4]
+        cx, cy = mx + mw // 2, my + mh // 2
+        if x0 <= cx <= x1 and y0 <= cy <= y1:
+            print(f"Ignoring '{match[4]}' - it is in the open inventory, not on the ground")
+            continue
+        kept.append(match)
+    return kept
+
 
 _in_play_lock = threading.Lock()
 _in_play = None      #True/False/None-cannot-tell - see anchor_focused() for why None is a third answer
@@ -648,9 +739,20 @@ def detect_text():
                 if OCR_DEBUG_TIMING:
                     print(f"[OCR call: {time.time() - ocr_t0:.3f}s]")
 
+                #Translate to full-frame coordinates FIRST, then drop anything inside an open
+                #inventory panel - the keep-out region is in frame coordinates, and the viewport
+                #crop has already shifted every y by viewport_y0.
+                ocr_results = [(tx, ty + viewport_y0, tw, th, name, collect, color)
+                               for (tx, ty, tw, th, name, collect, color) in ocr_results]
+                #Filtered here, before these become tracks at all, rather than at the click. That
+                #way nothing downstream ever sees them: no box is drawn on an item already in the
+                #bag, no relocalization work is spent following it, and - the one that actually
+                #bites - a potion on the ground can no longer lose the "which of these two
+                #identically-named things do we want" contest to the one in the inventory.
+                ocr_results = _outside_inventory(ocr_results, frame_grey)
+
                 local_tracks = []
                 for (tx, ty, tw, th, matched_name, to_collect, color) in ocr_results:
-                    ty += viewport_y0 #translate back from viewport-relative to full-frame coordinates
                     patch = frame_grey[ty:ty + th, tx:tx + tw].copy()
                     local_tracks.append((tx, ty, tw, th, matched_name, to_collect, color, patch))
                     print(f"Found '{matched_name}'{' [to collect]' if to_collect else ''} at center {(tx + tw // 2, ty + th // 2)}")
@@ -811,6 +913,28 @@ TELEPORT_REACQUIRE_SECONDS = 1.5
 #Longer than SETTLE + REACQUIRE on purpose, so a failed re-find cannot teleport again immediately
 #- see case 3 above.
 TELEPORT_COOLDOWN_SECONDS = 2.0
+#HOW FAR THE ITEM MUST HAVE MOVED ON SCREEN BEFORE A POSITION IS BELIEVED, as a fraction of how
+#far we just teleported. THIS IS THE FRESHNESS TEST, and it exists because the obvious one - "is
+#there a track for this item?" - is always true and always answered with the STALE position.
+#
+#Observed live: the click fired the instant the teleport was issued and missed completely, because
+#shared_text_tracks still held the pre-teleport coordinates, published milliseconds earlier by
+#detect_text(). The re-find asked whether a track existed, got the old one, and believed it.
+#
+#A LONGER DELAY IS THE WRONG FIX, which is worth spelling out because it is the obvious one. The
+#wait needed is however long the cast animation takes plus however long until the next OCR scan
+#republishes - cast rate is gear, scan timing is where in its cycle the OCR thread happens to be,
+#and a frame can always be slow. Any fixed number is a bet on all three, too short some of the
+#time and wasted the rest. What is actually needed is not time, it is EVIDENCE, and the evidence
+#is free: the camera is locked to the character, so teleporting shifts the item's screen position
+#by about as far as we travelled. If it has not shifted, we are still looking at a pre-teleport
+#frame - whatever the clock says.
+#
+#Half is deliberate slack. The shift should be nearly the full distance, but a teleport can land
+#short (blocked ground, the game's own range cap), and a teleport that did not happen at all - no
+#mana, on cooldown - never shifts anything, times out, and correctly ends the attempt WITHOUT
+#clicking anywhere. That is the whole point: a missed pickup, never a click into empty ground.
+TELEPORT_MOVED_FRACTION = 0.5
 #WHERE THE CHARACTER IS DRAWN, as a fraction of the game's client area. The camera is locked to
 #the character, so this is a constant rather than something to detect. Measured by the owner when
 #the route maps were built - it is "character_anchor" in assets/routes/*.json, restated here
@@ -882,28 +1006,48 @@ def _teleport_setup():
     return actions.press_at(key), key, potion_config.teleport_min_distance
 
 
-def _teleport_onto(name, last_known, teleport_act):
+def _teleport_moved(track, from_x, from_y, min_shift_px):
+    """Is this track far enough from where the item was before the teleport to be a POST-teleport
+    sighting? Pure, so tests/test_auto_collect.py can drive the freshness rule directly.
+
+    track is (name, x, y, w, h) in real screen pixels; (from_x, from_y) is the item's centre at
+    the moment the key was pressed. See TELEPORT_MOVED_FRACTION."""
+    _name, x, y, w, h = track
+    dx, dy = x + w // 2 - from_x, y + h // 2 - from_y
+    return dx * dx + dy * dy >= min_shift_px * min_shift_px
+
+
+def _teleport_onto(name, last_known, teleport_act, min_shift_px):
     """Teleports onto the item at last_known, then finds it again. True if we now know where it is.
 
     Updates last_known in place on success. On failure the caller must NOT click: every coordinate
     it holds describes a place the camera has since moved away from.
 
-    THE RE-FIND DELIBERATELY IGNORES POSITION, which is the one place in auto-collect that does.
+    IT WAITS FOR A POSITION THAT HAS MOVED, NOT MERELY FOR A POSITION. "Is there a track for this
+    item?" is always true and, for the first fraction of a second after the keypress, always
+    answered with the stale pre-teleport coordinates - which is exactly the click that was seen
+    missing live. See TELEPORT_MOVED_FRACTION for why a longer delay is the wrong fix and what is
+    used instead.
+
+    THE RE-FIND OTHERWISE IGNORES POSITION, which is the one place in auto-collect that does.
     Everywhere else, matching a track by name AND position is what keeps two identical items on
-    the ground from being confused for one another (ITEM_POSITION_MATCH_RADIUS). Here, position is
-    precisely the thing that just became meaningless, so the nearest track of the right name wins.
-    With two of the same item down it can re-anchor onto the other one - which is still an item we
-    came to collect, so the outcome is "a Ral Rune gets picked up", just possibly not that one.
+    the ground from being confused for one another (ITEM_POSITION_MATCH_RADIUS). Here the old
+    position is precisely what became meaningless, so among tracks that have moved, the nearest to
+    the cursor wins. With two of the same item down it can re-anchor onto the other one - which is
+    still an item we came to collect, so the outcome is "a Ral Rune gets picked up", just possibly
+    not that one.
     """
     global last_teleport_time
-    teleport_act(last_known["x"], last_known["y"])
+    from_x, from_y = last_known["x"], last_known["y"]
+    teleport_act(from_x, from_y)
     last_teleport_time = time.time()
     time.sleep(TELEPORT_SETTLE_SECONDS)
 
     deadline = time.time() + TELEPORT_REACQUIRE_SECONDS
     while time.time() < deadline:
         cursor_x, cursor_y = pyautogui.position()
-        found = [t for t in _native_collectible_tracks() if t[0] == name]
+        found = [t for t in _native_collectible_tracks()
+                 if t[0] == name and _teleport_moved(t, from_x, from_y, min_shift_px)]
         if found:
             _, tx, ty, tw, th = min(
                 found,
@@ -1062,15 +1206,23 @@ def run_auto_collect():
         if teleport_act is not None and _should_teleport(
                 collect_label, (last_known['x'], last_known['y']), (character_x, character_y),
                 teleport_min_fraction * frame_height, time.time() - last_teleport_time):
-            print(f"  Teleporting onto '{target_name}' with '{teleport_key}'")
-            if not _teleport_onto(target_name, last_known, teleport_act):
+            #How far we are about to travel is also how far the item is about to appear to move,
+            #because the camera is locked to the character - which is what makes it usable as the
+            #freshness test in _teleport_onto.
+            travel = math.hypot(last_known['x'] - character_x, last_known['y'] - character_y)
+            print(f"  Teleporting onto '{target_name}' with '{teleport_key}' ({travel:.0f}px)")
+            if not _teleport_onto(target_name, last_known, teleport_act,
+                                  TELEPORT_MOVED_FRACTION * travel):
                 #We are standing on it (or near it) but cannot see it from here yet. Aiming a
                 #click at the coordinates we still hold would send the character back to where the
                 #item was BEFORE the teleport, so this attempt ends here instead. The next poll
                 #tick picks it up again from wherever it is really seen, and TELEPORT_COOLDOWN
                 #stops that becoming a teleport loop.
-                print(f"Auto-collect: teleported to '{target_name}' but cannot see it from here "
-                      f"yet - will retry from where it turns up")
+                #Two different things land here and the message covers both: the item was not
+                #re-found in time, or it never appeared to move, which means the teleport itself
+                #did not happen (no mana, blocked). Either way nothing is clicked.
+                print(f"Auto-collect: teleported to '{target_name}' but did not see it move - "
+                      f"not clicking a stale position; will retry from where it turns up")
                 continue
             print(f"  Re-found '{target_name}' at ({last_known['x']}, {last_known['y']})")
 
@@ -1535,8 +1687,12 @@ def _lobby_form(frame_bgra):
     crop = frame_bgra[y0:y1, x0:x1]
     if crop.size == 0:
         return None
+    #DIM_UI_TEXT_THRESHOLD for the same reason _name_clash_showing uses it: this is the lobby's
+    #own chrome on a flat dark panel, not a label drawn over terrain, and _looks_like is a plain
+    #substring test that a single dropped character defeats.
     lines = text_detection.read_lines(cv.cvtColor(crop, cv.COLOR_BGRA2BGR)
-                                      if crop.shape[2] == 4 else crop)
+                                      if crop.shape[2] == 4 else crop,
+                                      threshold=text_detection.DIM_UI_TEXT_THRESHOLD)
 
     name = next(((t, b) for t, b in lines if _looks_like(t, "GAMENAME")), None)
     if name is None:
@@ -1711,7 +1867,11 @@ def _name_clash_showing(frame_bgra):
         return False
     if crop.shape[2] == 4:
         crop = cv.cvtColor(crop, cv.COLOR_BGRA2BGR)
-    return any(_looks_like(t, "ALREADY", "EXISTS") for t, _ in text_detection.read_lines(crop))
+    #DIM_UI_TEXT_THRESHOLD, not the default: this is lobby chrome, not a label over terrain, and
+    #at the item-label threshold the dialog reads "ALReapy" - which _looks_like, a plain substring
+    #test, cannot forgive. Measured on tests/fixtures/lobby_name_clash.png.
+    return any(_looks_like(t, "ALREADY", "EXISTS")
+               for t, _ in text_detection.read_lines(crop, threshold=text_detection.DIM_UI_TEXT_THRESHOLD))
 
 
 def _fill_and_create(sct, name):

@@ -202,5 +202,95 @@ if _keyboard is not None:
     check(f"every key named in targets.txt is one this system recognises ({bad or 'all valid'})",
           not bad)
 
+print("\n8. '[exact]' refuses to match a name inside a longer label")
+#Added 2026-09-13. A plain "Grand Charm" is worth taking; "Serpent's Grand Charm of Vita" is a
+#different item and the owner does not want it. Normally the opposite is wanted - every
+#contiguous run of words is tried, which is how "GUL" is found inside "GUL RUNE" - so this is a
+#per-item tag, not a change of default.
+tagged, out = load("Grand Charm* [exact]\nGul Rune*\n")
+check("the tag parses", tagged["GRAND CHARM"]["exact"] is True)
+check("an untagged item is unaffected", tagged["GUL RUNE"]["exact"] is False)
+check("it does not disturb the other tags",
+      tagged["GRAND CHARM"]["to_collect"] is True
+      and tagged["GRAND CHARM"]["collect_with"] == td.DEFAULT_COLLECT_WITH)
+combined, _ = load("Grand Charm* [exact] [purple] [key:e]\n")
+check("it combines with colour and collect-with, in any order",
+      combined["GRAND CHARM"]["exact"] is True
+      and combined["GRAND CHARM"]["color"] == td.NAMED_COLORS["purple"]
+      and combined["GRAND CHARM"]["collect_with"] == "key:e")
+
+
+def winner_exact(line, specs):
+    """winner(), but honouring "exact" the way find_text_matches does."""
+    words = line.split()
+    best_key, best_names = (0, 0.0), set()
+    for start in range(len(words)):
+        for end in range(start + 1, len(words) + 1):
+            text = " ".join(words[start:end])
+            whole_line = (start == 0 and end == len(words))
+            for name, spec in specs.items():
+                if spec.get("exact") and not whole_line:
+                    continue
+                ratio = td._match_ratio(text, name, 0.75)
+                if ratio is None:
+                    continue
+                key = (end - start, ratio)
+                if key > best_key:
+                    best_key, best_names = key, {name}
+                elif key == best_key:
+                    best_names.add(name)
+    return None if len(best_names) != 1 else next(iter(best_names))
+
+
+SPECS = {"GRAND CHARM": {"exact": True}, "SMALL CHARM": {"exact": True},
+         "GUL RUNE": {"exact": False}}
+check("a plain 'GRAND CHARM' label matches", winner_exact("GRAND CHARM", SPECS) == "GRAND CHARM")
+check("a prefixed one does not", winner_exact("SERPENTS GRAND CHARM", SPECS) is None)
+check("a suffixed one does not", winner_exact("GRAND CHARM OF VITA", SPECS) is None)
+check("both at once does not", winner_exact("FUNGAL SMALL CHARM OF BALANCE", SPECS) is None)
+#The tag must not cost the ordinary tolerance for a stylised font - a misread of the PLAIN label
+#is still the plain label, and that is the whole reason the cutoffs are loose in the first place.
+check("a one-character misread of the plain label still matches",
+      winner_exact("SMAL1 CHARM", SPECS) == "SMALL CHARM")
+check("an untagged name is still found inside a longer line",
+      winner_exact("GUL RUNE DROPPED", SPECS) == "GUL RUNE")
+
+print("\n9. Blue item labels survive preprocessing (the channel, not the threshold)")
+#Diablo II draws magic items in BLUE, and cv.COLOR_BGR2GRAY weights blue at 0.114 - so the
+#charm labels the owner reported as undetectable measured luminance ~119 with a maximum of 127,
+#against a threshold of 150. No threshold could fix that; the information was destroyed by the
+#conversion. _preprocess thresholds the strongest CHANNEL instead. These frames are the guard:
+#swap it back to luminance and both of these go silent with nothing in any log to say why.
+import cv2 as cv
+import numpy as np
+
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+for fixture, want in (("charm_grand.png", "GRAND CHARM"), ("charm_small.png", "SMALL CHARM")):
+    path = os.path.join(FIXTURES, fixture)
+    frame = cv.imread(path)
+    if frame is None:
+        check(f"{fixture} is present", False)
+        continue
+    if not td.ocr_available():
+        check(f"{fixture}: OCR unavailable, nothing checked", False)
+        continue
+    found = [m for m in td.find_text_matches(frame, real) if m[4] == want]
+    check(f"{fixture}: {want} is detected end to end", bool(found))
+    if not found:
+        continue
+    #Measure the label's OWN pixels, inside the box that was just matched - a whole-frame colour
+    #mask also catches spell glow and torches, which is not what this is about.
+    x, y, w, h = found[0][:4]
+    box = frame[max(0, y):y + h, max(0, x):x + w]
+    b, g, r = (box[:, :, i].astype(int) for i in range(3))
+    glyph = (b > 180) & (b - r > 40) & (b - g > 40)
+    check(f"{fixture}: the label really is blue text ({glyph.sum()} px)", glyph.sum() > 50)
+    lum = cv.cvtColor(box, cv.COLOR_BGR2GRAY)[glyph]
+    val = box.max(axis=2)[glyph]
+    check(f"{fixture}: dark in luminance - max {lum.max()} <= {td.BRIGHT_TEXT_THRESHOLD}",
+          lum.max() <= td.BRIGHT_TEXT_THRESHOLD)
+    check(f"{fixture}: bright in the strongest channel - max {val.max()} > {td.BRIGHT_TEXT_THRESHOLD}",
+          val.max() > td.BRIGHT_TEXT_THRESHOLD)
+
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

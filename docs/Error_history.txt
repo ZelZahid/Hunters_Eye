@@ -1608,3 +1608,57 @@ Lesson: there is a difference between a character that was MISREAD and one that
   variable: the program had typed that exact string into that exact box one
   game earlier, so the easy question ("could this be zelgt0?") was available
   all along while the hard one ("what does this say?") was being asked.
+
+48. Blue item labels were never detected, and the threshold was innocent.
+Symptom: the owner added "Grand Charm" and "Small Charm" to assets/targets.txt
+  and neither was ever detected, while every rune in the same list worked.
+  Nothing in any log said anything - the items simply were not there.
+Diagnosis: the matching half was proven correct first, offline, against the real
+  targets.txt: "Grand Charm", "Small Charm", both with magic affixes, and
+  plausible misreads all matched. So the text was never being READ, which is
+  one of the three causes diagnose_ocr.py exists to separate.
+  _preprocess() binarizes with cv.COLOR_BGR2GRAY, which computes LUMINANCE:
+  0.299*R + 0.587*G + 0.114*B. Those weights are how bright a colour looks to a
+  human eye, and blue is weighted at barely a tenth. Diablo II draws magic items
+  in blue. Measured on the owner's own screenshot, the "Grand Charm" label's
+  text pixels averaged BGR (241, 110, 87) - a bright, perfectly legible label -
+  which is luminance 119, with a MAXIMUM of 127 anywhere in the label, against
+  BRIGHT_TEXT_THRESHOLD of 150. The whole label was erased before Tesseract saw
+  it.
+  The decisive measurement: sweeping the threshold from 150 to 220 on two real
+  frames, luminance NEVER read either charm, at any value. The same sweep on the
+  maximum channel read and matched both at every value from 180 to 210. This was
+  never a threshold that needed tuning - the information was destroyed by the
+  conversion, before the comparison happened.
+Fix: threshold the STRONGEST CHANNEL (max of B, G, R - HSV's V) instead of
+  luminance. "Is this pixel a lit glyph?" is a different question from "how
+  bright does this look?", and for light text of any hue on dark the first one
+  is the max channel. The AUTO light-on-dark decision stays on luminance,
+  because "is this frame dark overall?" really is the perceived-brightness
+  question, and that branch was verified against four cases chosen with it.
+  The threshold had to be RE-DERIVED for the new channel rather than carried
+  across: 160/170 saw the label but misread it ("Smatt CHARM", which then fails
+  its word cutoff), 180-210 matched both, 200+ starts eating into the range
+  Diablo II's dimmer gold label text lives in. 180, the bottom of the working
+  band, keeps the most headroom under the labels that already worked.
+  tests/fixtures/charm_grand.png and charm_small.png are the guard, and they
+  assert the MEASUREMENT, not just the answer: label pixels max 127 in
+  luminance, 255 in the strongest channel.
+Second fix, caught by the first one's own regression: raising the threshold to
+  180 broke _name_clash_showing(). Diablo II's lobby dialogs are dim grey-white
+  chrome, and at 180 "A Game Already Exists With That Name" reads as "ALReapy" -
+  which _looks_like, a plain substring test, cannot forgive. It reads exactly at
+  150 and 160. That is the opposite direction to the charm: a label drawn over
+  terrain needs a HIGH threshold to keep the terrain out, while a dialog on a
+  flat dark panel has no terrain to exclude and only loses glyph. One number
+  cannot serve both, so read_lines() now takes a threshold and the lobby readers
+  pass DIM_UI_TEXT_THRESHOLD - the same split read_line() already had with
+  FIELD_TEXT_THRESHOLD.
+Lesson: when a detector sees nothing at all, suspect the step that DESTROYS
+  information before the step that compares it. A threshold can only ever
+  discard what the conversion kept, so sweeping it proves the conversion is
+  fine or proves nothing at all - and here it proved nothing, at every value in
+  the range, which is itself the tell. The second lesson is the one this file
+  keeps re-recording: a threshold derived for one job is not evidence about
+  another. It had to be re-derived for the new channel, and the same number then
+  turned out to be wrong for dim UI chrome in the opposite direction.

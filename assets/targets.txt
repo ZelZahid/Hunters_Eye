@@ -18,6 +18,11 @@
 #   [click]   move the mouse onto it and left-click - the default, used when no tag is given.
 #             In Diablo II that means "walk over there and pick it up on arrival", so it costs
 #             the time of the walk.
+#   [exact]   only match when the name is the WHOLE label, never part of a longer one. Charms
+#             use this: a plain "Grand Charm" is worth taking, while "Serpent's Grand Charm of
+#             Vita" is a different item and is left alone. Without the tag, "Grand Charm" would
+#             be found inside the longer name - which is normally what you want, and is how
+#             "Gul" is found inside "Gul Rune".
 #   [key:e]   move the mouse onto it and press 'e' instead of clicking. This is for a skill
 #             that is AIMED with the cursor but TRIGGERED from the keyboard - on a sorceress,
 #             'e' is Telekinesis, which grabs the item from across the room with no walking.
@@ -38,8 +43,8 @@
 Full Rejuvenation Potion* [purple] [key:e]
 Rejuvenation Potion* [purple] [key:e]
 Flawless Amethyst*
-Grand Charm*
-Small Charm*
+Grand Charm* [exact]
+Small Charm* [exact]
 Lum Rune* [darkorange]
 Ko Rune* [darkorange]
 Lem Rune* [darkorange]

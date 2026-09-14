@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "Art that proves the INVENTORY PANEL is open, plus the region it covers.",
+    "",
+    "WHY: the panel is opaque, so while it is open everything inside that region is UI, not",
+    "world. Items already in the bag draw a hover TOOLTIP - real text, read correctly by OCR -",
+    "and auto-collect went and clicked it. Measured on the owner's screenshot 4, which has both",
+    "at once: the ground label's centre is at (0.119, 0.445) of the frame and the inventory",
+    "tooltip's at (0.803, 0.567), so one rectangle separates them with room to spare.",
+    "",
+    "THE TEMPLATE IS THE PANEL'S TITLE BAR - the word INVENTORY and the stone around it. That",
+    "is the one part of the panel that never holds an item, a socket or a tooltip, which is",
+    "Error_history.txt #44's rule: a reference may contain only pixels that CANNOT change.",
+    "Measured: 1.000 on all three open frames, 0.000-0.120 on in-game frames with it closed.",
+    "",
+    "keep_out is [x, y, w, h] as fractions of the ANCHOR WINDOW, same as search_region, so it",
+    "survives the game being windowed, moved or resized. It runs from the panel's left frame",
+    "edge (measured at x=1223 of 1914, i.e. 0.639) to the right edge of the window, and down",
+    "to below the gold box. Nothing is lost by being generous: the panel is opaque, so a ground",
+    "item under it cannot be seen or clicked anyway.",
+    "",
+    "source_size is the resolution the art was cut AT, not the template's own size."
+  ],
+  "name": "inventory title",
+  "template": "inventory.png",
+  "source_size": [
+    1914,
+    1072
+  ],
+  "search_region": [
+    0.62,
+    0.05,
+    0.32,
+    0.18
+  ],
+  "threshold": 0.6,
+  "keep_out": [
+    0.63,
+    0.0,
+    0.37,
+    0.82
+  ]
+}
