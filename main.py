@@ -191,41 +191,63 @@ def anchor_rect():
 #drawn, correctly still "in play") against 0.343 and 0.329 in two different lobbies.
 in_play_check = presence.load(ASSETS_DIR / "in_play.json")
 
-#--- "Is the inventory panel open, and what does it cover?" ---------------------------------------
-#A SECOND USE OF THE SAME DETECTOR, ANSWERING A DIFFERENT QUESTION: not "are we in a game" but
-#"is this part of the screen UI right now". The two share no code beyond presence.py itself.
+#--- Open UI panels: which parts of the screen are NOT the world right now ------------------------
+#A SECOND USE OF presence.py, ANSWERING A DIFFERENT QUESTION: not "are we in a game" but "is this
+#part of the screen UI at the moment". The two share no code beyond presence.py itself.
 #
 #The problem it solves is one that looks like a detection bug and is not: an item already in the
-#bag draws a hover TOOLTIP, which is real on-screen text reading exactly "Full Rejuvenation
-#Potion". OCR read it correctly, the matcher matched it correctly, and auto-collect then drove the
-#mouse to a potion the player already owns. Nothing was wrong with any of those steps - the text
-#simply did not mean what it means on the ground.
+#bag (or in the stash) draws a hover TOOLTIP, which is real on-screen text reading exactly "Full
+#Rejuvenation Potion". OCR read it correctly, the matcher matched it correctly, and auto-collect
+#then drove the mouse to an item the player already owns. Nothing was wrong with any of those
+#steps - the text simply does not mean on a panel what it means on the ground.
 #
-#So the filter is positional, not textual: while the panel is open, anything whose label sits
-#inside it is UI. That is sound because THE PANEL IS OPAQUE - a ground item underneath it cannot
-#be seen or clicked anyway, so excluding the region costs nothing real. It is deliberately only
-#applied while the panel is OPEN; blanking that third of the screen permanently would throw away
-#every drop on the right-hand side.
-inventory_check = presence.load(ASSETS_DIR / "inventory.json")
-INVENTORY_KEEP_OUT = None
-if inventory_check is not None:
-    try:
-        with open(ASSETS_DIR / "inventory.json", encoding="utf-8") as _handle:
-            INVENTORY_KEEP_OUT = json.load(_handle).get("keep_out")
-    except (OSError, ValueError) as _exc:  # noqa: BLE001 - a bad asset must not stop the program
-        print(f"WARNING: could not read inventory keep_out ({_exc}) - "
-              f"inventory items will not be filtered.")
-if INVENTORY_KEEP_OUT is None and inventory_check is not None:
-    print("WARNING: assets/inventory.json has no keep_out region - "
-          "inventory items will not be filtered.")
-    inventory_check = None
+#So the filter is positional, not textual: while a panel is open, anything whose label sits inside
+#it is UI. That is sound because THESE PANELS ARE OPAQUE - a ground item underneath one cannot be
+#seen or clicked anyway, so excluding the region costs nothing real. It is deliberately only
+#applied while a panel is OPEN; blanking those parts of the screen permanently would throw away
+#every drop that lands there.
+#
+#A LIST, NOT A SPECIAL CASE PER PANEL. The inventory came first and the stash arrived the next
+#day; a third (character, skills, merc, the Horadric Cube) is a JSON file and a PNG away, with no
+#code to write. Each config carries its own art, its own search region and its own keep_out, which
+#is what lets the stash sit on the LEFT and the inventory on the RIGHT - in town both are open at
+#once and the world is the strip between them.
+UI_PANEL_CONFIGS = ("inventory.json", "stash.json")
+
+UIPanel = namedtuple("UIPanel", "name check keep_out")
 
 
-def _inventory_open(frame_gray):
-    """True/False/None - is the inventory panel on screen? None means "cannot tell", which every
-    caller must treat as "behave exactly as before this check existed"."""
-    if inventory_check is None:
-        return None
+def _load_ui_panels(filenames):
+    """[UIPanel, ...] for every config that is present and usable. Never raises: a missing or
+    broken panel config means that panel is not filtered, which is exactly how the program behaved
+    before it existed - not a reason to refuse to start."""
+    panels = []
+    for filename in filenames:
+        path = ASSETS_DIR / filename
+        check = presence.load(path)
+        if check is None:
+            continue
+        try:
+            with open(path, encoding="utf-8") as handle:
+                keep_out = json.load(handle).get("keep_out")
+        except (OSError, ValueError) as exc:  # noqa: BLE001 - a bad asset must not stop the program
+            print(f"WARNING: could not read keep_out from {path}: {exc} - "
+                  f"items on that panel will not be filtered.")
+            continue
+        if keep_out is None:
+            print(f"WARNING: {path} has no keep_out region - "
+                  f"items on that panel will not be filtered.")
+            continue
+        panels.append(UIPanel(Path(filename).stem, check, keep_out))
+    return panels
+
+
+ui_panels = _load_ui_panels(UI_PANEL_CONFIGS)
+
+
+def _panel_open(panel, frame_gray):
+    """True/False/None - is this panel on screen? None means "cannot tell", which every caller
+    must treat as "behave exactly as before this check existed"."""
     rect = anchor_rect()
     if rect is not None:
         scale = frame_gray.shape[1] / CAPTURE_RECT[2]
@@ -234,20 +256,18 @@ def _inventory_open(frame_gray):
     else:
         resolver = None
         hud_width = frame_gray.shape[1]
-    found, _score = inventory_check.check(frame_gray, hud_width, resolve_region=resolver)
+    found, _score = panel.check.check(frame_gray, hud_width, resolve_region=resolver)
     return found
 
 
-def _inventory_keep_out_px(frame_shape):
-    """The panel's rectangle as (x0, y0, x1, y1) in this frame's own pixels, or None.
+def _panel_keep_out_px(panel, frame_shape):
+    """The panel's rectangle as (x0, y0, x1, y1) in this frame's own pixels.
 
-    Routed through the window anchor the same way the HUD meters and the in-play art are: the
-    panel is at a fixed place in the WINDOW, so a windowed or moved game would otherwise mask a
-    rectangle of bare desktop while the real panel sat somewhere else entirely.
+    Routed through the window anchor the same way the HUD meters and the in-play art are: a panel
+    is at a fixed place in the WINDOW, so a windowed or moved game would otherwise mask a rectangle
+    of bare desktop while the real panel sat somewhere else entirely.
     """
-    if INVENTORY_KEEP_OUT is None:
-        return None
-    region = INVENTORY_KEEP_OUT
+    region = panel.keep_out
     rect = anchor_rect()
     if rect is not None:
         region = window_region.to_frame_fractions(rect, CAPTURE_RECT, region)
@@ -256,25 +276,27 @@ def _inventory_keep_out_px(frame_shape):
     return int(fx * w), int(fy * h), int((fx + fw) * w), int((fy + fh) * h)
 
 
-def _outside_inventory(matches, frame_gray):
-    """`matches` with anything drawn inside an OPEN inventory panel removed.
+def _outside_open_panels(matches, frame_gray):
+    """`matches` with anything drawn inside a currently-OPEN UI panel removed.
 
     A match is judged by its CENTRE, which is what auto-collect would click. A tooltip that
-    straddles the panel's edge is therefore kept or dropped by where the bulk of it is, which is
-    the right answer for both - and in the measured case the tooltip sits well inside.
+    straddles a panel's edge is therefore kept or dropped by where the bulk of it is, which is the
+    right answer for both - and in the measured cases the tooltip sits well inside.
     """
-    if not matches or _inventory_open(frame_gray) is not True:
+    if not matches or not ui_panels:
         return matches
-    box = _inventory_keep_out_px(frame_gray.shape)
-    if box is None:
+    boxes = [(panel.name, _panel_keep_out_px(panel, frame_gray.shape))
+             for panel in ui_panels if _panel_open(panel, frame_gray) is True]
+    if not boxes:
         return matches
-    x0, y0, x1, y1 = box
     kept = []
     for match in matches:
         mx, my, mw, mh = match[:4]
         cx, cy = mx + mw // 2, my + mh // 2
-        if x0 <= cx <= x1 and y0 <= cy <= y1:
-            print(f"Ignoring '{match[4]}' - it is in the open inventory, not on the ground")
+        where = next((name for name, (x0, y0, x1, y1) in boxes
+                      if x0 <= cx <= x1 and y0 <= cy <= y1), None)
+        if where is not None:
+            print(f"Ignoring '{match[4]}' - it is in the open {where}, not on the ground")
             continue
         kept.append(match)
     return kept
@@ -748,8 +770,8 @@ def detect_text():
                 #way nothing downstream ever sees them: no box is drawn on an item already in the
                 #bag, no relocalization work is spent following it, and - the one that actually
                 #bites - a potion on the ground can no longer lose the "which of these two
-                #identically-named things do we want" contest to the one in the inventory.
-                ocr_results = _outside_inventory(ocr_results, frame_grey)
+                #identically-named things do we want" contest to the one on a panel.
+                ocr_results = _outside_open_panels(ocr_results, frame_grey)
 
                 local_tracks = []
                 for (tx, ty, tw, th, matched_name, to_collect, color) in ocr_results:

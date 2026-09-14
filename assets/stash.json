@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "Art that proves the STASH panel is open, plus the region it covers. Same mechanism and",
+    "same reasoning as inventory.json - read that one first; this is the second panel, and",
+    "adding it was a data change rather than a code change, which is the point.",
+    "",
+    "THE TEMPLATE IS THE PANEL'S TITLE BAR - the word STASH and the stone around it. It has to",
+    "be the title and not the tabs: the tab row underneath (Personal / Shared / Gems /",
+    "Materials / Runes) HIGHLIGHTS whichever tab is selected, so a template covering it would",
+    "match well on one tab and badly on the others. Measured with the template cut from the",
+    "Materials tab: 1.000 on the Materials panel and 0.982 on the Runes panel, against 0.179",
+    "on in-game frames with it closed, and 0.10-0.17 on frames where only the INVENTORY is",
+    "open - the two panels do not match each other.",
+    "",
+    "The stash is on the LEFT and the inventory on the RIGHT, and in town both are usually open",
+    "at once, so both regions are excluded together and the world is the strip between them.",
+    "Panel edges measured on the real frame: left 105, right 688, top 105, bottom ~840 of",
+    "1912x1076. keep_out runs to the window's left edge, because the outer chrome there is also",
+    "panel and never world.",
+    "",
+    "keep_out and search_region are fractions of the ANCHOR WINDOW; source_size is the",
+    "resolution the art was cut AT, not the template's own size."
+  ],
+  "name": "stash title",
+  "template": "stash.png",
+  "source_size": [
+    1912,
+    1076
+  ],
+  "search_region": [
+    0.02,
+    0.05,
+    0.32,
+    0.18
+  ],
+  "threshold": 0.6,
+  "keep_out": [
+    0.0,
+    0.0,
+    0.37,
+    0.82
+  ]
+}

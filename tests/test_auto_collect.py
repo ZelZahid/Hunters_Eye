@@ -200,60 +200,94 @@ if cfg.teleport_key:
         recognised = False
     check(f"teleport_key {cfg.teleport_key!r} is a key this system recognises", recognised)
 
-print("\n12. An item already in the open inventory is not chased")
-#The bug this guards was not a detection failure, which is what makes it worth a fixture: an item
-#in the bag draws a hover TOOLTIP, which is real on-screen text reading exactly "Full Rejuvenation
-#Potion". OCR read it correctly and the matcher matched it correctly - the text simply does not
-#mean on a panel what it means on the ground. So the filter is positional, and it is sound only
-#because the panel is OPAQUE: a ground item behind it could not be seen or clicked anyway.
+print("\n12. An item already on an open UI panel is not chased")
+#The bug this guards was not a detection failure, which is what makes it worth real frames: an
+#item in the bag or the stash draws a hover TOOLTIP, which is genuine on-screen text reading
+#exactly "Full Rejuvenation Potion". OCR read it correctly and the matcher matched it correctly -
+#the text simply does not mean on a panel what it means on the ground. So the filter is
+#positional, and it is sound only because the panels are OPAQUE: a ground item behind one could
+#not be seen or clicked anyway.
 import os
 
 import cv2 as cv
 import numpy as np
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
-fixture = os.path.join(FIXTURES, "inventory_open.png")
-frame = cv.imread(fixture)
+check("both panels are configured",
+      sorted(p.name for p in main.ui_panels) == ["inventory", "stash"])
+
+
+def frame_and_gray(name):
+    img = cv.imread(os.path.join(FIXTURES, name))
+    return (None, None) if img is None else (img, cv.cvtColor(img, cv.COLOR_BGR2GRAY))
+
+
+def panel(name):
+    return next(p for p in main.ui_panels if p.name == name)
+
+
+#--- the inventory, with a potion on the ground AND the same potion's tooltip in the bag ---------
+frame, gray = frame_and_gray("inventory_open.png")
 if frame is None or not text_detection.ocr_available():
     check("inventory_open.png present and OCR available", False)
 else:
-    gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
-    check("the panel is recognised as open", main._inventory_open(gray) is True)
+    check("the inventory is recognised as open", main._panel_open(panel("inventory"), gray) is True)
+    #The stash is on the other side of the screen and is NOT open here. If this ever goes True the
+    #two references have started matching each other, and a third of the screen stops collecting.
+    check("...and the stash is not", main._panel_open(panel("stash"), gray) is False)
 
     found = text_detection.find_text_matches(frame, main.target_items)
     check(f"both potions are detected first ({len(found)} found)", len(found) == 2)
-    kept = main._outside_inventory(found, gray)
+    kept = main._outside_open_panels(found, gray)
     check("exactly one survives the filter", len(kept) == 1)
     if kept:
         cx = kept[0][0] + kept[0][2] // 2
-        x0, _y0, _x1, _y1 = main._inventory_keep_out_px(frame.shape)
-        #The one that survives has to be the one on the GROUND, not merely "one of them".
+        x0, _y0, _x1, _y1 = main._panel_keep_out_px(panel("inventory"), frame.shape)
+        #The survivor has to be the one on the GROUND, not merely "one of them".
         check(f"and it is the one on the ground (x={cx} < panel edge {x0})", cx < x0)
 
-#With the panel CLOSED the filter must be completely inert, or a third of the screen stops being
-#collectable - which is a far worse bug than the one being fixed, and a silent one.
-closed = cv.imread(os.path.join(FIXTURES, "pindle_pack.png"))
-if closed is None:
+#--- the stash, open alongside the inventory the way it always is in town -----------------------
+frame, gray = frame_and_gray("stash_open.png")
+if frame is None or not text_detection.ocr_available():
+    check("stash_open.png present and OCR available", False)
+else:
+    check("the stash is recognised as open", main._panel_open(panel("stash"), gray) is True)
+    check("...and so is the inventory, as it always is in town",
+          main._panel_open(panel("inventory"), gray) is True)
+    found = text_detection.find_text_matches(frame, main.target_items)
+    check(f"the stash tooltip is detected first ({len(found)} found)", len(found) == 1)
+    check("and is filtered out", main._outside_open_panels(found, gray) == [])
+    #With both panels open the world is the STRIP BETWEEN THEM, and it must stay collectable -
+    #otherwise this fix quietly costs every town pickup, which is worse than what it fixed.
+    h, w = frame.shape[:2]
+    middle = [(w // 2 - 20, h // 2 - 10, 40, 20, "ITEM", True, (0, 255, 0))]
+    check("a drop between the two panels is still collected",
+          main._outside_open_panels(middle, gray) == middle)
+
+#With a panel CLOSED its region must be completely inert, or a third of the screen stops being
+#collectable - a far worse bug than the one being fixed, and a silent one.
+closed_frame, closed_gray = frame_and_gray("pindle_pack.png")
+if closed_frame is None:
     check("pindle_pack.png present", False)
 else:
-    closed_gray = cv.cvtColor(closed, cv.COLOR_BGR2GRAY)
-    check("a normal in-game frame is not read as an open inventory",
-          main._inventory_open(closed_gray) is False)
-    x0, y0, x1, y1 = main._inventory_keep_out_px(closed.shape)
-    inside = [((x0 + x1) // 2 - 20, (y0 + y1) // 2 - 10, 40, 20, "ITEM", True, (0, 255, 0))]
-    check("a match inside the panel's region survives while the panel is closed",
-          main._outside_inventory(inside, closed_gray) == inside)
+    for name in ("inventory", "stash"):
+        check(f"a normal in-game frame is not read as an open {name}",
+              main._panel_open(panel(name), closed_gray) is False)
+        x0, y0, x1, y1 = main._panel_keep_out_px(panel(name), closed_frame.shape)
+        inside = [((x0 + x1) // 2 - 20, (y0 + y1) // 2 - 10, 40, 20, "ITEM", True, (0, 255, 0))]
+        check(f"a match in the {name}'s region survives while it is closed",
+              main._outside_open_panels(inside, closed_gray) == inside)
 
-#No config, no filtering - the same None-means-behave-as-before rule the rest of the pipeline
+#No configs, no filtering - the same None-means-behave-as-before rule the rest of the pipeline
 #follows. A missing asset must never quietly stop items being collected.
-_saved = main.inventory_check
-main.inventory_check = None
+_saved = main.ui_panels
+main.ui_panels = []
 try:
     probe = [(1500, 600, 40, 20, "ITEM", True, (0, 255, 0))]
-    check("with no inventory config, nothing is filtered",
-          main._outside_inventory(probe, np.zeros((1080, 1920), np.uint8)) == probe)
+    check("with no panel configs, nothing is filtered",
+          main._outside_open_panels(probe, np.zeros((1080, 1920), np.uint8)) == probe)
 finally:
-    main.inventory_check = _saved
+    main.ui_panels = _saved
 
 print(f"\n{'ALL PASSED' if not failures else str(failures) + ' FAILED'}")
 sys.exit(1 if failures else 0)

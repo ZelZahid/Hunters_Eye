@@ -20,6 +20,7 @@ If a new test needs a real frame, add it here.
 | `charm_grand.png` | a blue "Grand Charm" label on the ground, terrain around it, the rest blacked out | blue labels survive preprocessing: luminance maxes at 127 inside the label, the strongest channel at 255 (`Error_history.txt` #48) |
 | `charm_small.png` | the same for "Small Charm", in a pile of six overlapping labels | the same, plus evidence that a crowded drop still groups the charm as its own OCR line |
 | `inventory_open.png` | the inventory panel open, with a Full Rejuvenation Potion on the ground AND the same potion's tooltip inside the panel | the inventory filter: the ground one is collected, the one in the bag is not. Both in one frame is the whole point - either alone proves nothing about telling them apart |
+| `stash_open.png` | in town with the stash AND inventory open, a stash item's tooltip showing | the second panel: both regions excluded at once, and the strip of world between them still collectable |
 | `in_game_dim.png` | in game, Catacombs Level 2 - an unlit room, both orbs clear | the in-play check must not track how well-lit the scene is (`Error_history.txt` #44) |
 | `lobby_form_crop.png` | a close crop of the Create Game form | reading a game name out of the text box |
 | `lobby_zze9.png` | the lobby with game name `zze9` | the per-character name vote - no single OCR threshold reads this name correctly (`Error_history.txt` #43) |
