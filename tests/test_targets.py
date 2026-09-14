@@ -292,5 +292,77 @@ for fixture, want in (("charm_grand.png", "GRAND CHARM"), ("charm_small.png", "S
     check(f"{fixture}: bright in the strongest channel - max {val.max()} > {td.BRIGHT_TEXT_THRESHOLD}",
           val.max() > td.BRIGHT_TEXT_THRESHOLD)
 
+print("\n10. A word that identifies nothing gets one more misread character")
+#Added 2026-09-14. Seen live: a Super Mana Potion label read "SUPER MANA PeTIeN". SUPER and MANA -
+#the two words that say WHICH potion it is - both scored 1.000; POTION scored 0.667 against a
+#cutoff of 0.75 and the whole line was thrown away. POTION appears in three target names, so it
+#could not have told any of them apart even read perfectly. The per-word rule exists to stop a
+#shared word dragging a WRONG name over the line, which is a statement about the distinguishing
+#word only.
+REAL_SHARED = td.shared_words(real)
+check("the shared words come out of the vocabulary, not a list",
+      {"POTION", "RUNE", "CHARM"} <= REAL_SHARED)
+check("a word unique to one name is not shared", "SUPER" not in REAL_SHARED and "JAH" not in REAL_SHARED)
+
+check("the label that was being thrown away now matches",
+      td._match_ratio("SUPER MANA PETIEN", "SUPER MANA POTION", 0.75, REAL_SHARED) is not None)
+check("...and still does when it reads perfectly",
+      td._match_ratio("SUPER MANA POTION", "SUPER MANA POTION", 0.75, REAL_SHARED) == 1.0)
+#The slack is ONE character, not a free pass: a shared word read into nonsense is still a miss.
+check("a shared word read into nonsense is still rejected",
+      td._match_ratio("SUPER MANA PXXXXX", "SUPER MANA POTION", 0.75, REAL_SHARED) is None)
+#And the distinguishing words keep the strict cutoff, which is the whole point.
+check("a misread DISTINGUISHING word is still rejected",
+      td._match_ratio("SUPER MENE POTION", "SUPER MANA POTION", 0.75, REAL_SHARED) is None)
+
+print("\n11. ...and the look-alike protection still holds with that slack active")
+#The existing checks above call _match_ratio with no vocabulary, so they measure the STRICT path.
+#Production passes the shared set, so the cases the per-word rule was written for have to be
+#re-run with it - otherwise the guard is only tested in a configuration that never runs.
+def winner_shared(line, names):
+    words = line.split()
+    best_key, best_names = (0, 0.0), set()
+    for start in range(len(words)):
+        for end in range(start + 1, len(words) + 1):
+            text = " ".join(words[start:end])
+            for name in names:
+                ratio = td._match_ratio(text, name, 0.75, REAL_SHARED)
+                if ratio is None:
+                    continue
+                key = (end - start, ratio)
+                if key > best_key:
+                    best_key, best_names = key, {name}
+                elif key == best_key:
+                    best_names.add(name)
+    return None if len(best_names) != 1 else next(iter(best_names))
+
+
+check("'RAL RUNE' still wins its own match rather than becoming a Jah Rune",
+      winner_shared("RAL RUNE", ("RAL RUNE", "JAH RUNE", "MAL RUNE")) == "RAL RUNE")
+check("'RAL RUNE' is not reported as a listed rune when its own entry is gone",
+      winner_shared("RAL RUNE", ("JAH RUNE", "LEM RUNE", "GUL RUNE")) is None)
+check("'KO RUNE' read as 'KE RUNE' still resolves to Ko, not El",
+      winner_shared("KE RUNE", ("KO RUNE", "EL RUNE", "LO RUNE")) == "KO RUNE")
+check("a bare 'RUNE' matches nothing, relaxed or not",
+      winner_shared("RUNE", ("KO RUNE", "EL RUNE", "LO RUNE")) is None)
+check("'FLAWLESS' alone is still not a Flawless Amethyst",
+      winner_shared("FLAWLESS", ("FLAWLESS AMETHYST",)) is None)
+#A name whose words are ALL shared gets no slack at all, or nothing about it is checked strictly.
+#"Rejuvenation Potion" is exactly that - both words also appear in "Full Rejuvenation Potion".
+check("a name with no unique word keeps every cutoff strict",
+      td._relaxable(["REJUVENATION", "POTION"], REAL_SHARED) == frozenset())
+check("...while a name with one unique word relaxes the rest",
+      td._relaxable(["FULL", "REJUVENATION", "POTION"], REAL_SHARED)
+      == frozenset({"REJUVENATION", "POTION"}))
+#Short words never take the slack: a second misread in a 3-letter word is indistinguishable from
+#a different item, which is the RAL/MAL case the look-alike entries exist for.
+check("a 3-letter shared word would still be held to 0.65",
+      td._required_cutoff("GUL", 0.75, relaxed=True) == 0.65)
+check("a 2-letter shared word would still be held to 0.5",
+      td._required_cutoff("KO", 0.75, relaxed=True) == 0.5)
+#The merged-word path keeps the strict cutoffs - it has no word alignment left to verify.
+check("a merge/split is not forgiven more than before",
+      td._match_ratio("SUPERMANAPETIEN", "SUPER MANA POTION", 0.75, REAL_SHARED) is None)
+
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

@@ -89,6 +89,11 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 
 ## Parking lot
 
+- **Tracking cost scales with how many items are on screen, and ~8 is the edge.** Measured 2026-09-14 on a real frame: `_relocalize_track` is **6.83 ms per tracked item, every loop iteration** (at `OCR_CAPTURE_SCALE` 1.0 with `TRACK_SEARCH_MARGIN` 250 that is a 761x528 search window each). 3 items -> 20.5ms -> ~49Hz; 5 -> 34.2ms -> ~29Hz; 8 -> 54.6ms -> ~18Hz; 12 -> 82ms -> ~12Hz, against a healthy loop rate of ~19-21Hz. Nothing to do yet — raised because `Super Mana Potion` is now detected and the owner expects a lot of them on the ground at once. Two ideas if it bites:
+  - a **display-only track does not need the same freshness as a collectable one**. Auto-collect clicks coordinates from `shared_text_tracks`, but a box only has to look right at <=30Hz with a 4px deadband — so relocalizing non-`*` tracks every Nth iteration would cut the cost by N with no effect on any click.
+  - `TRACK_SEARCH_MARGIN` (250) was raised to bridge the OCR call's own staleness, and the cost is quadratic in it. Re-derive it now that the post-OCR catch-up frame exists.
+
+
 *Unvetted ideas — cheap to write down, may never happen.*
 
 - [ ] **Bind Diablo II's Force Move key and set `MOVE_KEY` in `routes/pindle.py`.** With an ordinary left click, an NPC who wanders under a walk click gets spoken to and the dialog swallows the rest of the walk. Force Move walks past. Not done by default because the binding is per-install and its default key is not known here. If the key starts varying per character, move it to `user_config.txt`.

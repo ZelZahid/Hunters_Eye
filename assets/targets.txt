@@ -40,6 +40,7 @@
 # So: MOVING A LINE CHANGES WHAT GETS GRABBED FIRST. Re-grouping this file for tidiness will
 # quietly re-rank it. Two of the same item on the ground are settled by whichever is nearer the
 # mouse, as before. The "-" look-alikes at the bottom take no part - they are never collected.
+Super Mana Potion [blue]
 Full Rejuvenation Potion* [purple] [key:e]
 Rejuvenation Potion* [purple] [key:e]
 Flawless Amethyst*

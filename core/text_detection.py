@@ -412,7 +412,57 @@ def _padded_box(words):
     return max(x, 0), max(y, 0), w, h
 
 
-def _required_cutoff(word, base_cutoff):
+#HOW MUCH SLACK A WORD GETS WHEN IT IDENTIFIES NOTHING, measured in misread characters.
+#
+#The per-word rule below exists to stop a SHARED word dragging a wrong name over the line: "RAL
+#RUNE" scores 0.75 against "JAH RUNE" on the strength of " RUNE" alone, so the word that actually
+#says which rune it is has to be right. That reasoning is entirely about the DISTINGUISHING word,
+#and it was being applied to the generic one as well, where it buys nothing and costs detections.
+#
+#Seen live: a Super Mana Potion label read "SUPER MANA PeTIeN". SUPER and MANA - the two words
+#that identify the item - both scored 1.000. POTION scored 0.667 against a cutoff of 0.75, two
+#characters misread instead of one, and the whole line was thrown away. POTION appears in three
+#target names; it could not have told any of them apart if it had read perfectly.
+#
+#So a word appearing in MORE THAN ONE target name may be one character worse than a unique one.
+#Expressed as characters rather than as a ratio on purpose: difflib's ratio for k misreads in an
+#n-letter word is about 1 - k/n, so "one more error" is base_cutoff - 1/n, which scales itself.
+#A flat number would mean something quite different at 4 letters than at 12.
+#
+#TWO THINGS KEEP THIS SAFE, and removing either brings back the bug the per-word rule was written
+#for:
+#  - it never applies below 4 characters. A 2- or 3-letter word is already allowed its one
+#    misread, and a second one there is indistinguishable from a different item ("RAL" vs "MAL").
+#  - it never applies to a name whose words are ALL shared. Otherwise nothing about that name
+#    would be checked strictly at all. "Rejuvenation Potion" is exactly that case - both of its
+#    words also appear in "Full Rejuvenation Potion" - so it keeps the strict cutoff throughout,
+#    which is the right answer for the one name that is a sub-phrase of another.
+SHARED_WORD_EXTRA_ERRORS = 1
+
+
+def shared_words(names):
+    """The set of words appearing in more than one target name - i.e. the words that cannot
+    identify anything on their own. Computed from the vocabulary rather than listed by hand, so
+    adding "Super Mana Potion" to targets.txt is what makes POTION generic, with nothing to keep
+    in sync."""
+    counts = {}
+    for name in names:
+        for word in set(name.split()):
+            counts[word] = counts.get(word, 0) + 1
+    return {word for word, count in counts.items() if count > 1}
+
+
+def _relaxable(name_words, shared):
+    """Which words of this name may take the extra error - none, if every one of them is shared."""
+    if not shared:
+        return frozenset()
+    relaxable = {w for w in name_words if w in shared}
+    if len(relaxable) == len(set(name_words)):
+        return frozenset()  #nothing left to check strictly - see the note above
+    return frozenset(relaxable)
+
+
+def _required_cutoff(word, base_cutoff, relaxed=False):
     """How closely one WORD of a target name has to match to count - see _match_ratio().
 
     Short words are especially prone to false-positive fuzzy matches. difflib's ratio is
@@ -450,6 +500,9 @@ def _required_cutoff(word, base_cutoff):
         return 0.5  #one misread character in a 2-letter word ("KO" read as "KE")
     if n == 3:
         return 0.65 #one misread character in a 3-letter word ("GUL" read as "GU1")
+    if relaxed:
+        #One more misread character than a unique word gets - see SHARED_WORD_EXTRA_ERRORS.
+        return base_cutoff - SHARED_WORD_EXTRA_ERRORS / n
     return base_cutoff
 
 
@@ -506,7 +559,7 @@ def _word_ratio(text_word, name_word):
     return difflib.SequenceMatcher(None, text_word, name_word).ratio()
 
 
-def _match_ratio(text, name, base_cutoff):
+def _match_ratio(text, name, base_cutoff, shared=frozenset()):
     """Returns the overall similarity ratio if `text` matches target `name`, else None.
 
     Matching is per WORD, not over the whole string, because a word shared between many target
@@ -520,13 +573,21 @@ def _match_ratio(text, name, base_cutoff):
     So every word of the name must clear its own length-scaled cutoff (_required_cutoff): the
     3-letter word that actually identifies the item has to be right, and can no longer ride in
     on the generic one. The returned ratio is still the whole-string one, purely so callers can
-    rank several passing candidates against each other the same way they did before."""
+    rank several passing candidates against each other the same way they did before.
+
+    `shared` is the set of words that appear in more than one target name (see shared_words).
+    Those identify nothing on their own and are allowed one more misread character than a unique
+    word - see SHARED_WORD_EXTRA_ERRORS for why, and for the two limits that keep it safe. Passing
+    an empty set restores the behaviour from before that existed, which is what the default is
+    for: a caller matching against a single name has no vocabulary to draw the distinction from."""
     text_words = text.split()
     name_words = name.split()
+    relaxable = _relaxable(name_words, shared)
 
     if len(text_words) == len(name_words):
         for text_word, name_word in zip(text_words, name_words):
-            if _word_ratio(text_word, name_word) < _required_cutoff(name_word, base_cutoff):
+            cutoff = _required_cutoff(name_word, base_cutoff, name_word in relaxable)
+            if _word_ratio(text_word, name_word) < cutoff:
                 return None
         return difflib.SequenceMatcher(None, text, name).ratio()
 
@@ -543,6 +604,8 @@ def _match_ratio(text, name, base_cutoff):
     # against "FLAWLESSRUBY" and scores 0.8 - enough to clear a per-word cutoff and report a gem
     # that is not on the list, boxing just the word "Flawless". A whole missing word is not a
     # transcription artifact and must not be forgiven like one.
+    #The merged path keeps the STRICT cutoffs. It has no word alignment left to verify, which is
+    #the same reason MERGED_WORD_CUTOFF is a floor here - slack belongs where structure survives.
     strictest = max(MERGED_WORD_CUTOFF, *(_required_cutoff(w, base_cutoff) for w in name_words))
     despaced = difflib.SequenceMatcher(None, text.replace(" ", ""), name.replace(" ", "")).ratio()
     if despaced < strictest:
@@ -736,6 +799,11 @@ def find_text_matches(frame, target_items, match_cutoff=0.75, preprocess=PREPROC
     else:
         return []
 
+    #Computed once per call, not per candidate: which words identify nothing because more than
+    #one target name contains them. Cheap (a pass over the vocabulary) and it has to come from
+    #the vocabulary rather than a hand-kept list - see SHARED_WORD_EXTRA_ERRORS.
+    shared = shared_words(target_items)
+
     matches = []
     for line_words in _group_words_by_line(words):
         # Try every contiguous run of words in this line, not just the whole line - matching
@@ -781,7 +849,7 @@ def find_text_matches(frame, target_items, match_cutoff=0.75, preprocess=PREPROC
                         continue
                     # Not difflib.get_close_matches() and not a bare whole-string ratio - see
                     # _match_ratio() for why matching has to happen word by word.
-                    ratio = _match_ratio(text, name, match_cutoff)
+                    ratio = _match_ratio(text, name, match_cutoff, shared)
                     key = (len(window), ratio) if ratio is not None else None
                     if key is not None and key > best_key:
                         x, y, w, h = _padded_box(window)
