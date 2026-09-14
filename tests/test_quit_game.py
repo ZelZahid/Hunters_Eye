@@ -239,6 +239,29 @@ finally:
 check(f"press_at moves to the target, then presses the key ({order})",
       order == [("move", 11, 22), ("press", "e")])
 
+#AND IT WAITS LONGER BETWEEN THE TWO THAN click_at DOES. The relationship is what is asserted, not
+#either number: a click's button-down is a mouse event carrying the cursor position in its own
+#message, so the game cannot process it without the new position, while a keypress carries no
+#coordinates and is resolved against whatever position the game last read on its own tick. Aiming
+#with a key therefore needs more settle time than clicking, and press_at inheriting click_at's
+#value is what made the first telekinesis press at an item miss while the retry landed. If someone
+#collapses these back onto one constant, this fails.
+check(f"press_at settles longer than click_at ({actions.AIM_SETTLE_SECONDS}s vs "
+      f"{actions.MOVE_SETTLE_SECONDS}s)",
+      actions.AIM_SETTLE_SECONDS > actions.MOVE_SETTLE_SECONDS)
+
+#The settle is the caller's to tune without editing core/ - it is a starting point, not a measurement.
+slept = []
+saved_sleep, saved_move2, saved_press2 = actions.time.sleep, actions.pyautogui.moveTo, actions.press_key
+try:
+    actions.time.sleep = slept.append
+    actions.pyautogui.moveTo = lambda x, y, **kw: None
+    actions.press_key = lambda key, **kw: None
+    actions.press_at("e", settle=0.42)(1, 2)
+finally:
+    actions.time.sleep, actions.pyautogui.moveTo, actions.press_key = saved_sleep, saved_move2, saved_press2
+check(f"press_at's settle is overridable per call ({slept})", slept == [0.42])
+
 #The old name still works and still clicks - every caller that means "click" uses it.
 clicked = []
 saved_click = actions.click_at

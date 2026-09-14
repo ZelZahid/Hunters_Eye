@@ -49,7 +49,7 @@ ignore_below = 0.03
 # otherwise - and because an unwanted password is invisible until someone cannot
 # join your game. With this off, any password already in the box is CLEARED, so
 # a password you set by hand earlier does not silently carry into every new game.
-use_password = yes
+use_password = no
 
 # The password to use when use_password is yes. Taken exactly as written.
 password = 123
@@ -61,6 +61,55 @@ password = 123
 # box is empty, or to switch naming scheme without typing it in yourself.
 # Leave it blank to read the box, which is what you normally want.
 game_name =
+
+
+# --- Teleporting onto a drop (auto-collect) ----------------------------------
+
+# The key that teleports to wherever the mouse is pointing. When this is set,
+# auto-collect points at an item it is about to pick up, presses this key, and
+# only then goes for the item - on a public game the drop belongs to whoever
+# gets there first, so arriving instantly and picking up a beat later beats
+# walking over and picking up on arrival.
+#
+# Leave it BLANK to switch this off entirely and just walk, which is what the
+# program did before this setting existed.
+#
+# It is never used on an item marked "[key:e]" in assets/targets.txt. Those are
+# taken from across the room with telekinesis, so teleporting to them first
+# would spend mana removing the exact distance that skill exists to cover.
+teleport_key = f
+
+# How far away an item has to be before teleporting to it is worth it, measured
+# from your character and given as a fraction of the screen's height ("25%" or
+# "0.25"). Anything closer is just clicked and walked to.
+#
+# A teleport is not free - about half a second of aiming and camera settle, plus
+# finding the item again once the whole scene has moved, plus the mana. Inside a
+# few feet, walking really is faster, so this is the knob for where "a few feet"
+# is. At 1080p, 25% is about 270 pixels, or roughly one and a half character
+# heights. Raise it if it teleports onto things it could have stepped on; lower
+# it if it walks to things it should have jumped to.
+teleport_min_distance = 25%
+
+
+# --- Grabbing an item with a skill key (auto-collect) ------------------------
+
+# Seconds to wait before trying again when an item tagged "[key:e]" in
+# assets/targets.txt does not come to you on the first press.
+#
+# This is SEPARATE from how often a clicked item is re-clicked (0.8s, in
+# main.py), and the two are paced by completely different things. A click means
+# "walk over there and pick it up on arrival", so re-clicking faster than the
+# walk takes keeps re-issuing the move command and the character never gets
+# there. A cast is over the moment it lands, so the only thing pacing a retry is
+# how fast your character can cast - which is faster cast rate, which is gear.
+#
+# Raise this if the potion sometimes comes to you and the extra casts are wasted
+# mana; lower it if a failed grab sits there while you wait to try again. It
+# cannot usefully go below about 0.25s: each attempt already spends 0.20s
+# letting the game notice the cursor before the key is pressed at all
+# (AIM_SETTLE_SECONDS in core/actions.py).
+key_collect_retry = 0.35
 
 
 # -----------------------------------------------------------------------------

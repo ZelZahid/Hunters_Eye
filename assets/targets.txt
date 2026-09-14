@@ -26,9 +26,20 @@
 # Tags can be given in any order and any number: "ITEM NAME* [purple] [key:e]" and
 # "ITEM NAME* [key:e] [purple]" mean the same thing. An unrecognized tag warns on the console
 # and is ignored, and an unrecognized key falls back to clicking - neither is ever silent.
+#
+# THE ORDER OF THESE LINES IS PRIORITY, AND FURTHER DOWN THE FILE WINS. Only one item can be
+# collected at a time, so when two are on the ground at once the lower line is attempted first
+# and the other is picked up afterwards (if it is still there). The rejuvenation potions are at
+# the top because they matter least - they can be taken from across the room with telekinesis at
+# any time, while an item you have to walk to is one another player can reach first.
+# So: MOVING A LINE CHANGES WHAT GETS GRABBED FIRST. Re-grouping this file for tidiness will
+# quietly re-rank it. Two of the same item on the ground are settled by whichever is nearer the
+# mouse, as before. The "-" look-alikes at the bottom take no part - they are never collected.
 Full Rejuvenation Potion* [purple] [key:e]
 Rejuvenation Potion* [purple] [key:e]
 Flawless Amethyst*
+Grand Charm*
+Small Charm*
 Lum Rune* [darkorange]
 Ko Rune* [darkorange]
 Lem Rune* [darkorange]
@@ -36,6 +47,8 @@ Pul Rune* [darkorange]
 Um Rune* [darkorange]
 Mal Rune* [darkorange]
 Gul Rune* [darkorange]
+Fal Rune* [darkorange]
+Ist Rune* [darkorange]
 Vex Rune* [darkorange]
 Ohm Rune* [darkorange]
 Lo Rune* [darkorange]
@@ -44,11 +57,6 @@ Ber Rune* [darkorange]
 Jah Rune* [darkorange]
 Cham Rune* [darkorange]
 Zod Rune* [darkorange]
-# NOTE: Fal and Ist sit inside the Lum-to-Zod range you collect but were missing from the
-# list, so they were never detected. Added below as detect-only (no "*"): add the "*" if
-# you want them auto-collected too.
-Fal Rune* [darkorange]
-Ist Rune* [darkorange]
 
 # --- Look-alikes -------------------------------------------------------------------------
 # A leading "-" means: match this, then throw it away. No box, no collect.

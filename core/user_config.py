@@ -42,6 +42,22 @@ DEFAULTS = {
     "use_password": False,
     "password": "123",
     "game_name": "",
+    #Teleporting onto a drop before picking it up (see main.py's auto-collect). OFF by default,
+    #and deliberately so: every other default here reproduces what the program did before the
+    #setting existed, and a key pressed into a live game is the last place to break that rule -
+    #on a character with something else bound to that key, a default of "f" would cast it.
+    "teleport_key": "",
+    #How far away an item has to be before teleporting to it beats walking, as a fraction of the
+    #screen's height. Nothing here knows what a "yard" is; a fraction of the frame is the only
+    #unit that survives a resolution change, which is the same reason meters.json stores regions
+    #that way.
+    "teleport_min_distance": 0.25,
+    #Seconds between repeat attempts when an item is collected with a KEY rather than a click.
+    #Its own setting because the two are paced by completely different things: a click means
+    #"walk over there", so re-issuing it too fast retargets the character before it arrives,
+    #while a cast is over the instant it lands and is paced by the character's cast rate - which
+    #is gear, and therefore the user's business rather than a developer's.
+    "key_collect_retry": 0.35,
 }
 
 #Sanity bounds. These are not taste, they are "this value cannot possibly be what you meant":
@@ -53,12 +69,14 @@ _LIMITS = {
     "ignore_below": (0.0, 1.0),
     "cooldown": (0.0, 3600.0),
     "below": (0.0, 1.0),
+    "teleport_min_distance": (0.0, 1.0),
+    "key_collect_retry": (0.0, 10.0),
 }
 
 
 class Config(namedtuple("Config",
                        "enabled min_gap snooze ignore_below use_password password game_name "
-                       "rules source")):
+                       "teleport_key teleport_min_distance key_collect_retry rules source")):
     """Loaded settings. `source` is the file it came from, or None when defaults were used."""
 
     @property
@@ -66,7 +84,8 @@ class Config(namedtuple("Config",
         return self.source is not None
 
 
-_FIELDS = ("enabled", "min_gap", "snooze", "ignore_below", "use_password", "password", "game_name")
+_FIELDS = ("enabled", "min_gap", "snooze", "ignore_below", "use_password", "password",
+           "game_name", "teleport_key", "teleport_min_distance", "key_collect_retry")
 
 
 def _defaults(rules):
@@ -140,7 +159,8 @@ def load(path, known_meters=None, default_rules=()):
     settings = dict(DEFAULTS)
     if parser.has_section(SETTINGS_SECTION):
         section = parser[SETTINGS_SECTION]
-        for key in ("min_gap", "snooze", "ignore_below"):
+        for key in ("min_gap", "snooze", "ignore_below", "teleport_min_distance",
+                    "key_collect_retry"):
             if key in section:
                 try:
                     settings[key] = _number(section[key], f"[{SETTINGS_SECTION}]", key, DEFAULTS[key])
@@ -154,9 +174,12 @@ def load(path, known_meters=None, default_rules=()):
                 except ValueError:
                     _warn(f"[{SETTINGS_SECTION}]", f"{key} = {section[key]!r} is not yes/no; "
                                                    f"using {DEFAULTS[key]}")
-        for key in ("password", "game_name"):
+        for key in ("password", "game_name", "teleport_key"):
             if key in section:
                 #Taken verbatim - a password is not a number and not a name to be tidied up.
+                #teleport_key is not checked against the keyboard HERE: this module has no
+                #business importing an input library to validate a string, and the caller that
+                #will actually press it is the one that can say what to do when it cannot.
                 settings[key] = section[key].strip()
 
     rules = []

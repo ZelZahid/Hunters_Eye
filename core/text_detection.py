@@ -207,7 +207,13 @@ def _resolve_tag(tag, line, color, collect_with):
 
 def load_target_items(path):
     """Returns {item_name: {"to_collect": bool, "ignore": bool, "color": (r, g, b),
-    "collect_with": str}}.
+    "collect_with": str, "line": int}}.
+
+    "line" is the line of the file the item was defined on. It is recorded rather than
+    interpreted: this module has no opinion about whether a file's order means anything, but a
+    caller may (main.py reads it as "further down the file outranks further up" when several
+    collectable items are on the ground at once), and it is what the duplicate warning below
+    already reports.
 
     A trailing '*' marks an item "to collect" (see main.py's auto-collect thread). Trailing
     "[...]" tags set the rest, in any order and any number: a color from NAMED_COLORS (e.g.
@@ -271,7 +277,7 @@ def load_target_items(path):
             seen_on_line[key] = line_number
 
             items[key] = {"to_collect": to_collect, "ignore": ignore, "color": color,
-                          "collect_with": collect_with}
+                          "collect_with": collect_with, "line": line_number}
     return items
 
 

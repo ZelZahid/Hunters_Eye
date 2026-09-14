@@ -43,6 +43,36 @@ PAUSE_BUDGET_SECONDS = 30.0
 MOVE_SETTLE_SECONDS = 0.05 #pause between the cursor arriving and the button going down - see below
 CLICK_HOLD_SECONDS = 0.05 #how long the mouse button stays down before releasing - see the comment
                            #on the mouseDown/mouseUp call below for why this can't be 0
+#PAUSE BETWEEN THE CURSOR ARRIVING AND A KEY BEING PRESSED AT IT (press_at). LONGER THAN
+#MOVE_SETTLE_SECONDS ON PURPOSE - AIMING WITH A KEY NEEDS MORE SETTLE TIME THAN CLICKING DOES,
+#and reusing the click's value here is what made the first telekinesis press miss so often.
+#
+#The asymmetry is in how Windows delivers the two events, not in how fast the cursor moves:
+#
+#  a click's press IS a mouse event. Windows posts WM_LBUTTONDOWN carrying the cursor position
+#  in its own lParam, behind the move on the same input path and in order - so a game cannot
+#  process the press without having the new position in hand.
+#
+#  a key press is a KEYBOARD event and carries no coordinates at all. The game resolves what the
+#  key does against wherever it currently believes the cursor is, which it reads separately on
+#  its own tick. Nothing ties that read to our move having been processed yet.
+#
+#So the click path gets the position for free and the press path does not, and MOVE_SETTLE_SECONDS
+#being enough for clicking (which it was measured to be - Error_history #18(d)) says nothing at all
+#about pressing. The value was derived for a click and then carried across to a keypress when
+#press_at was added, which is the same mistake text_detection's cutoff ladder already records:
+#a threshold repurposed for a different job has to be RE-DERIVED, not inherited.
+#
+#The symptom this produces is precisely "the first press misses, the second one works": within a
+#single act_until_gone() attempt the first action fires the instant the target is chosen, with the
+#cursor arriving from wherever the player left it, while by the retry (click_interval later) the
+#cursor has been sitting on the target for most of a second and the game has long since re-run its
+#hit test.
+#
+#0.20s IS A STARTING POINT, NOT A MEASUREMENT - about 12 frames at 60fps, generous enough to cover
+#a slow hit-test update without being noticeable inside a multi-second attempt. If a first press
+#still misses, raise it; it is cheap, paid once per press while the mouse is already ours.
+AIM_SETTLE_SECONDS = 0.20
 
 
 def click_at(x, y):
@@ -78,7 +108,7 @@ def click_at(x, y):
     pyautogui.mouseUp(_pause=False)
 
 
-def press_at(key, hold=None):
+def press_at(key, hold=None, settle=AIM_SETTLE_SECONDS):
     """An act_until_gone() action that moves the cursor to the target and presses `key` there.
 
     For anything aimed with the mouse but triggered from the keyboard. The Diablo II case it was
@@ -86,16 +116,21 @@ def press_at(key, hold=None):
     so pointing at it and pressing that key beats clicking it and walking over. Nothing here
     knows that - it points and presses, and the caller decides what the key does.
 
-    The cursor still has to move FIRST and settle, for exactly the reason click_at explains: the
-    game resolves the skill against where it believes the cursor is, and a keypress arriving in
-    the same instant as the move can be resolved against the old position.
+    The cursor still has to move FIRST and settle, for the reason click_at explains: the game
+    resolves the skill against where it believes the cursor is, and a keypress arriving in the
+    same instant as the move gets resolved against the old position.
+
+    IT SETTLES FOR LONGER THAN click_at DOES, and that is the whole point of a separate constant -
+    see AIM_SETTLE_SECONDS. A click's button-down event carries the cursor position with it; a
+    keypress carries nothing, so it needs the game to have already noticed the move on its own.
+    `settle` is here so a caller can tune that per action without editing this module.
 
     Returns the action rather than being one, so the key is bound once at the call site:
         act_until_gone(get_position, act=press_at("e"))
     """
     def act(x, y):
         pyautogui.moveTo(x, y, _pause=False)
-        time.sleep(MOVE_SETTLE_SECONDS)
+        time.sleep(settle)
         if hold is None:
             press_key(key)
         else:

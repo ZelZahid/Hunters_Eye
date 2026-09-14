@@ -148,5 +148,34 @@ off = load(GOOD.replace("enabled = yes", "enabled = no"))
 check("enabled is False", off.enabled is False)
 check("rules are still parsed", len(off.rules) == 2)
 
+print("\n12. Teleporting onto a drop is off unless the file asks for it")
+#The default has to reproduce what the program did before the setting existed, because the
+#setting presses a key into a live game: on a character with something else bound to it, a
+#default of "f" would cast that instead, with nothing to say why.
+check("no [settings] at all -> no teleport key", load(GOOD).teleport_key == "")
+check("a blank key stays blank", load(GOOD.replace("snooze = 10", "snooze = 10\nteleport_key =")).teleport_key == "")
+tele = load(GOOD.replace("snooze = 10", "snooze = 10\nteleport_key = f\nteleport_min_distance = 25%"))
+check("the key is taken verbatim", tele.teleport_key == "f")
+check("'25%' is read as a fraction", abs(tele.teleport_min_distance - 0.25) < 1e-9)
+#A distance is a FRACTION of the screen's height, so anything above 1.0 is a misunderstanding
+#(pixels, most likely) rather than a taste - and silently accepting it would switch teleporting
+#off with nothing said, which looks exactly like the feature not working.
+bad = load(GOOD.replace("snooze = 10", "snooze = 10\nteleport_min_distance = 270"))
+check("a pixel value is rejected, not silently believed",
+      bad.teleport_min_distance == user_config.DEFAULTS["teleport_min_distance"])
+check("nonsense falls back too",
+      load(GOOD.replace("snooze = 10", "snooze = 10\nteleport_min_distance = far")).teleport_min_distance
+      == user_config.DEFAULTS["teleport_min_distance"])
+
+print("\n13. The key-collect retry is its own setting, not the click's")
+check("it has a default", user_config.DEFAULTS["key_collect_retry"] > 0)
+fast = load(GOOD.replace("snooze = 10", "snooze = 10\nkey_collect_retry = 0.3"))
+check("a plain number is read", abs(fast.key_collect_retry - 0.3) < 1e-9)
+check("a trailing 's' reads naturally",
+      abs(load(GOOD.replace("snooze = 10", "snooze = 10\nkey_collect_retry = 0.3s")).key_collect_retry - 0.3) < 1e-9)
+check("nonsense falls back",
+      load(GOOD.replace("snooze = 10", "snooze = 10\nkey_collect_retry = fast")).key_collect_retry
+      == user_config.DEFAULTS["key_collect_retry"])
+
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

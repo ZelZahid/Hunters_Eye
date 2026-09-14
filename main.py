@@ -688,6 +688,14 @@ COLLECT_TIMEOUT_SECONDS = 5.0
 #reaches the item (observed as missed pickups). This only paces actual clicks - see
 #AUTO_COLLECT_POLL_SECONDS below for how often we still check whether it worked.
 CLICK_RETRY_INTERVAL_SECONDS = 0.8
+#THE SAME NUMBER IS WRONG FOR AN ITEM COLLECTED WITH A KEY, and the reason is the sentence above:
+#0.8s exists because a click means "walk there", and nothing about a cast does. Telekinesis is
+#over the instant it lands, so a failed grab can be retried as fast as the character can cast -
+#which is faster cast rate, which is gear, which is why this one lives in user_config.txt where
+#the owner can retune it when their gear changes rather than here. Read at thread start (see
+#run_auto_collect) because the config is loaded further down this file than this section - and
+#kept out of here entirely rather than mirrored as a constant, so there is no second copy of the
+#number to drift away from the one the user is actually editing.
 AUTO_COLLECT_POLL_SECONDS = 0.1 #how often to check for a new to-collect item when idle, and (during
                                  #an attempt) how often to re-check if the item is gone yet - kept
                                  #fast so success/position tracking stays responsive even though
@@ -757,6 +765,194 @@ def _is_abandoned(abandoned, name, cx, cy):
     )
 
 
+#--- Teleporting onto a drop before picking it up -------------------------------------------------
+#D2R GLUE, NOT ENGINE. core/actions.py already knows how to point the cursor at something and
+#press a key there (press_at, written for telekinesis). What lives here is the decision of WHEN
+#that key is worth pressing, which is entirely about this game.
+#
+#WHAT IT BUYS: on a public game an item on the ground belongs to whoever reaches it first, so
+#arriving instantly and picking up a beat later beats walking over and picking up on arrival.
+#
+#THREE CASES IT DELIBERATELY WILL NOT TELEPORT, each for its own reason:
+#
+#  1. An item collected with a key ([key:e] in targets.txt). Telekinesis takes an item from
+#     across the room, so teleporting to it first spends mana to remove the exact distance the
+#     skill exists to cover. The check is on the RESOLVED label rather than on the tag, which is
+#     the right way round: a [key:x] that failed validation falls back to clicking, and something
+#     we are really going to click is something worth teleporting to.
+#  2. An item already close (teleport_min_distance in user_config.txt). A teleport is not free -
+#     ~0.5s of aiming and camera settle before a click can even be aimed, plus the re-find below,
+#     plus the mana. Inside a few feet, walking is simply faster.
+#  3. An item we JUST teleported onto (TELEPORT_COOLDOWN_SECONDS). See the re-find problem below:
+#     when that fails, the next poll tick sees the same item still on the ground and would
+#     teleport onto it again from a foot away, over and over. The cooldown is what makes that
+#     failure cost one wasted cast instead of a loop.
+#
+#THE HARD PART IS AFTERWARDS, NOT THE KEYPRESS. The camera is locked to the character, so
+#teleporting moves the whole scene: the item's SCREEN position shifts by however far we just
+#travelled - which is, by construction, the distance that made teleporting worth doing. Every
+#coordinate the pipeline holds for that item is stale the instant the key lands, and the OCR
+#track is usually lost outright (detect_text()'s relocalizer searches TRACK_SEARCH_MARGIN px
+#around the last known position, and we deliberately moved further than that).
+#
+#That is worse than it sounds, because of what act_until_gone() takes a missing track to MEAN:
+#get_position() returning None is "the item is gone", i.e. SUCCESS. A track lost to the camera
+#move therefore does not read as "I lost it", it reads as "picked it up" - and any click aimed in
+#the meantime goes to where the item used to be, which in this game means walking all the way
+#back to it. So the teleport is NOT handed to act_until_gone() as an action: it happens before
+#that loop, and the item is then re-found from scratch, with no position constraint at all,
+#before a single click is aimed.
+TELEPORT_SETTLE_SECONDS = 0.25    #after the key lands, before looking again - the camera has to
+                                   #finish moving and a frame has to be captured through it
+#How long to keep looking for the item at its new position before giving the attempt up. Has to
+#comfortably outlast one whole OCR cycle (OCR_INTERVAL_SECONDS plus the call's own ~0.2-0.6s),
+#because the track is usually lost and a full scan is what finds it again.
+TELEPORT_REACQUIRE_SECONDS = 1.5
+#Longer than SETTLE + REACQUIRE on purpose, so a failed re-find cannot teleport again immediately
+#- see case 3 above.
+TELEPORT_COOLDOWN_SECONDS = 2.0
+#WHERE THE CHARACTER IS DRAWN, as a fraction of the game's client area. The camera is locked to
+#the character, so this is a constant rather than something to detect. Measured by the owner when
+#the route maps were built - it is "character_anchor" in assets/routes/*.json, restated here
+#rather than imported because main.py must not depend on one particular route for geometry that
+#is about the game itself.
+CHARACTER_SCREEN_FRACTION = (0.5, 0.485)
+
+last_teleport_time = 0.0 #module-level; written and read only by run_auto_collect's thread
+
+
+def _character_screen_position():
+    """(x, y, height) - where the character is drawn in real screen pixels, and the height of the
+    area that was measured against, so a distance can be expressed as a fraction of it.
+
+    The camera is locked to the character, so it sits at a fixed spot in the GAME'S CLIENT AREA -
+    not in the screen. That is why this goes through the window anchor the same way the HUD meters
+    do: a windowed game somewhere on a bigger desktop would otherwise put the character hundreds
+    of pixels from where this says. With no anchor configured (the fullscreen case, where the two
+    are the same thing) the captured monitor is the right answer.
+    """
+    rect = anchor_rect()
+    if rect is None:
+        rect = CAPTURE_RECT
+    left, top, width, height = rect
+    fx, fy = CHARACTER_SCREEN_FRACTION
+    return int(left + fx * width), int(top + fy * height), height
+
+
+def _should_teleport(collect_label, item, character, min_distance_px, since_last_teleport):
+    """Is teleporting onto this item worth it? The three cases above, in order.
+
+    Kept PURE - no clock, no screen, no keypress - for the same reason _potion_due() is: what it
+    decides is "press a key into a live game", which is not something to validate by playing and
+    hoping. tests/test_auto_collect.py drives it.
+
+    collect_label: what _collect_action() RESOLVED, not what targets.txt asked for.
+    item, character: (x, y) in real screen pixels. `character` may be None ("cannot tell"), which
+        means NOT teleporting - an unknown distance is not a long one, and falling back to walking
+        is exactly how the program behaved before this existed.
+    """
+    if collect_label != text_detection.COLLECT_BY_CLICK:
+        return False
+    if since_last_teleport < TELEPORT_COOLDOWN_SECONDS:
+        return False
+    if character is None:
+        return False
+    dx, dy = item[0] - character[0], item[1] - character[1]
+    return dx * dx + dy * dy >= min_distance_px * min_distance_px
+
+
+def _teleport_setup():
+    """(action, key, min_distance_fraction) for teleporting onto a drop, or (None, "", 0.0) when
+    it is switched off or the key is unusable.
+
+    Resolved ONCE when the auto-collect thread starts, for the reason _collect_actions() resolves
+    its keys at startup: `keyboard` raises on a name it does not recognise, and that exception
+    inside this thread would end every pickup for the session with one line on a console nobody is
+    watching. Falling back to no teleport just means walking there, which is what this did before.
+    """
+    key = potion_config.teleport_key.strip()
+    if not key:
+        return None, "", 0.0
+    try:
+        keyboard.key_to_scan_codes(key)
+    except Exception as exc:  # noqa: BLE001 - a config typo must not stop the program
+        print(f"WARNING: user_config.txt: teleport_key = {key!r} is not a key this system "
+              f"recognises ({exc}) - auto-collect will walk to items instead.")
+        return None, "", 0.0
+    return actions.press_at(key), key, potion_config.teleport_min_distance
+
+
+def _teleport_onto(name, last_known, teleport_act):
+    """Teleports onto the item at last_known, then finds it again. True if we now know where it is.
+
+    Updates last_known in place on success. On failure the caller must NOT click: every coordinate
+    it holds describes a place the camera has since moved away from.
+
+    THE RE-FIND DELIBERATELY IGNORES POSITION, which is the one place in auto-collect that does.
+    Everywhere else, matching a track by name AND position is what keeps two identical items on
+    the ground from being confused for one another (ITEM_POSITION_MATCH_RADIUS). Here, position is
+    precisely the thing that just became meaningless, so the nearest track of the right name wins.
+    With two of the same item down it can re-anchor onto the other one - which is still an item we
+    came to collect, so the outcome is "a Ral Rune gets picked up", just possibly not that one.
+    """
+    global last_teleport_time
+    teleport_act(last_known["x"], last_known["y"])
+    last_teleport_time = time.time()
+    time.sleep(TELEPORT_SETTLE_SECONDS)
+
+    deadline = time.time() + TELEPORT_REACQUIRE_SECONDS
+    while time.time() < deadline:
+        cursor_x, cursor_y = pyautogui.position()
+        found = [t for t in _native_collectible_tracks() if t[0] == name]
+        if found:
+            _, tx, ty, tw, th = min(
+                found,
+                key=lambda t: (t[1] + t[3] // 2 - cursor_x) ** 2 + (t[2] + t[4] // 2 - cursor_y) ** 2
+            )
+            last_known["x"], last_known["y"] = tx + tw // 2, ty + th // 2
+            return True
+        time.sleep(AUTO_COLLECT_POLL_SECONDS)
+    return False
+
+
+#WHICH ITEM TO GO FOR when more than one is on the ground at once, which until now was simply
+#"whichever is nearest the cursor". That is the wrong question when the two items are not worth
+#the same: a rejuvenation potion sitting a foot away would be collected before a Ber rune across
+#the room, and on a public game the rune is the one that can be taken by somebody else while we
+#are busy. Auto-collect attempts ONE item at a time, so this ordering is the whole of the
+#decision - there is no queue to reorder later.
+#
+#PRIORITY IS THE ORDER OF assets/targets.txt, AND FURTHER DOWN THE FILE WINS. The owner's call,
+#and it puts the two rejuvenation potions (which sit at the top of the file) last, which is the
+#behaviour that was asked for. No new syntax to learn and every item already has a position;
+#the cost is that the file's order now carries meaning, so re-grouping it for readability
+#silently re-ranks it. That is called out at the top of targets.txt, and it is the same bargain
+#user_config.txt already makes with its potion rules.
+#
+#Nearest-to-cursor still breaks ties, which is what settles two of the same item on the ground.
+#The "-" look-alikes further down the file never take part: they are not to_collect, so they are
+#never candidates in the first place.
+def _collect_priority(name):
+    """How strongly we want this item relative to another, from where it sits in targets.txt.
+    Bigger wins. An item we somehow have no entry for ranks below everything listed."""
+    spec = target_items.get(name)
+    return -1 if spec is None else spec.get("line", -1)
+
+
+def _pick_target(candidates, cursor_x, cursor_y):
+    """The one item to attempt now, from [(name, x, y, w, h), ...] in real screen pixels.
+
+    Pure - no clock, no screen, no mouse - for the same reason _should_teleport() is: what it
+    decides is which of two things on the floor gets our only pair of hands, and being wrong is
+    invisible while playing. tests/test_auto_collect.py drives it.
+    """
+    def rank(track):
+        name, x, y, w, h = track
+        dx, dy = x + w // 2 - cursor_x, y + h // 2 - cursor_y
+        return (-_collect_priority(name), dx * dx + dy * dy)
+    return min(candidates, key=rank)
+
+
 #HOW each item is collected, resolved ONCE at startup from targets.txt's "[click]"/"[key:e]"
 #tags rather than per attempt. Resolving it here is what keeps the D2R knowledge in the
 #integration layer: text_detection.py parses the tag as a string and core/actions.py knows how to
@@ -802,6 +998,11 @@ def run_auto_collect():
     keyboard.add_hotkey('f4', _snooze_and_stop)
     print(f"Auto-collect running - press 'F4' anytime to snooze it for {SNOOZE_SECONDS:.0f}s "
           f"and stop a running route.")
+    key_retry_interval = potion_config.key_collect_retry
+    teleport_act, teleport_key, teleport_min_fraction = _teleport_setup()
+    if teleport_act is not None:
+        print(f"  Teleporting onto drops further than {teleport_min_fraction:.0%} of the screen "
+              f"away with '{teleport_key}' - closer ones are just clicked.")
 
     #Items we gave up on (5s of clicking, still on the ground): (name, x, y) at the moment we gave
     #up, so we don't immediately re-attempt the same physical item every poll tick. Pruned below
@@ -848,13 +1049,30 @@ def run_auto_collect():
             continue
 
         cursor_x, cursor_y = pyautogui.position()
-        target_name, tx, ty, tw, th = min(
-            candidates, key=lambda t: (t[1] + t[3] // 2 - cursor_x) ** 2 + (t[2] + t[4] // 2 - cursor_y) ** 2
-        )
+        target_name, tx, ty, tw, th = _pick_target(candidates, cursor_x, cursor_y)
         last_known = {"x": tx + tw // 2, "y": ty + th // 2}
         collect_act, collect_label = _collect_action(target_name)
         print(f"Auto-collect: attempting '{target_name}' at "
               f"({last_known['x']}, {last_known['y']}) [{collect_label}]")
+
+        #Close the distance first, if this is a far-away item we are going to walk to anyway.
+        #Everything about whether that is worth doing is in _should_teleport(); everything about
+        #the camera having moved afterwards is in _teleport_onto().
+        character_x, character_y, frame_height = _character_screen_position()
+        if teleport_act is not None and _should_teleport(
+                collect_label, (last_known['x'], last_known['y']), (character_x, character_y),
+                teleport_min_fraction * frame_height, time.time() - last_teleport_time):
+            print(f"  Teleporting onto '{target_name}' with '{teleport_key}'")
+            if not _teleport_onto(target_name, last_known, teleport_act):
+                #We are standing on it (or near it) but cannot see it from here yet. Aiming a
+                #click at the coordinates we still hold would send the character back to where the
+                #item was BEFORE the teleport, so this attempt ends here instead. The next poll
+                #tick picks it up again from wherever it is really seen, and TELEPORT_COOLDOWN
+                #stops that becoming a teleport loop.
+                print(f"Auto-collect: teleported to '{target_name}' but cannot see it from here "
+                      f"yet - will retry from where it turns up")
+                continue
+            print(f"  Re-found '{target_name}' at ({last_known['x']}, {last_known['y']})")
 
         def get_position(name=target_name, last_known=last_known):
             match = _track_near(_native_collectible_tracks(), name, last_known["x"], last_known["y"])
@@ -864,9 +1082,13 @@ def run_auto_collect():
             last_known["x"], last_known["y"] = mx + mw // 2, my + mh // 2
             return last_known["x"], last_known["y"]
 
+        #How fast to RETRY depends on what the action is, not on the item - see
+        #CLICK_RETRY_INTERVAL_SECONDS. A click has to wait out a walk; a cast does not.
+        retry_interval = (CLICK_RETRY_INTERVAL_SECONDS if collect_label == text_detection.COLLECT_BY_CLICK
+                          else key_retry_interval)
         success = actions.act_until_gone(
             get_position, act=collect_act,
-            timeout=COLLECT_TIMEOUT_SECONDS, click_interval=CLICK_RETRY_INTERVAL_SECONDS,
+            timeout=COLLECT_TIMEOUT_SECONDS, click_interval=retry_interval,
             poll_interval=AUTO_COLLECT_POLL_SECONDS,
             #Also mid-attempt, not just before starting one: an attempt runs for up to
             #COLLECT_TIMEOUT_SECONDS and clicks repeatedly throughout, so alt-tabbing one click

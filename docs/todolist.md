@@ -27,6 +27,19 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 
 *In order — each depends on the one above it.*
 
+- [ ] **Confirm the telekinesis aim settle, and tune it.** (Added 2026-09-13.) Owner reported the *first* `[key:e]` press at a rejuvenation potion frequently missing while the retry works. Diagnosed as `press_at` inheriting `MOVE_SETTLE_SECONDS` (0.05s, derived for and measured against *clicking*) when a keypress needs more: a click's button-down carries the cursor position in its own Win32 message, a keypress carries nothing. `core/actions.AIM_SETTLE_SECONDS` is now 0.20s — **a starting point, not a measurement.**
+  - watch the console: `Auto-collect: picked up '...'` on the first press means fixed
+  - if a first press still misses, raise it (0.30, 0.40) before looking anywhere else
+  - if it never misses at 0.20, try walking it back down to find the real floor — the cursor is taken from the player for that long on every press
+  - ~~**change one thing at a time**: `CLICK_RETRY_INTERVAL_SECONDS` (0.8s) is still shared between clicking and pressing...~~ **Done anyway, 2026-09-13, at the owner's request** (they re-geared for faster cast rate and wanted to spam the skill harder). Key-collected items now retry on `user_config.txt`'s `key_collect_retry` (0.35s) instead of the click's 0.8s. **So the two changes landed together and cannot be told apart**: if first presses now land, it could be the settle, the faster retry, or both. If it matters, put `key_collect_retry` back to 0.8 for a session to isolate the settle.
+  - other causes not yet ruled out, in order of plausibility if settle turns out not to be it: the OCR track position being stale while the camera pans (the press aims where the label *was*); telekinesis range or line of sight; mana
+
+- [ ] **Tune teleporting onto a drop, live.** (Added 2026-09-13, owner's request: teleport to a drop to beat other players to it, except on telekinesis items.) Built and tested synthetically (`test_auto_collect.py`); every number in it is a starting point, not a measurement.
+  - `teleport_min_distance` (25% of screen height, `user_config.txt`) is the "don't bother, just walk" line, from the owner's "within a few feet". Watch for it teleporting onto things it could have stepped on (raise it) or walking to things it should have jumped to (lower it).
+  - `TELEPORT_REACQUIRE_SECONDS` (1.5s) is the real risk. The camera moves further than the tracker's search margin, so the item is usually re-found only by the next full OCR scan. Watch the console for `teleported to '...' but cannot see it from here yet` — occasional is fine (the retry picks it up), routine means the window is too short or the re-find needs help.
+  - `CHARACTER_SCREEN_FRACTION` (0.5, 0.485) is `character_anchor` from the route maps, measured at 1920x1080. It is what every distance is measured *from*, so if teleporting fires at the wrong times in a differently-shaped window, suspect this before the threshold.
+  - is one teleport per attempt enough? It teleports once and then clicks; it never re-teleports if the walk from the landing spot gets interrupted.
+
 - [ ] **The Pindle run - ON HOLD (owner's call, 2026-09-11), and what is left when it resumes.** `F7` walks to the portal, through it, to the doorway and kills the pack, confirmed live. Open threads, none urgent:
   - **the unverified assumption**: does the monster name plate stay red while a monster is hurt, or drain with its health? If it drains, a nearly-dead monster stops being cast at and gets re-found by motion instead - watch for casts that stop early
   - `CHICKEN_BELOW` (20%) was chosen by the program, not by the owner
