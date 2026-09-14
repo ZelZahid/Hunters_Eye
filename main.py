@@ -26,6 +26,7 @@ from core import game_state
 from core import text_detection
 from core import window_region
 from core import presence
+from core import slots
 from core import user_config
 from core import frame_source
 from core.overlay import Overlay
@@ -543,6 +544,12 @@ def detect_objects():
             #drive a potion or a retreat - see game_state.py on why None and 0.0 stay distinct.
             raw = (game_state.read_all(screenshot, active_meters) if active_meters
                    else {m.name: None for m in meters})
+            #The belt rides on this same frame, for the reason the meters do: it is a handful of
+            #small HSV crops, while a thread of its own would spend ~17-20ms capturing a frame to
+            #make a sub-millisecond measurement. Only when the window is actually ours - the
+            #slots' pixels belong to whatever is in front otherwise, exactly like the orbs'.
+            if active_meters or not meters:
+                _refresh_belt(screenshot, time.time())
             readings = meter_smoother.update(raw)
             with game_state_lock:
                 shared_game_state = readings
@@ -1025,7 +1032,8 @@ def _teleport_setup():
         print(f"WARNING: user_config.txt: teleport_key = {key!r} is not a key this system "
               f"recognises ({exc}) - auto-collect will walk to items instead.")
         return None, "", 0.0
-    return actions.press_at(key), key, potion_config.teleport_min_distance
+    return (actions.press_at(key, settle=potion_config.aim_settle), key,
+            potion_config.teleport_min_distance)
 
 
 def _teleport_moved(track, from_x, from_y, min_shift_px):
@@ -1128,8 +1136,14 @@ def _pick_target(candidates, cursor_x, cursor_y):
 #thread down and stop every pickup for the session with one line on a console nobody is watching.
 #A bad key falls back to clicking - which still collects the item, just the slow way - and says so
 #loudly, rather than leaving auto-collect silently doing nothing for that item.
-def _collect_actions(items):
-    """{ITEM NAME: action for actions.act_until_gone}, for every item marked to collect."""
+def _collect_actions(items, aim_settle=actions.AIM_SETTLE_SECONDS):
+    """{ITEM NAME: action for actions.act_until_gone}, for every item marked to collect.
+
+    `aim_settle` is how long the cursor sits on the target before the key is pressed. It comes
+    from user_config.txt at thread start rather than from the constant here, because what a game
+    needs between the cursor arriving and a keypress being resolved against it is a property of
+    that game and that machine - the only way to find it is to try numbers while playing, which
+    nobody should have to edit code to do."""
     resolved = {}
     for name, spec in items.items():
         if not spec.get("to_collect"):
@@ -1144,11 +1158,15 @@ def _collect_actions(items):
                       f"'{key}' is not a key this system recognises ({exc}) - clicking it "
                       f"instead.")
                 continue
-            resolved[name] = (actions.press_at(key), how)
+            resolved[name] = (actions.press_at(key, settle=aim_settle), how)
     return resolved
 
 
 collect_actions = _collect_actions(target_items)
+#The action for anything not collected with a key. Rebound at thread start with the settle from
+#user_config.txt, for the same reason collect_actions is - the config is loaded further down this
+#file than this section, and an unconfigured import must still leave a working default here.
+default_collect_act = actions.click_at
 
 
 def _collect_action(name):
@@ -1157,15 +1175,25 @@ def _collect_action(name):
     The label is what was actually RESOLVED, not what the file asked for, so a key that failed
     validation above reports the clicking it fell back to instead of the telekinesis it is not
     doing."""
-    return collect_actions.get(name, (actions.click_at, text_detection.COLLECT_BY_CLICK))
+    return collect_actions.get(name, (default_collect_act, text_detection.COLLECT_BY_CLICK))
 
 
 def run_auto_collect():
     keyboard.add_hotkey('f4', _snooze_and_stop)
     print(f"Auto-collect running - press 'F4' anytime to snooze it for {SNOOZE_SECONDS:.0f}s "
           f"and stop a running route.")
+    global collect_actions, default_collect_act
+    #Rebound here, not at import, because user_config.txt is loaded further down this file. Every
+    #timing a PERSON is expected to tune lives in that file; the constants in core/actions.py are
+    #only the fallback for when it is missing.
     key_retry_interval = potion_config.key_collect_retry
+    collect_actions = _collect_actions(target_items, aim_settle=potion_config.aim_settle)
+    default_collect_act = actions.click_with(potion_config.click_settle)
     teleport_act, teleport_key, teleport_min_fraction = _teleport_setup()
+    print(f"  Settle before acting: {potion_config.click_settle:.2f}s for a click, "
+          f"{potion_config.aim_settle:.2f}s for a key. Retry after "
+          f"{CLICK_RETRY_INTERVAL_SECONDS:.2f}s / {key_retry_interval:.2f}s, or "
+          f"{actions.RETRY_IF_STILL_SECONDS:.2f}s if nothing moved.")
     if teleport_act is not None:
         print(f"  Teleporting onto drops further than {teleport_min_fraction:.0%} of the screen "
               f"away with '{teleport_key}' - closer ones are just clicked.")
@@ -1248,6 +1276,19 @@ def run_auto_collect():
                 continue
             print(f"  Re-found '{target_name}' at ({last_known['x']}, {last_known['y']})")
 
+        #COUNT THE ACTIONS, because "it misses the first try" is the kind of report that needs a
+        #number before anything is tuned against it. One line per pickup, not per action, so it
+        #costs nothing to leave on - and it is the only way to tell a settle that is too short
+        #(first action never lands) from a position that is stale (first action lands on the wrong
+        #spot) from a retry cadence that is too slow (lands on the second, just late).
+        acts = {"n": 0, "first": None}
+
+        def counted(x, y, _act=collect_act, _acts=acts):
+            _acts["n"] += 1
+            if _acts["first"] is None:
+                _acts["first"] = (x, y)
+            _act(x, y)
+
         def get_position(name=target_name, last_known=last_known):
             match = _track_near(_native_collectible_tracks(), name, last_known["x"], last_known["y"])
             if match is None:
@@ -1260,8 +1301,9 @@ def run_auto_collect():
         #CLICK_RETRY_INTERVAL_SECONDS. A click has to wait out a walk; a cast does not.
         retry_interval = (CLICK_RETRY_INTERVAL_SECONDS if collect_label == text_detection.COLLECT_BY_CLICK
                           else key_retry_interval)
+        started_at = time.time()
         success = actions.act_until_gone(
-            get_position, act=collect_act,
+            get_position, act=counted,
             timeout=COLLECT_TIMEOUT_SECONDS, click_interval=retry_interval,
             poll_interval=AUTO_COLLECT_POLL_SECONDS,
             #Also mid-attempt, not just before starting one: an attempt runs for up to
@@ -1271,9 +1313,12 @@ def run_auto_collect():
         )
 
         if success:
-            print(f"Auto-collect: picked up '{target_name}'")
+            took = time.time() - started_at
+            attempt = "1st try" if acts["n"] <= 1 else f"attempt {acts['n']}"
+            print(f"Auto-collect: picked up '{target_name}' on {attempt} after {took:.1f}s")
         else:
-            print(f"Auto-collect: gave up on '{target_name}' after {COLLECT_TIMEOUT_SECONDS:.0f}s - releasing mouse control")
+            print(f"Auto-collect: gave up on '{target_name}' after {COLLECT_TIMEOUT_SECONDS:.0f}s "
+                  f"and {acts['n']} attempts - releasing mouse control")
             abandoned.append((target_name, last_known["x"], last_known["y"]))
 
 
@@ -1341,7 +1386,97 @@ def _snooze_potions():
     print(f"Potion drinking snoozed for {POTION_SNOOZE_SECONDS:.0f}s")
 
 
-def _potion_due(readings, now, last_fired, last_any, rules=None, ignore_below=None):
+#--- The potion belt: what is actually in each slot ------------------------------------------------
+#WHY THIS IS READ RATHER THAN CONFIGURED. The keys used to be written out by hand ("keys = 2, 3"),
+#which is a claim about the world that stops being true the moment the player rearranges the belt
+#or drinks a column dry. The program then presses a key that does nothing while dying, or spends a
+#rejuvenation potion - the rare one - to top up mana. The slots are on screen, so they can be read.
+#
+#core/slots.py does the reading and knows nothing about potions; assets/belt.json holds where the
+#slots are and which colour each supply is; and what to do about it is here, because "a
+#rejuvenation potion is too valuable to waste on mana" is the owner's judgement about this game,
+#not a fact about coloured cells.
+BELT_CONFIG_PATH = ASSETS_DIR / "belt.json"
+BELT_REFRESH_SECONDS = 0.5 #a belt changes only when something is drunk or refilled, and reading it
+                            #every frame would be free-ish but pointless - see _refresh_belt
+
+belt_config = None
+try:
+    with open(BELT_CONFIG_PATH, encoding="utf-8") as _handle:
+        belt_config = json.load(_handle)
+except FileNotFoundError:
+    pass
+except (OSError, ValueError) as _exc:  # noqa: BLE001 - a bad asset must not stop the program
+    print(f"WARNING: could not read {BELT_CONFIG_PATH}: {_exc} - "
+          f"potion keys will come from user_config.txt instead.")
+
+_belt_lock = threading.Lock()
+_belt = None        #[(key, supply-or-None), ...], or None for "cannot tell"
+_belt_checked = 0.0
+
+
+def _refresh_belt(frame_bgr, now):
+    """Re-reads the belt at most every BELT_REFRESH_SECONDS and publishes it. Returns nothing.
+
+    Reads off the frame detect_objects() already captured, for the same reason game_state does:
+    this costs a handful of small HSV crops, while a thread of its own would have to spend ~17-20ms
+    capturing a frame to perform a sub-millisecond measurement.
+    """
+    global _belt, _belt_checked
+    if belt_config is None:
+        return
+    with _belt_lock:
+        if now - _belt_checked < BELT_REFRESH_SECONDS:
+            return
+        _belt_checked = now
+
+    region = belt_config["region"]
+    rect = anchor_rect()
+    if rect is not None:
+        #The belt is at a fixed place in the WINDOW, not on the screen - same routing as the HUD
+        #meters and the in-play art.
+        region = window_region.to_frame_fractions(rect, CAPTURE_RECT, region)
+    found = slots.read_row(frame_bgr, region, belt_config["count"], belt_config["colors"],
+                           belt_config.get("min_fill", slots.DEFAULT_MIN_FILL),
+                           tuple(belt_config.get("inset", slots.DEFAULT_INSET)))
+    with _belt_lock:
+        _belt = None if found is None else list(zip(belt_config["keys"], found))
+
+
+def current_belt():
+    """[(key, supply-or-None), ...], or None for "cannot tell".
+
+    None is NOT "the belt is empty" - it means the belt could not be read (no config, the region
+    off-frame). Every caller has to treat it the way this project treats None everywhere else:
+    behave exactly as it did before this existed, which here means falling back to the keys written
+    in user_config.txt.
+    """
+    with _belt_lock:
+        return None if _belt is None else list(_belt)
+
+
+def _rule_keys(rule, belt):
+    """Which keys this rule should press right now - () if it cannot be satisfied at all.
+
+    Pure. An empty result is a real answer and the caller must treat it as "skip this rule and try
+    the next one", NOT as "do nothing this tick" - that fall-through is the whole mechanism behind
+    "drink a rejuvenation potion at 50% only when there is no healing potion left".
+    """
+    if belt is None:
+        return tuple(rule.keys)   #cannot see the belt - use what the config wrote down
+    if rule.use:
+        return tuple(key for key, supply in belt if supply == rule.use)
+    return tuple(rule.keys)
+
+
+def _belt_holds(belt, supply):
+    """Whether any slot holds `supply`. None (cannot tell) is not False - see current_belt()."""
+    if belt is None:
+        return None
+    return any(held == supply for _key, held in belt)
+
+
+def _potion_due(readings, now, last_fired, last_any, rules=None, ignore_below=None, belt=None):
     """The first matching rule that should fire right now, or None.
 
     Kept PURE - no key presses, no clock of its own, and `rules`/`ignore_below` are arguments
@@ -1364,6 +1499,17 @@ def _potion_due(readings, now, last_fired, last_any, rules=None, ignore_below=No
         if value < ignore_below:
             continue  #below the noise floor: far more likely stray colour than a real reading.
         if value > rule.at_or_below:
+            continue
+        #A RULE THAT CANNOT BE SATISFIED IS SKIPPED, NOT OBEYED, and this is the line that makes
+        #"no healing potion left" work: the 70% healing rule still MATCHES at 45% health, and if
+        #the belt holds no healing potion it has no keys, so the loop falls through to the 50%
+        #rejuvenation rule below it instead of stopping here having pressed nothing.
+        if not _rule_keys(rule, belt):
+            continue
+        #A LAST-RESORT rule waits until the supply it stands in for is actually gone. Requires a
+        #readable belt: "I cannot tell whether you have healing potions" is not a reason to spend
+        #a rejuvenation potion, so an unreadable belt skips the rule rather than firing it.
+        if rule.only_if_missing and _belt_holds(belt, rule.only_if_missing) is not False:
             continue
         if now - last_fired.get(rule.label, 0.0) < rule.cooldown:
             continue
@@ -1412,20 +1558,27 @@ def run_potion_drinking():
             continue
 
         readings = current_game_state()
-        rule = _potion_due(readings, now, last_fired, last_any)
+        belt = current_belt()
+        rule = _potion_due(readings, now, last_fired, last_any, belt=belt)
         if rule is None:
             continue
 
+        #Resolved AGAIN rather than carried out of _potion_due, so that function stays pure and
+        #returns the same shape it always did - and _rule_keys is cheap. It cannot come back empty
+        #here: _potion_due has already refused any rule that has no keys.
+        keys = _rule_keys(rule, belt)
         #Alternate across a rule's keys. Nothing here can see how many potions a belt column has
         #left, so spreading the presses is the only way to avoid emptying one column and then
         #pressing a dead key during an emergency.
         index = next_key.get(rule.label, 0)
-        key = rule.keys[index % len(rule.keys)]
+        key = keys[index % len(keys)]
         next_key[rule.label] = index + 1
         actions.press_key(key)
         last_fired[rule.label] = now
         last_any = now
-        print(f"Potion: {rule.label} (key '{key}') at {rule.meter} {readings[rule.meter]:.0%}")
+        source = f"{rule.use} in slot" if rule.use and belt is not None else "configured"
+        print(f"Potion: {rule.label} (key '{key}', {source}) at "
+              f"{rule.meter} {readings[rule.meter]:.0%}")
 
 
 #--- Scripted sequences (Diablo II integration) --------------------------------------------------

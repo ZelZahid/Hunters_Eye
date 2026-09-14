@@ -438,6 +438,28 @@ def _padded_box(words):
 #    words also appear in "Full Rejuvenation Potion" - so it keeps the strict cutoff throughout,
 #    which is the right answer for the one name that is a sub-phrase of another.
 SHARED_WORD_EXTRA_ERRORS = 1
+#AND A FLOOR UNDER IT, because "one more error" is a very different thing at four characters than
+#at twelve. This is not a precaution - it is a bug that shipped and was caught in play.
+#
+#Reported as: "the program detected a LO RUNE on the text where it says the map name and
+#difficulty". Reproduced exactly from the owner's screenshot, and the text was not the map name at
+#all - it was THIS PROGRAM'S OWN F5 debug panel, which draws "no read" when a meter cannot be
+#measured. The overlay is composited into the screen we capture, so the panel's text goes through
+#OCR like anything else (CLAUDE.md has always said so, and recorded that none of its words matched
+#a target - a check this change invalidated).
+#
+#  "NO"   vs "LO"    0.500  - the 2-letter rung, always allowed one wrong character
+#  "READ" vs "RUNE"  0.500  - needed 0.75 before, and 0.75 - 1/4 = 0.50 after
+#
+#Two of four characters wrong is not a misread, it is a different word. The slack is meant to
+#forgive a stylised font, and at n=4 it was forgiving a quarter of the word. So the relaxed cutoff
+#never drops below this floor, whatever the length - which is the same thing as saying a word
+#shorter than six characters gets no slack at all, since that is where 1/n stops mattering.
+#
+#0.6 is placed between the two measured anchors rather than next to either: "READ"/"RUNE" at 0.500
+#must be refused, and "PETIEN"/"POTION" at 0.667 - the real misread this slack exists for - must
+#still pass. That leaves 0.1 of margin below and 0.067 above.
+SHARED_WORD_FLOOR = 0.6
 
 
 def shared_words(names):
@@ -501,8 +523,11 @@ def _required_cutoff(word, base_cutoff, relaxed=False):
     if n == 3:
         return 0.65 #one misread character in a 3-letter word ("GUL" read as "GU1")
     if relaxed:
-        #One more misread character than a unique word gets - see SHARED_WORD_EXTRA_ERRORS.
-        return base_cutoff - SHARED_WORD_EXTRA_ERRORS / n
+        #One more misread character than a unique word gets, but never below the floor - see
+        #SHARED_WORD_EXTRA_ERRORS and SHARED_WORD_FLOOR. The min() keeps this from ever coming out
+        #STRICTER than the plain cutoff, which it would for a caller passing a base below the
+        #floor: slack must only ever loosen.
+        return min(base_cutoff, max(base_cutoff - SHARED_WORD_EXTRA_ERRORS / n, SHARED_WORD_FLOOR))
     return base_cutoff
 
 

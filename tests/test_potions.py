@@ -26,6 +26,13 @@ from core import user_config
 failures = 0
 
 
+class _None:
+    label = "<no rule fired>"
+
+
+_N = _None()
+
+
 def check(label, condition):
     global failures
     print(f"  {'ok  ' if condition else 'FAIL'} {label}")
@@ -149,11 +156,118 @@ check("every threshold is a sensible fraction",
       all(0.0 <= r.at_or_below <= 1.0 for r in cfg.rules))
 check("every rule names a calibrated meter",
       all(r.meter in {m.name for m in main.meters} for r in cfg.rules))
-check("every rule has at least one key", all(len(r.keys) >= 1 for r in cfg.rules))
+#A rule says what to press EITHER by naming keys outright or by naming a potion to look up in the
+#belt. It used to have to be keys; requiring that now would fail the shipped config, which is the
+#whole point of the change - see sections 11-17.
+check("every rule can say what to press", all(r.keys or r.use for r in cfg.rules))
 check("every cooldown is non-negative", all(r.cooldown >= 0 for r in cfg.rules))
 check("the global gap is a real floor", main.POTION_MIN_GAP_SECONDS > 0)
 print("      configured: " + " | ".join(
     f"{r.label} <={r.at_or_below:.0%} -> {'/'.join(r.keys)}" for r in cfg.rules))
+
+print("\n11. The keys come from the BELT, not from the config file")
+#The owner's ask, and the bug it removes: a key written down by hand is a claim about the world
+#that stops being true the moment the belt is rearranged or a column runs dry. The program then
+#presses a dead key while dying, or spends a rejuvenation potion - the rarest one - on mana.
+#core/slots.py reads which potion is in each slot; these are the decisions made on top of that.
+FULL_BELT = [("1", "healing"), ("2", "rejuvenation"), ("3", "rejuvenation"), ("4", "mana")]
+NO_HEALING = [("1", None), ("2", "rejuvenation"), ("3", "rejuvenation"), ("4", "mana")]
+NO_MANA = [("1", "healing"), ("2", "rejuvenation"), ("3", "rejuvenation"), ("4", None)]
+ONLY_HEALING = [("1", "healing"), ("2", None), ("3", None), ("4", None)]
+MOVED = [("1", "mana"), ("2", "mana"), ("3", None), ("4", "rejuvenation")]
+
+BELT_RULES = (
+    main.PotionRule("health", 0.30, (), 1.0, "rejuvenation", "rejuvenation", ""),
+    main.PotionRule("health", 0.70, (), 4.0, "health", "healing", ""),
+    main.PotionRule("health", 0.50, (), 1.0, "health_backup", "rejuvenation", "healing"),
+    main.PotionRule("mana", 0.15, (), 4.0, "mana", "mana", ""),
+)
+
+
+def due(readings, belt, rules=BELT_RULES, last_fired=None, now=1000.0):
+    return main._potion_due(readings, now, last_fired or {}, 0.0, rules=rules,
+                            ignore_below=0.03, belt=belt)
+
+
+def keys_for(rule, belt):
+    return main._rule_keys(rule, belt)
+
+
+check("a healing potion is found by colour, not by a configured key",
+      keys_for(BELT_RULES[1], FULL_BELT) == ("1",))
+check("two rejuvenation slots give two keys to alternate between",
+      keys_for(BELT_RULES[0], FULL_BELT) == ("2", "3"))
+check("mana resolves to its own slot", keys_for(BELT_RULES[3], FULL_BELT) == ("4",))
+
+print("\n12. Rearranging the belt moves the keys, with nothing to edit")
+#"lets say the rejuvenation potion is on 4 instead of the usual 2,3. then use that on key 4."
+check("rejuvenation on slot 4 is pressed as '4'", keys_for(BELT_RULES[0], MOVED) == ("4",))
+check("mana moved to 1 and 2 gives both", keys_for(BELT_RULES[3], MOVED) == ("1", "2"))
+check("and the rule that has nothing left resolves to nothing",
+      keys_for(BELT_RULES[1], MOVED) == ())
+
+print("\n13. An empty slot is never pressed")
+#"if there is no Mana potion in the belt slot, don't be pressing 4 thinking that there is one."
+check("no mana in the belt -> the mana rule cannot fire, at any mana level",
+      due({"health": 1.0, "mana": 0.01}, NO_MANA) is None)
+check("...and mana is simply allowed to sit at zero",
+      due({"health": 1.0, "mana": 0.0}, NO_MANA) is None)
+#The critical half of that: a rejuvenation potion must NOT be spent on mana. It is the rarest
+#potion and refills both, so a rule that grabbed one for mana would be invisible and expensive.
+check("no rule ever spends a rejuvenation potion on mana",
+      all(r.use != "rejuvenation" for r in BELT_RULES if r.meter == "mana"))
+
+print("\n14. With a healing potion in the belt, nothing changes")
+check("70% drinks a healing potion", (due({"health": 0.70, "mana": 1.0}, FULL_BELT) or _N).label == "health")
+check("...on its own key", keys_for(due({"health": 0.70, "mana": 1.0}, FULL_BELT), FULL_BELT) == ("1",))
+check("30% escalates to rejuvenation",
+      (due({"health": 0.30, "mana": 1.0}, FULL_BELT) or _N).label == "rejuvenation")
+check("45% still takes the ordinary healing potion, not a rejuvenation one",
+      (due({"health": 0.45, "mana": 1.0}, FULL_BELT) or _N).label == "health")
+
+print("\n15. With NO healing potion, rejuvenation stands in - but only from 50%")
+#"If there is no Health potion to drink, when my health gets to 50% or below, it is okay to drink
+#a rejuvenation potion, but only after the health reaches at least 50%."
+check("65% does nothing - too expensive to spend a rejuvenation potion on",
+      due({"health": 0.65, "mana": 1.0}, NO_HEALING) is None)
+check("55% still does nothing", due({"health": 0.55, "mana": 1.0}, NO_HEALING) is None)
+check("50% falls through the healing rule to the backup",
+      (due({"health": 0.50, "mana": 1.0}, NO_HEALING) or _N).label == "health_backup")
+check("...and presses a rejuvenation slot",
+      keys_for(due({"health": 0.50, "mana": 1.0}, NO_HEALING), NO_HEALING) == ("2", "3"))
+check("30% is still the emergency rule, which is more urgent and has its own cooldown",
+      (due({"health": 0.30, "mana": 1.0}, NO_HEALING) or _N).label == "rejuvenation")
+#The fall-through is the whole mechanism: the 70% rule MATCHES at 50% health and must not stop the
+#loop just because it cannot be acted on. If this breaks, the backup silently never fires.
+check("the healing rule matching but being unsatisfiable does not block the rule below it",
+      due({"health": 0.50, "mana": 1.0}, NO_HEALING) is not None)
+
+print("\n16. A belt that cannot be read falls back to the configured keys")
+#None means "cannot tell", which everywhere in this project means "behave as before this existed".
+#Before this existed, the keys were written in user_config.txt.
+LEGACY = (main.PotionRule("health", 0.70, ("1",), 4.0, "health", "healing", ""),)
+check("with no belt reading, the written keys are used",
+      keys_for(LEGACY[0], None) == ("1",))
+check("...and the rule still fires", (due({"health": 0.5}, None, rules=LEGACY) or _N).label == "health")
+#But a LAST-RESORT rule must not fire on a guess: not knowing whether healing potions remain is
+#not a reason to spend a rejuvenation potion.
+check("a last-resort rule does not fire when the belt cannot be read",
+      due({"health": 0.50}, None, rules=BELT_RULES) is None)
+
+print("\n17. The shipped rules express the owner's policy")
+real = main.POTION_RULES
+by_label = {r.label: r for r in real}
+check("every rule names a potion to use", all(r.use for r in real))
+check("nothing spends a rejuvenation potion on mana",
+      all(r.use != "rejuvenation" for r in real if r.meter == "mana"))
+check("the backup only fires when healing potions are gone",
+      by_label["health_backup"].only_if_missing == "healing")
+check("the backup waits longer than the ordinary healing rule",
+      by_label["health_backup"].at_or_below < by_label["health"].at_or_below)
+check("the emergency tier is the most urgent of the three",
+      by_label["rejuvenation"].at_or_below < by_label["health_backup"].at_or_below)
+check("rules are ordered most-urgent first",
+      [r.label for r in real][:3] == ["rejuvenation", "health", "health_backup"])
 
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

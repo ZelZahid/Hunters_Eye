@@ -11,6 +11,12 @@ that tag rather than guessing from commit history - that's what these are for.
 ------------------------------------------------------------------------------
 AT A GLANCE - newest first. Full entries are below, oldest first.
 ------------------------------------------------------------------------------
+0.018  The potion keys are READ OFF THE BELT instead of written down, so an
+       empty or rearranged slot is never pressed. Two bugs where a detector
+       threw away the very thing it was looking for: a nearly empty orb read
+       "no read" because the last liquid is the darkest, and this program's own
+       debug panel was collected as a LO RUNE. Cursor is HELD on target while
+       acting, so a pickup no longer misses while the player is moving.
 0.017  Auto-collect grew up: teleport onto a far drop, priority by targets.txt
        order, a faster retry for skill-collected items, and items already in the
        inventory or stash ignored. Blue item labels had NEVER been readable - the
@@ -1294,3 +1300,100 @@ test_user_config.py. New fixtures: charm_grand.png, charm_small.png,
 inventory_open.png, stash_open.png - all masked at full dimensions so every
 coordinate a test asserts on is unchanged. Thirteen test files, all passing.
 No new dependencies.
+
+0.018 - 2026-09-14
+------------------------------------------------------------------------------
+TWO BUGS IN WHICH A DETECTOR THREW AWAY THE EXACT THING IT WAS LOOKING FOR, one
+feature that stops a key being pressed at nothing, and the fix for a miss the
+owner diagnosed themselves. NOT ALL OF THIS IS CONFIRMED LIVE - the belt reader
+and the orb fix were measured against real frames but have not yet been played
+with, and docs/todolist.md says what to watch.
+
+THE POTION KEYS ARE READ OFF THE BELT (core/slots.py, assets/belt.json). Owner's
+ask: "I don't want to manually tell the program what key to press... identify
+which slot". A key written down by hand is a claim about the world that stops
+being true the moment the belt is rearranged or a column is drunk dry, after
+which the program presses a dead key while dying, or spends a rejuvenation
+potion - the rarest one - on mana.
+
+The seventh detector, and a fifth shape of answer: which of several known things
+is in each of a fixed set of positions. Colour, not template matching, because
+the thing being told apart IS a colour - measured on the real belt, modal hue 0
+for red healing, 118 for blue mana, 151 for purple rejuvenation, while the
+glass, highlights and frame are identical art that TM_CCOEFF_NORMED is very
+nearly blind to anyway. An occupied slot is 26-37% lit and an empty one is 0.0%.
+Only the bottom row matters and the belt need not be open.
+
+A rule in user_config.txt now says "use = rejuvenation" rather than naming keys.
+Three properties carry the owner's policy, each guarding a different waste:
+  - A RULE THAT CANNOT BE SATISFIED IS SKIPPED, NOT OBEYED. The 70% healing rule
+    still MATCHES at 45% health; with no healing potion it has no keys, so the
+    loop falls through to the 50% rejuvenation rule instead of stopping having
+    pressed nothing. That fall-through is the whole mechanism behind "only when
+    the healing potions are gone", and breaking it makes the backup silently
+    never fire.
+  - only_if_missing requires a READABLE belt. "I cannot tell whether you have
+    healing potions" is not a reason to spend a rejuvenation potion.
+  - Nothing spends a rejuvenation potion on mana, ever. If the mana potions run
+    out, mana is allowed to hit zero - a judgement about relative value, and
+    test_potions.py asserts it so it cannot be added back by accident.
+An unreadable belt falls back to the keys still written in user_config.txt, so
+behaviour degrades to exactly what it was before.
+
+A NEARLY EMPTY ORB READ "no read", BECAUSE THE LAST LIQUID IS THE DARKEST.
+Reported as "when my mana is really low, it's showing No read", with mana at
+23/407. The obvious suspect was the documented ~7% readability floor, and 5.7%
+sits right under it - a coincidence. Sampling the raw HSV down the orb found the
+liquid present and correctly coloured at H=120 S=165-238 V=16, against a
+configured floor of V>=40: a globe is shaded toward its edges, so a nearly empty
+one does not merely get shorter, the part that survives is the dark part. The
+fill level was a red herring twice over - at V>=40 a dark liquid reads "no read"
+at 6%, 30% AND 90%. Saturation is what separates liquid from an empty orb
+(S 25-40 against a floor of 70), so the value floor was doing almost no work and
+all of the harm. It is 10 now, in every profile and in the calibrator's presets.
+The dangerous half is health: an earlier frame with Life 42/525 showed "no read"
+too, and None fires no potion by design - so the emergency tier was silently
+disabled at exactly the health it exists for. Error_history.txt #50.
+
+THIS PROGRAM'S OWN DEBUG PANEL WAS COLLECTED AS A LO RUNE. The overlay is
+composited into the desktop, so everything it draws goes through OCR like an
+item label - CLAUDE.md had always said so, and recorded the check that went with
+it: none of the panel's words matched a target. That recorded check was
+invalidated a day earlier by the shared-word slack added for "SUPER MANA PeTIeN"
+(v0.017 shipped the slack; this is the hole in it). "NO" vs "LO" scores 0.500 on
+the 2-letter rung, and "READ" vs "RUNE" scored 0.500 because 0.75 - 1/4 = 0.50.
+Two of four characters wrong is a different word, not a misread. SHARED_WORD_FLOOR
+(0.6) sits between the two measured anchors: "READ"/"RUNE" at 0.500 must be
+refused and "PETIEN"/"POTION" at 0.667 must still pass. It was intermittent
+because three rune names tied at 0.571 and a tie is suppressed - it only surfaced
+when a reading broke the tie. The prose check is a TEST now (test_targets.py 12)
+listing all 22 strings the panel can draw. Error_history.txt #49.
+
+THE CURSOR IS HELD ON TARGET WHILE ACTING, not moved once and slept on. The
+owner found this themselves: "it works when I am not doing anything... it only
+fails first attempt if I'm using my left click and moving around or teleporting".
+Every settle was "move the cursor, then wait", and a single SetCursorPos is one
+event among the stream a physical mouse is producing - the player's own hand
+drags the cursor off target during the wait. THIS MAKES A LONGER SETTLE WORSE
+RATHER THAN BETTER, which is why raising AIM_SETTLE_SECONDS in v0.017 did not
+help and why the keyed path (0.20s) missed more often than the clicked one
+(0.05s). hold_cursor() re-asserts the position every 10ms for the length of the
+settle - the owner's "force stopping my manual inputs for a few milliseconds",
+without blocking anything: no BlockInput, which needs privileges and can leave a
+machine with no input at all if the process dies at the wrong moment.
+
+AND AN ACTION THAT MEASURABLY DID NOTHING IS RETRIED EARLY. click_interval is
+0.8s because a click means "walk over there" and re-issuing it mid-walk
+retargets the character - which only holds if the click LANDED. The evidence is
+already being polled: a camera that follows the character means an action that
+landed moves the world, and one that missed changes nothing. So a target that
+has not moved 4px in 0.25s is acted on again immediately. Three misses now cost
+~0.75s instead of ~2.4s.
+
+Also: click_settle and aim_settle moved into user_config.txt, and the console
+now reports which attempt each pickup landed on ("on 1st try after 0.9s"), which
+is what turns "it misses the first try" into something tunable.
+
+New: core/slots.py, assets/belt.json, tests/test_slots.py, fixtures
+belt_full.png and belt_empty_slot.png. Fourteen test files, all passing. No new
+dependencies.

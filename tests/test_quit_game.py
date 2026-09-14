@@ -236,8 +236,16 @@ try:
     actions.press_at("e")(11, 22)
 finally:
     actions.pyautogui.moveTo, actions.press_key = saved_move, saved_press
-check(f"press_at moves to the target, then presses the key ({order})",
-      order == [("move", 11, 22), ("press", "e")])
+#IT HOLDS THE CURSOR THERE rather than moving once and sleeping, because the player's own mouse is
+#moving too - reported live: pickups land first try while standing still and miss while moving,
+#holding left-click to walk, or teleporting. A single SetCursorPos is one event among the stream a
+#physical mouse produces, so the cursor gets dragged off target during the settle. What is asserted
+#is the shape that matters: every move goes to the target, and the key is pressed last, after them.
+moves = [e for e in order if e[0] == "move"]
+check(f"press_at holds the cursor on the target ({len(moves)} moves, all to (11, 22))",
+      len(moves) > 1 and all(e == ("move", 11, 22) for e in moves))
+check("...and presses the key only after the holding is done",
+      order[-1] == ("press", "e") and order[0][0] == "move")
 
 #AND IT WAITS LONGER BETWEEN THE TWO THAN click_at DOES. The relationship is what is asserted, not
 #either number: a click's button-down is a mouse event carrying the cursor position in its own
@@ -252,15 +260,31 @@ check(f"press_at settles longer than click_at ({actions.AIM_SETTLE_SECONDS}s vs 
 
 #The settle is the caller's to tune without editing core/ - it is a starting point, not a measurement.
 slept = []
+#A FAKE CLOCK, not just a stubbed sleep. hold_cursor loops until the clock says the settle has
+#elapsed, so a sleep that records and returns instantly while perf_counter keeps real time spins
+#for the whole duration and records a million slices. Advancing the clock BY what was slept makes
+#the test fast and deterministic, and it is the honest model of what sleeping does.
+clock = [0.0]
 saved_sleep, saved_move2, saved_press2 = actions.time.sleep, actions.pyautogui.moveTo, actions.press_key
+saved_counter = actions.time.perf_counter
 try:
-    actions.time.sleep = slept.append
+    def fake_sleep(seconds):
+        slept.append(seconds)
+        clock[0] += seconds
+
+    actions.time.sleep = fake_sleep
+    actions.time.perf_counter = lambda: clock[0]
     actions.pyautogui.moveTo = lambda x, y, **kw: None
     actions.press_key = lambda key, **kw: None
-    actions.press_at("e", settle=0.42)(1, 2)
+    actions.press_at("e", settle=0.42)(1, 2)  #sleeps in CURSOR_HOLD_INTERVAL slices now
 finally:
     actions.time.sleep, actions.pyautogui.moveTo, actions.press_key = saved_sleep, saved_move2, saved_press2
-check(f"press_at's settle is overridable per call ({slept})", slept == [0.42])
+    actions.time.perf_counter = saved_counter
+#The settle is now spent HOLDING the cursor, so it arrives as many small sleeps rather than one -
+#what has to hold is that the total is the settle asked for. Asserting the slice count instead
+#would pin an implementation detail; asserting the total pins the promise.
+check(f"press_at's settle is overridable per call ({sum(slept):.3f}s in {len(slept)} slices)",
+      abs(sum(slept) - 0.42) < 1e-6 and len(slept) > 1)
 
 #The old name still works and still clicks - every caller that means "click" uses it.
 clicked = []

@@ -1,0 +1,90 @@
+{
+  "_comment": [
+    "The potion belt's four slots, the ones bound to keys 1-4.",
+    "",
+    "WHY THIS FILE EXISTS: the keys used to be written out by hand in user_config.txt, which",
+    "meant the program pressed '2' for a rejuvenation potion whether or not one was there.",
+    "Rearrange the belt and it drinks the wrong thing; empty a column and it presses a dead",
+    "key while dying. The slots are on screen, so they can be read instead of declared.",
+    "",
+    "ONLY THE BOTTOM ROW MATTERS and the belt does not need to be open. Diablo II shows that",
+    "row on the HUD at all times, and it is the row bound to 1-4; the other three rows of a",
+    "full belt are reserves that feed it. Confirmed against the owner's opened-belt screenshot.",
+    "",
+    "MEASURED on four real frames (three potion types plus an empty slot), at the insets",
+    "below - an occupied slot is 26-37% lit and an empty one is 0.0%, with modal hues 0 for",
+    "red healing, 118 for blue mana and 151 for purple rejuvenation. The gaps are enormous",
+    "because these are different colours of the same glass, which is exactly the job an HSV",
+    "mask is for and exactly the job template matching cannot do (TM_CCOEFF_NORMED is very",
+    "nearly colour-blind - see CLAUDE.md).",
+    "",
+    "region and the keys are fractions of / bound to the ANCHOR WINDOW, so this survives the",
+    "game being windowed, moved or resized. Recalibrate if the game's resolution changes: the",
+    "HUD re-lays out, exactly as meters.json does.",
+    "",
+    "Red wraps the end of the hue circle, so healing needs two ranges. Same reason meters.json",
+    "carries a list."
+  ],
+  "region": [
+    0.5664,
+    0.9365,
+    0.1313,
+    0.057
+  ],
+  "source_size": [
+    1912,
+    1071
+  ],
+  "count": 4,
+  "keys": [
+    "1",
+    "2",
+    "3",
+    "4"
+  ],
+  "inset": [
+    0.22,
+    0.18
+  ],
+  "min_fill": 0.05,
+  "colors": {
+    "healing": [
+      [
+        0,
+        90,
+        60,
+        10,
+        255,
+        255
+      ],
+      [
+        170,
+        90,
+        60,
+        179,
+        255,
+        255
+      ]
+    ],
+    "mana": [
+      [
+        105,
+        90,
+        60,
+        130,
+        255,
+        255
+      ]
+    ],
+    "rejuvenation": [
+      [
+        135,
+        90,
+        60,
+        165,
+        255,
+        255
+      ]
+    ]
+  }
+}

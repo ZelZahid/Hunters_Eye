@@ -289,5 +289,106 @@ try:
 finally:
     main.ui_panels = _saved
 
+print("\n13. An action that measurably did nothing is retried early")
+#The owner's report: the first click or cast often misses, and the pickup then lands on the 2nd or
+#3rd attempt - each a full click_interval apart, which is 0.8s of dead time per miss while someone
+#else walks off with the item. click_interval is long for one reason: a click means "walk over
+#there", and re-issuing it mid-walk retargets the character. That reasoning only holds if the
+#click LANDED. The evidence to tell those apart is already being polled: a camera that follows the
+#character means an action that landed MOVES THE WORLD, and one that missed changes nothing.
+#
+#These run on the real clock with small intervals, so they take about a second in total.
+POLL = 0.02
+STILL = 0.10
+
+
+def run(positions, click_interval=5.0, retry_if_still=STILL, timeout=0.6):
+    """Drives act_until_gone against a scripted sequence of positions. Returns the aim points."""
+    aimed = []
+    seq = list(positions)
+
+    def get_position():
+        return seq.pop(0) if seq else seq_last[0]
+
+    seq_last = [positions[-1]]
+    return aimed, actions.act_until_gone(
+        get_position, act=lambda x, y: aimed.append((x, y)),
+        timeout=timeout, click_interval=click_interval, poll_interval=POLL,
+        retry_if_still=retry_if_still, still_px=4)
+
+
+#A target that never moves: the action is doing nothing, so it should fire repeatedly without
+#waiting out the 5s click_interval.
+still_positions = [(500, 500)] * 200
+aimed, ok = run(still_positions)
+check(f"a target that never moves is retried early ({len(aimed)} actions in 0.6s)", len(aimed) > 2)
+check("...and the attempt still reports failure, since it never disappeared", ok is False)
+
+#A target that moves after the action - i.e. the click landed and the character is walking - must
+#NOT be re-clicked early. This is the behaviour click_interval exists to protect.
+moving = [(500 + i * 20, 500) for i in range(200)]
+aimed, _ok = run(moving)
+check(f"a target that moves is left alone until click_interval ({len(aimed)} action)",
+      len(aimed) == 1)
+
+#Jitter is not movement: a tracked position wanders a pixel or two while nothing is happening, and
+#treating that as "the action landed" would restore the dead time this removes.
+jitter = [(500 + (i % 3), 500 - (i % 2)) for i in range(200)]
+aimed, _ok = run(jitter)
+check(f"a jittering position still counts as still ({len(aimed)} actions)", len(aimed) > 2)
+
+#Off switch, for the one case RETRY_IF_STILL_SECONDS documents as wrong: a game that does not move
+#the camera while the character walks.
+aimed, _ok = run(still_positions, retry_if_still=None)
+check(f"retry_if_still=None restores the old cadence ({len(aimed)} action)", len(aimed) == 1)
+
+#And the early retry must never outrun a success: a target that disappears is gone, not retried.
+gone = [(500, 500), (500, 500), None]
+aimed, ok = run(gone)
+check("a target that disappears reports success", ok is True)
+check("...and is not acted on again afterwards", len(aimed) <= 2)
+
+print("\n14. The settle before acting comes from user_config.txt")
+#Raised because the owner reported first-attempt misses on BOTH paths. What a game needs between
+#the cursor arriving and the action firing depends on the game and the machine, so it has to be
+#tunable while playing rather than compiled in.
+check("a click settle is configured", 0.0 <= main.potion_config.click_settle <= 2.0)
+check("an aim settle is configured", 0.0 <= main.potion_config.aim_settle <= 2.0)
+#A keypress carries no coordinates and is resolved against whatever the game last decided the
+#cursor was over, so it needs at least as long as a click, whose button-down carries the position.
+check("the key settle is not shorter than the click settle",
+      main.potion_config.aim_settle >= main.potion_config.click_settle)
+#click_with must actually use it - a settle that is read and ignored is the worst of both.
+#See the same note in test_quit_game.py: hold_cursor loops on the clock, so a fake sleep has to
+#advance a fake clock or it spins for the real duration.
+_slept = []
+_clock = [0.0]
+_real_sleep, _real_counter = actions.time.sleep, actions.time.perf_counter
+
+
+def _fake_sleep(seconds):
+    _slept.append(seconds)
+    _clock[0] += seconds
+
+
+actions.time.sleep = _fake_sleep
+actions.time.perf_counter = lambda: _clock[0]
+_real_move, _real_down, _real_up = (actions.pyautogui.moveTo, actions.pyautogui.mouseDown,
+                                    actions.pyautogui.mouseUp)
+actions.pyautogui.moveTo = lambda *a, **k: None
+actions.pyautogui.mouseDown = lambda *a, **k: None
+actions.pyautogui.mouseUp = lambda *a, **k: None
+try:
+    actions.click_with(0.37)(10, 10)
+    #The settle is spent HOLDING the cursor against the player's own mouse, so it arrives as many
+    #small sleeps rather than one - what matters is the total, plus the click's own hold after it.
+    held = sum(_slept) - actions.CLICK_HOLD_SECONDS
+    check(f"click_with(0.37) actually holds for 0.37s ({held:.3f}s in {len(_slept)} slices)",
+          abs(held - 0.37) < 1e-6 and len(_slept) > 2)
+finally:
+    actions.time.sleep, actions.time.perf_counter = _real_sleep, _real_counter
+    actions.pyautogui.moveTo, actions.pyautogui.mouseDown, actions.pyautogui.mouseUp = (
+        _real_move, _real_down, _real_up)
+
 print(f"\n{'ALL PASSED' if not failures else str(failures) + ' FAILED'}")
 sys.exit(1 if failures else 0)

@@ -49,7 +49,7 @@ ignore_below = 0.03
 # otherwise - and because an unwanted password is invisible until someone cannot
 # join your game. With this off, any password already in the box is CLEARED, so
 # a password you set by hand earlier does not silently carry into every new game.
-use_password = no
+use_password = yes
 
 # The password to use when use_password is yes. Taken exactly as written.
 password = 123
@@ -112,50 +112,98 @@ teleport_min_distance = 25%
 key_collect_retry = 0.35
 
 
+# --- Aiming: how long the cursor sits on a target before acting --------------
+
+# The pause between the cursor arriving on a target and the action firing, in
+# seconds. Two values, because the two events are not the same shape:
+#
+#   click_settle  a click's button-down is itself a MOUSE event and carries the
+#                 cursor position in its own Win32 message, behind the move on
+#                 the same path and in order - the game cannot process the press
+#                 without having the new position in hand.
+#   aim_settle    a keypress is a KEYBOARD event and carries no coordinates at
+#                 all. The game resolves it against whatever it last decided the
+#                 cursor was over, read separately on its own tick, with nothing
+#                 tying that read to our move. So it needs longer.
+#
+# These are here rather than in the code because the right number depends on the
+# game and the machine, and the only way to find it is to try values while
+# playing. RAISE THEM IF THE FIRST ATTEMPT KEEPS MISSING and the second works -
+# the console now says which attempt each pickup landed on, so you can see the
+# effect directly rather than guessing. Lower them once it lands first try: the
+# cursor is taken away from you for this long on every single action.
+click_settle = 0.05
+aim_settle = 0.20
+
+
 # -----------------------------------------------------------------------------
 # Potion rules - one [section] each
 # -----------------------------------------------------------------------------
-# ORDER MATTERS. Rules are checked top to bottom and the FIRST one that matches
-# wins, so put the most urgent one first. That is why "rejuvenation" is above
-# "health": when you are at 10% both rules match, and you want the emergency
-# potion, not the ordinary one.
+# ORDER MATTERS. Rules are checked top to bottom and the FIRST one that can
+# actually be acted on wins, so put the most urgent one first.
 #
 # Each rule takes:
 #   meter    - which meter to watch. Must be a name from assets/meters.json
 #              (currently: health, mana).
 #   below    - drink when the meter is at or below this. Percent ("20%") or a
 #              fraction ("0.20") - both mean the same thing.
-#   keys     - the key to press. Several keys separated by commas means "use
-#              these in turn", which spreads the drinking across more than one
-#              belt column - useful when two columns hold the same potion, since
-#              nothing here can see how many you have left in each.
-#   cooldown - seconds to wait before THIS rule may fire again. Each rule has its
-#              own, which is what lets an emergency potion fire immediately after
-#              an ordinary one. Set it longer than the potion takes to work, or
-#              the next check still sees a low orb and drinks again.
+#   use      - WHICH POTION to drink: healing, mana or rejuvenation. The key is
+#              worked out by LOOKING AT YOUR BELT, so you never write a key down
+#              and it is always right, even after you rearrange the slots. If
+#              two slots hold that potion, the presses alternate between them.
+#   keys     - only a fallback, for if the belt cannot be read at all (a bad
+#              assets/belt.json, or the game at a resolution it was not
+#              calibrated for). Leave it as-is; "use" is what normally decides.
+#   cooldown - seconds to wait before THIS rule may fire again. Each rule has
+#              its own, which is what lets an emergency potion fire immediately
+#              after an ordinary one. Set it longer than the potion takes to
+#              work, or the next check still sees a low orb and drinks again.
+#   only_if_missing - makes the rule a LAST RESORT: it fires only when your belt
+#              has none of the named potion left. See [health_backup] below.
 #
-# To move health to key 4 and rejuvenation to key 1, just swap the "keys" lines.
-# To stop drinking mana entirely, delete the [mana] section (or set enabled = no
-# above to stop all of it).
+# A RULE THAT CANNOT BE ACTED ON IS SKIPPED, NOT OBEYED. If a rule says to drink
+# a healing potion and you have none, the program moves on to the next rule
+# instead of pressing a dead key - which is what makes the backup rule below
+# work, and what stops it pressing "4" for mana when slot 4 is empty.
 
+
+# Emergency. Rejuvenation fills health AND mana instantly, so it is the right
+# thing when health is genuinely low - but it is also the rarest potion, which
+# is why nothing else in this file spends one.
 [rejuvenation]
 meter = health
 below = 30%
+use = rejuvenation
 keys = 2, 3
 cooldown = 1.0
 
+# Ordinary healing. Heals over several seconds rather than instantly, so the
+# cooldown has to outlast the heal - re-checking before it lands reads a still
+# low orb and drinks again, which is how a belt empties in one second.
 [health]
 meter = health
 below = 70%
+use = healing
 keys = 1
 cooldown = 4.0
 
-# TEMPORARILY DISABLED 2026-09-12 at the owner's request - commented out rather
-# than deleted so the tuned numbers survive. Remove the "#" from the four lines
-# below to turn mana potions back on.
-#
-# [mana]
-# meter = mana
-# below = 15%
-# keys = 4
-# cooldown = 4.0
+# BACKUP, for when the healing potions have run out. Waits until 50% rather than
+# firing at the 70% above, because a rejuvenation potion is worth more than the
+# 20% of health you would be spending it on - and it only exists at all while
+# there is no healing potion in the belt, which is what "only_if_missing" says.
+[health_backup]
+meter = health
+below = 50%
+use = rejuvenation
+only_if_missing = healing
+cooldown = 1.0
+
+# Mana. There is deliberately NO backup rule here: if the mana potions run out,
+# mana is allowed to hit zero. A rejuvenation potion is far too valuable to
+# spend refilling mana, and that is a judgement call, not an oversight - drink
+# one by hand if a fight really needs it.
+[mana]
+meter = mana
+below = 20%
+use = mana
+cooldown = 4.0

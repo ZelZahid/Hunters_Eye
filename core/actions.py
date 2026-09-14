@@ -75,7 +75,50 @@ CLICK_HOLD_SECONDS = 0.05 #how long the mouse button stays down before releasing
 AIM_SETTLE_SECONDS = 0.20
 
 
-def click_at(x, y):
+#HOW OFTEN THE CURSOR IS PUT BACK WHILE WE ARE WAITING ON IT.
+#
+#Every settle in this module is "move the cursor, then wait for the game to notice". That is only
+#a wait if nothing else is touching the mouse - and the player is. Reported live, and it is the
+#measurement that finally explained the symptom: pickups land first try when the owner is standing
+#still, and miss first try while they are moving, holding left-click to walk, or teleporting.
+#
+#Nothing exotic: a single SetCursorPos is one event among the stream the physical mouse is
+#producing. Move to the item, sleep 0.2s, and the player's own hand has dragged the cursor
+#somewhere else before the key is pressed - so the game resolves the action against wherever the
+#mouse ended up. THIS MAKES A LONGER SETTLE WORSE RATHER THAN BETTER, which is why raising
+#AIM_SETTLE_SECONDS did not help and why the keyed path (0.20s) missed more often than the clicked
+#one (0.05s). The wait needed to be a HOLD.
+#
+#So the cursor is re-asserted every few milliseconds for the length of the settle. That is the
+#owner's own suggestion - "force stopping my manual inputs for a few milliseconds" - done without
+#blocking anything: no BlockInput, which needs privileges and can leave a machine with no input at
+#all if the process dies at the wrong moment, and no low-level hooks. The player's mouse is simply
+#outvoted for 50-200ms, and only while an item is actually being collected.
+#
+#10ms is well under any human movement worth worrying about and costs ~20 SetCursorPos calls on
+#the longest settle, which is nothing. It does NOT stop the player's BUTTONS reaching the game -
+#if they are holding left-click to walk, the game keeps walking; it just walks toward the item,
+#which is where we want them anyway.
+CURSOR_HOLD_INTERVAL = 0.01
+
+
+def hold_cursor(x, y, seconds, interval=CURSOR_HOLD_INTERVAL):
+    """Keeps the cursor at (x, y) for `seconds`, re-asserting it every `interval`.
+
+    The replacement for "move once, then sleep" everywhere this module waits on the cursor - see
+    CURSOR_HOLD_INTERVAL. Returns when the time is up, with the cursor still on the target.
+    """
+    deadline = time.perf_counter() + seconds
+    pyautogui.moveTo(x, y, _pause=False)
+    while True:
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            return
+        time.sleep(min(interval, remaining))
+        pyautogui.moveTo(x, y, _pause=False)
+
+
+def click_at(x, y, settle=MOVE_SETTLE_SECONDS):
     """Moves the cursor to (x, y) and clicks it. The default action for act_until_gone().
 
     Three separate steps, each with its own real gap - not one mouseDown(x, y) call:
@@ -101,11 +144,25 @@ def click_at(x, y):
     MOVE_SETTLE_SECONDS/CLICK_HOLD_SECONDS are the only intended delays here, not an
     incidental side effect of the wrong default.
     """
-    pyautogui.moveTo(x, y, _pause=False)
-    time.sleep(MOVE_SETTLE_SECONDS)
+    #A HOLD, not a move-then-sleep: the player's own mouse is moving too. See CURSOR_HOLD_INTERVAL.
+    hold_cursor(x, y, settle)
     pyautogui.mouseDown(_pause=False)
-    time.sleep(CLICK_HOLD_SECONDS)
+    #Held down for a beat, and the cursor is held THERE for that beat too - a game that samples
+    #the cursor when the button goes up would otherwise read wherever the player's hand had got to.
+    hold_cursor(x, y, CLICK_HOLD_SECONDS)
     pyautogui.mouseUp(_pause=False)
+
+
+def click_with(settle):
+    """click_at with a settle chosen by the caller, bound once - the mirror of press_at().
+
+    Exists because how long a game needs between the cursor arriving and the button going down is
+    a property of THAT GAME and that machine, not of clicking, so it belongs somewhere a user can
+    retune it (main.py reads it from user_config.txt) rather than in a constant here.
+    """
+    def act(x, y):
+        click_at(x, y, settle=settle)
+    return act
 
 
 def press_at(key, hold=None, settle=AIM_SETTLE_SECONDS):
@@ -129,8 +186,11 @@ def press_at(key, hold=None, settle=AIM_SETTLE_SECONDS):
         act_until_gone(get_position, act=press_at("e"))
     """
     def act(x, y):
-        pyautogui.moveTo(x, y, _pause=False)
-        time.sleep(settle)
+        #A HOLD, not a move-then-sleep, and this path needs it most: a keypress carries no
+        #coordinates, so it is resolved against wherever the game last saw the cursor - and this
+        #settle is the longest one, giving the player's own mouse the most time to drag it away.
+        #See CURSOR_HOLD_INTERVAL.
+        hold_cursor(x, y, settle)
         if hold is None:
             press_key(key)
         else:
@@ -138,8 +198,38 @@ def press_at(key, hold=None, settle=AIM_SETTLE_SECONDS):
     return act
 
 
+#HOW LONG A TARGET MUST SIT PERFECTLY STILL AFTER AN ACTION BEFORE THE ACTION IS PRESUMED TO HAVE
+#MISSED - and how far "still" is, in the caller's own pixels.
+#
+#click_interval is long (0.8s in D2R) for one reason: a click means "walk over there", and
+#re-issuing it mid-walk retargets the character. That reasoning only holds if the click LANDED. If
+#it missed, nothing at all is happening and the whole interval is dead time - which is what the
+#owner reported: a first action that misses, then a second or third that works, each a full
+#interval apart, while somebody else walks off with the item.
+#
+#The evidence needed to tell those apart is already being collected. The caller polls
+#get_position() several times a second, and in a game whose camera follows the character, an
+#action that LANDED moves the world: the character walks and the target's screen position changes.
+#An action that missed changes nothing. So "the target has not moved a pixel since we acted" is a
+#measurement of "that did nothing", and it is free.
+#
+#Deliberately a duration and not a single poll: one unchanged reading is ordinary, three in a row
+#is a stopped world. And deliberately a few pixels rather than exact equality, because a tracked
+#position jitters by a pixel or two even when nothing moves.
+#
+#THE FAILURE MODE TO WATCH, if this ever needs turning off (pass None): a game that does NOT move
+#the camera while the character walks - at a map edge, or a fixed-camera scene - looks identical
+#to a miss, and the action would be re-issued during a walk that was working. That is the harm
+#click_interval exists to prevent, so it is re-introduced here in exactly that one case. Re-issuing
+#the SAME position is far milder than re-issuing a stale one, which is what made it a problem
+#originally (Error_history #18), but it is the thing to suspect if pickups get worse, not better.
+RETRY_IF_STILL_SECONDS = 0.25
+RETRY_STILL_PX = 4
+
+
 def act_until_gone(get_position, act=None, timeout=5.0, click_interval=0.8, poll_interval=0.15,
-                   is_paused=None, pause_budget=PAUSE_BUDGET_SECONDS):
+                   is_paused=None, pause_budget=PAUSE_BUDGET_SECONDS,
+                   retry_if_still=RETRY_IF_STILL_SECONDS, still_px=RETRY_STILL_PX):
     """Acts on whatever get_position() reports is the target's current center, repeating until
     either get_position() returns None (target gone - success) or `timeout` seconds elapse with
     it still present (gave up).
@@ -164,12 +254,18 @@ def act_until_gone(get_position, act=None, timeout=5.0, click_interval=0.8, poll
         and the pause doesn't count against `timeout`) instead of stopping outright - lets a
         caller temporarily suppress clicking (e.g. a snooze hotkey) without losing progress
         on the current attempt. Bounded by `pause_budget` - see PAUSE_BUDGET_SECONDS.
+    retry_if_still: act again early, without waiting out click_interval, once the target has not
+        moved by more than `still_px` for this long since the last action - i.e. once the action
+        is measurably known to have done nothing. None disables it. See RETRY_IF_STILL_SECONDS,
+        which also documents the one situation in which it is wrong.
     Returns True on success (target disappeared), False on timeout or on staying paused too long.
     """
     act = click_at if act is None else act
     elapsed_active = 0.0
     elapsed_paused = 0.0
     time_since_click = click_interval #act immediately on the first iteration
+    aimed_at = None   #where the last action was aimed, or None before the first one
+    still_for = 0.0   #how long the target has sat within still_px of that, i.e. nothing happened
     while elapsed_active < timeout:
         if is_paused is not None and is_paused():
             if elapsed_paused >= pause_budget:
@@ -182,9 +278,19 @@ def act_until_gone(get_position, act=None, timeout=5.0, click_interval=0.8, poll
         if pos is None:
             return True
 
-        if time_since_click >= click_interval:
+        if aimed_at is not None:
+            moved = (abs(pos[0] - aimed_at[0]) > still_px or abs(pos[1] - aimed_at[1]) > still_px)
+            #The world reacting is proof the action landed; a world that has not budged is proof
+            #it did not. See RETRY_IF_STILL_SECONDS.
+            still_for = 0.0 if moved else still_for + poll_interval
+
+        nothing_happened = (retry_if_still is not None and aimed_at is not None
+                            and still_for >= retry_if_still)
+        if time_since_click >= click_interval or nothing_happened:
             act(pos[0], pos[1])
+            aimed_at = pos
             time_since_click = 0.0
+            still_for = 0.0
 
         time.sleep(poll_interval)
         elapsed_active += poll_interval

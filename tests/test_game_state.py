@@ -18,13 +18,19 @@ import cv2 as cv
 import numpy as np
 from core import game_state
 
+ROOT = Path(__file__).resolve().parent.parent
+
 FRAME_W, FRAME_H = 1200, 800
 ORB_BOX = (100, 500, 180, 180)          # x, y, w, h in pixels
 REGION = (ORB_BOX[0] / FRAME_W, ORB_BOX[1] / FRAME_H, ORB_BOX[2] / FRAME_W, ORB_BOX[3] / FRAME_H)
 
-RED = ((0, 70, 40), (10, 255, 255))
-RED_WRAP = ((168, 70, 40), (179, 255, 255))
-BLUE = ((95, 70, 40), (130, 255, 255))
+#These mirror the presets in tools/calibrate_meters.py. THE VALUE FLOOR IS 10, NOT 40: a nearly
+#empty globe keeps its last liquid in its most shaded part, measured at V=16 on a real frame, and
+#a floor of 40 discarded it - reporting "no read" at exactly the fill that matters. Saturation is
+#what separates liquid from the empty orb. See section 98 and Error_history.txt #50.
+RED = ((0, 70, 10), (10, 255, 255))
+RED_WRAP = ((168, 70, 10), (179, 255, 255))
+BLUE = ((95, 70, 10), (130, 255, 255))
 
 health = game_state.Meter("health", REGION, (RED, RED_WRAP), "ellipse", "bottom")
 
@@ -277,6 +283,51 @@ shown = "None" if value is None else format(value * 100, ".1f") + "%"
 print(f"  {'ok  ' if ok else 'FAIL'} at 0.3x a real 15% orb still reads {shown} - the thresholds "
       f"that matter stay measurable")
 failures += not ok
+
+print("\n98. A DARK liquid is still liquid - the value floor must not exclude it")
+#REGRESSION TEST. Reported as "when my mana is really low, it's showing no read", with a screenshot
+#showing Mana 23/407 = 5.7% and the panel saying "no read". The cause was not the fill level and
+#not the noise floor: a nearly-empty globe keeps its last liquid in the most shaded part of itself,
+#and measured on that frame the surviving liquid read H=120 S=165-238 V=16 against a configured
+#floor of V>=40. Unmistakably blue, unmistakably saturated, and thrown away.
+#
+#SATURATION is what separates liquid from an empty orb - the empty part of a real orb measures
+#S 25-40 against the S>=70 floor - so the value floor was doing almost no work and all of the harm.
+#
+#The half that matters is health, not mana: an unreadable health orb is None, None fires no potion
+#(deliberately - see section 2), and the moment it goes dark is the moment the emergency tier
+#exists for. So this is tested at the exact brightness that was measured.
+DARK_V = 16   #measured on the owner's frame
+dark_blue = cv.cvtColor(np.uint8([[[120, 200, DARK_V]]]), cv.COLOR_HSV2BGR)[0][0].tolist()
+dark_red = cv.cvtColor(np.uint8([[[3, 200, DARK_V]]]), cv.COLOR_HSV2BGR)[0][0].tolist()
+
+for label, meter, liquid in (("mana", mana_meter, dark_blue), ("health", health, dark_red)):
+    for fill in (0.06, 0.30, 0.90):
+        failures += not check(f"{label}: dark liquid at {fill:.0%}", fill,
+                              game_state.read_all(make_frame(fill, liquid_bgr=liquid), [meter])[label],
+                              tolerance=0.06)
+
+#The floor still has to keep genuine blackness out, or an unlit empty orb starts reporting a level.
+black_orb = game_state.read_all(make_frame(0.5, liquid_bgr=[0, 0, 0]), [mana_meter])["mana"]
+print(f"  {'ok  ' if black_orb is None else 'FAIL'} a black orb is still not a reading "
+      f"({'None' if black_orb is None else format(black_orb, '.0%')})")
+failures += not (black_orb is None)
+empty_orb = game_state.read_all(make_frame(0.0, liquid_bgr=dark_blue), [mana_meter])["mana"]
+print(f"  {'ok  ' if empty_orb is None else 'FAIL'} an empty orb is still not a reading "
+      f"({'None' if empty_orb is None else format(empty_orb, '.0%')})")
+failures += not (empty_orb is None)
+
+#And the CONFIGURED FILE has to carry the lower floor too. This is the pair that actually broke:
+#the module was right and the JSON excluded the liquid, so a test of the module alone would have
+#passed all the way through the bug.
+import json as _json
+_cfg = _json.load(open(str(ROOT / "assets" / "meters.json"), encoding="utf-8"))
+_floors = [rng[0][2] for prof in _cfg.get("profiles", []) for m in prof["meters"].values()
+           for rng in m["hsv_ranges"]]
+_ok = bool(_floors) and max(_floors) <= DARK_V
+print(f"  {'ok  ' if _ok else 'FAIL'} every calibrated range admits liquid down to V={DARK_V} "
+      f"(floors in assets/meters.json: {sorted(set(_floors))})")
+failures += not _ok
 
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

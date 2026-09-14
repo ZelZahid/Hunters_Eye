@@ -51,6 +51,15 @@ CONFIG_PATH = ASSETS_DIR / "meters.json"
 # OpenCV HSV: H is 0-179 (NOT 0-359), S and V are 0-255. Red straddles H=0, so it needs two
 # ranges; every other color needs one. The S and V floors are what separate "liquid" from the
 # dark, desaturated empty portion of the orb - they matter more than the hue bounds do.
+#THE VALUE FLOOR IN THESE PRESETS IS 10, NOT 40, AND THE REASON IS A BLIND SPOT IN THIS TOOL.
+#A calibration samples the orb at whatever fill it happens to have when you run it - in practice a
+#full one, where the liquid is brightly lit. It therefore never sees how dark that liquid gets when
+#the orb is nearly empty, which is the one moment the reading matters. Measured on a real frame at
+#23/407 mana: the surviving liquid reads V=16 against a floor of 40, so the meter said "no read"
+#while the game said 5%. Saturation is what actually separates liquid from the empty orb - the
+#empty part measures S 25-40 against a floor of 70 - so the value floor was doing almost no work.
+#See Error_history.txt #50. If you widen a range here, widen it in assets/meters.json too, or a
+#config calibrated before this change keeps the old floor.
 PRESETS = {
     "health": {
         # Red, red-wrapped... AND GREEN. Diablo II turns the health globe green while poisoned,
@@ -60,14 +69,14 @@ PRESETS = {
         # changes colour to signal a status needs one range per colour it can legitimately be.
         # Generic, not a Diablo detail - any game that recolours a bar (poisoned, cursed,
         # shielded, overhealed) has this, as does a battery gauge that turns red when low.
-        "hsv_ranges": (((0, 70, 40), (10, 255, 255)), ((168, 70, 40), (179, 255, 255)),
-                       ((35, 70, 40), (85, 255, 255))),
+        "hsv_ranges": (((0, 70, 10), (10, 255, 255)), ((168, 70, 10), (179, 255, 255)),
+                       ((35, 70, 10), (85, 255, 255))),
         "shape": "ellipse",
         "fill_from": "bottom",
         "prompt": "the HEALTH orb (red)",
     },
     "mana": {
-        "hsv_ranges": (((95, 70, 40), (130, 255, 255)),),
+        "hsv_ranges": (((95, 70, 10), (130, 255, 255)),),
         "shape": "ellipse",
         "fill_from": "bottom",
         "prompt": "the MANA orb (blue)",

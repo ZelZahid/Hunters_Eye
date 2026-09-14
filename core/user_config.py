@@ -26,7 +26,15 @@ from collections import namedtuple
 #One rule: when `meter` reads at or below `at_or_below`, press one of `keys`, then leave THIS
 #rule alone for `cooldown` seconds. `label` is the section name, used for logging and to key the
 #per-rule cooldown. Deliberately the same shape main.py already used as a literal.
-Rule = namedtuple("Rule", "meter at_or_below keys cooldown label")
+#`keys` is the literal keys to press. `use` names a SUPPLY instead - "press whichever key
+#currently holds this" - which a caller resolves against something it can see (main.py reads the
+#potion belt; core/slots.py is what reads it). That indirection is the point: a key written down
+#by hand is a claim about the world that stops being true the moment the player rearranges the
+#belt or runs out, and the program then presses a key that does nothing, or worse, spends the
+#wrong supply. `keys` remains as the fallback for when the supply cannot be seen at all.
+#`only_if_missing` names a supply this rule is a LAST RESORT for: it fires only when none is left.
+Rule = namedtuple("Rule", "meter at_or_below keys cooldown label use only_if_missing",
+                  defaults=("", ""))
 
 #Reserved section name for things that are not rules. Every other section is a rule.
 SETTINGS_SECTION = "settings"
@@ -58,6 +66,14 @@ DEFAULTS = {
     #while a cast is over the instant it lands and is paced by the character's cast rate - which
     #is gear, and therefore the user's business rather than a developer's.
     "key_collect_retry": 0.35,
+    #How long to leave the cursor sitting on a target before acting on it. Two values, because
+    #the two events are not the same shape: a click's button-down carries the cursor position in
+    #its own Win32 message, while a keypress carries no coordinates at all and is resolved against
+    #whatever the game last decided the cursor was over. They are settings rather than constants
+    #because what a game needs here depends on the game and the machine, and the only way to find
+    #it is to try numbers while playing.
+    "click_settle": 0.05,
+    "aim_settle": 0.20,
 }
 
 #Sanity bounds. These are not taste, they are "this value cannot possibly be what you meant":
@@ -71,12 +87,15 @@ _LIMITS = {
     "below": (0.0, 1.0),
     "teleport_min_distance": (0.0, 1.0),
     "key_collect_retry": (0.0, 10.0),
+    "click_settle": (0.0, 2.0),
+    "aim_settle": (0.0, 2.0),
 }
 
 
 class Config(namedtuple("Config",
                        "enabled min_gap snooze ignore_below use_password password game_name "
-                       "teleport_key teleport_min_distance key_collect_retry rules source")):
+                       "teleport_key teleport_min_distance key_collect_retry click_settle "
+                       "aim_settle rules source")):
     """Loaded settings. `source` is the file it came from, or None when defaults were used."""
 
     @property
@@ -85,7 +104,8 @@ class Config(namedtuple("Config",
 
 
 _FIELDS = ("enabled", "min_gap", "snooze", "ignore_below", "use_password", "password",
-           "game_name", "teleport_key", "teleport_min_distance", "key_collect_retry")
+           "game_name", "teleport_key", "teleport_min_distance", "key_collect_retry",
+           "click_settle", "aim_settle")
 
 
 def _defaults(rules):
@@ -160,7 +180,7 @@ def load(path, known_meters=None, default_rules=()):
     if parser.has_section(SETTINGS_SECTION):
         section = parser[SETTINGS_SECTION]
         for key in ("min_gap", "snooze", "ignore_below", "teleport_min_distance",
-                    "key_collect_retry"):
+                    "key_collect_retry", "click_settle", "aim_settle"):
             if key in section:
                 try:
                     settings[key] = _number(section[key], f"[{SETTINGS_SECTION}]", key, DEFAULTS[key])
@@ -188,7 +208,10 @@ def load(path, known_meters=None, default_rules=()):
             continue
         where = f"[{name}]"
         section = parser[name]
-        missing = [k for k in ("meter", "below", "keys") if k not in section]
+        #`keys` OR `use` - either says what to press, and "use" is the better one because it says
+        #what to press it FOR. A rule with neither can never do anything.
+        required = ("meter", "below") + (() if ("keys" in section or "use" in section) else ("keys",))
+        missing = [k for k in required if k not in section]
         if missing:
             _warn(where, f"missing {', '.join(missing)}; rule ignored")
             continue
@@ -205,8 +228,15 @@ def load(path, known_meters=None, default_rules=()):
                          f"({', '.join(sorted(known_meters)) or 'none'}); rule ignored")
             continue
 
-        keys = _keys(section["keys"], where)
-        if not keys:
+        use = section.get("use", "").strip()
+        only_if_missing = section.get("only_if_missing", "").strip()
+        if "keys" in section:
+            keys = _keys(section["keys"], where)
+            if not keys and not use:
+                continue  #nothing to press and nothing to look up - the rule is inert
+        elif use:
+            keys = ()  #resolved from what the caller can see, every time it is needed
+        else:
             continue
 
         try:
@@ -216,6 +246,8 @@ def load(path, known_meters=None, default_rules=()):
                 keys=keys,
                 cooldown=_number(section.get("cooldown", "1.0"), where, "cooldown", 1.0),
                 label=name,
+                use=use,
+                only_if_missing=only_if_missing,
             ))
         except Exception as exc:  # noqa: BLE001 - same: a bad rule is dropped, never fatal
             _warn(where, f"could not be read ({exc}); rule ignored")

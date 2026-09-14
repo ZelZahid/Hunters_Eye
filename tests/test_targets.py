@@ -364,5 +364,74 @@ check("a 2-letter shared word would still be held to 0.5",
 check("a merge/split is not forgiven more than before",
       td._match_ratio("SUPERMANAPETIEN", "SUPER MANA POTION", 0.75, REAL_SHARED) is None)
 
+print("\n12. This program's OWN overlay text must never match a target")
+#THIS IS A REGRESSION TEST FOR A BUG THAT SHIPPED. Reported as "the program detected a LO RUNE on
+#the text where it says the map name and difficulty", and the text turned out to be the F5 debug
+#panel's own "no read". The overlay is composited into the screen we capture, so everything it
+#draws goes through OCR exactly like an item label - CLAUDE.md has always said so and recorded
+#that none of the panel's words matched a target. Section 10's shared-word slack invalidated that
+#recorded check without anyone re-running it, because it took "READ" vs "RUNE" from needing 0.75
+#down to needing 0.50, and 2 of 4 characters wrong is a different word, not a misread.
+#
+#So the check is a test now instead of a sentence in a document. Every string the panel can draw
+#is listed here; if the wording changes, add it. If matching is ever loosened again, this fails
+#before it reaches a live game.
+PANEL_TEXT = [
+    "GAME STATE", "health", "mana",
+    "no read",                                   #<- the one that actually matched a rune
+    "GAME STATE  NOT FOCUSED", "readings", "suspended", "actions", "paused",
+    "GAME STATE  window not found", "not on screen", "not on screen (0.30)",
+    "GAME STATE  NOT CALIBRATED", "GAME STATE  STALE 4s",
+    "RECALIBRATE", "was 1280x800", "now 1920x1080", "readings not trustworthy",
+    "run calibrate_meters.py", "0%", "58%", "100%",
+]
+
+
+def best_match_for(line):
+    """What find_text_matches would report for this line, ignoring ranking subtleties: any target
+    that matches at all is a false positive here, because none of this is an item."""
+    words = td._clean_text(line).split()
+    hits = set()
+    for start in range(len(words)):
+        for end in range(start + 1, len(words) + 1):
+            text = " ".join(words[start:end])
+            if not text:
+                continue
+            for name, spec in real.items():
+                if spec.get("exact") and not (start == 0 and end == len(words)):
+                    continue
+                if td._match_ratio(text, name, 0.75, REAL_SHARED) is not None:
+                    hits.add((text, name))
+    return hits
+
+
+panel_hits = {}
+for line in PANEL_TEXT:
+    hits = best_match_for(line)
+    if hits:
+        panel_hits[line] = hits
+check(f"none of the {len(PANEL_TEXT)} panel strings matches any target "
+      f"({panel_hits if panel_hits else 'clean'})", not panel_hits)
+
+#And the specific pair, spelled out, so a failure says what broke rather than just "something".
+check("'NO READ' is not a LO RUNE",
+      td._match_ratio("NO READ", "LO RUNE", 0.75, REAL_SHARED) is None)
+check("...nor a KO RUNE, nor an IO RUNE",
+      td._match_ratio("NO READ", "KO RUNE", 0.75, REAL_SHARED) is None
+      and td._match_ratio("NO READ", "IO RUNE", 0.75, REAL_SHARED) is None)
+#The floor is what stops it, so pin the two measured anchors it sits between: a 4-letter shared
+#word must not be allowed two wrong characters, and the real POTION misread must still pass.
+check(f"a 4-letter shared word keeps a real cutoff ({td._required_cutoff('RUNE', 0.75, True):.2f})",
+      td._required_cutoff("RUNE", 0.75, relaxed=True) >= td.SHARED_WORD_FLOOR)
+check("'READ' vs 'RUNE' (0.50) is below that floor",
+      td._word_ratio("READ", "RUNE") < td._required_cutoff("RUNE", 0.75, relaxed=True))
+check("'PETIEN' vs 'POTION' (0.67) is still above it",
+      td._word_ratio("PETIEN", "POTION") >= td._required_cutoff("POTION", 0.75, relaxed=True))
+#Slack may only ever loosen. A caller passing a base cutoff below the floor must not find the
+#"relaxed" cutoff has become STRICTER than the plain one.
+check("slack never comes out stricter than no slack",
+      all(td._required_cutoff(w, base, relaxed=True) <= td._required_cutoff(w, base)
+          for w in ("RUNE", "POTION", "REJUVENATION") for base in (0.4, 0.55, 0.75, 0.9)))
+
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

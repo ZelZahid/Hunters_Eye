@@ -15,11 +15,12 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 
 ## Now
 
-- [ ] **Validate the potion thresholds against real damage.** (Back in NOW 2026-09-11, with the Pindle run on hold - and the run is where these finally get exercised, since an automated fight is exactly where they matter.) The last thing in the potion stack that has never been tested. Everything guarding it is confirmed live - foreground, in-play, the noise floor - but `user_config.txt`'s numbers (`rejuvenation <=30%`, `health <=70%`, `mana <=25%`) are still guesses.
-  - 70% is high; it will drink often. Does the belt last a run?
-  - does the emergency tier beat the ordinary one on a burst?
-  - does it double-drink on one dip? If so the 4.0s health cooldown is too short
-  - `F6` snoozes for 10s; `enabled = no` stops it outright
+- [ ] **Watch the belt-driven potion keys in real play.** (Added 2026-09-14, owner's request: "I don't want to manually tell the program what key to press... identify which slot".) `core/slots.py` reads the four HUD belt slots by colour and `user_config.txt` rules now say `use = healing|mana|rejuvenation` instead of naming keys. Verified on four real frames; what is NOT yet seen live:
+  - does it keep up when a column is drunk empty mid-fight? The belt is re-read every 0.5s, so there is a window where it still believes a potion is there.
+  - the `[health_backup]` rule (rejuvenation at 50% only when no healing potion remains) has never fired in a real fight - the interesting half is whether the 70% healing rule falls through cleanly when the belt runs dry.
+  - **mana drinking is re-enabled** (it was commented out on 2026-09-12 at the owner's request) at `below = 15%`, because the new instruction was about how mana should behave. Comment out `[mana]` again if that was not wanted.
+  - `assets/belt.json`'s region was measured at 1912x1071. A resolution change re-lays out the HUD, exactly as `meters.json` does - there is no belt calibrator yet, so it would need re-measuring by hand.
+
 
 ---
 
@@ -27,13 +28,22 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 
 *In order — each depends on the one above it.*
 
+- [ ] **Confirm the cursor hold fixed the first-attempt misses.** (Added 2026-09-14, resolved-in-principle the same day.) Owner reported telekinesis and teleport-then-click missing the first attempt, then diagnosed it themselves: *"it works when I am not doing anything... it only fails first attempt if I'm using my left click and moving around or teleporting"*. That is the answer — every settle was "move the cursor, then sleep", and the player's own mouse drags it off target during the sleep. **A longer settle made it worse, which is why raising `aim_settle` did nothing.** `core/actions.hold_cursor()` now re-asserts the position every 10ms for the length of the settle.
+  - the console says which attempt each pickup landed on — "1st try" while moving is the thing to look for
+  - if it still misses while moving, the next suspect is the player's held LEFT BUTTON rather than the cursor: a click of ours inside their hold is ambiguous to the game. `BlockInput` would settle it but needs privileges and can strand a machine with no input, so it is a last resort, not a next step.
+  - `click_settle` / `aim_settle` are in `user_config.txt` now, so tuning needs no code edit
+
+- [ ] **Validate the potion thresholds against real damage.** (Was NOW; displaced 2026-09-14 by the first-attempt misses, which the owner hits on every single pickup.) (Back in NOW 2026-09-11, with the Pindle run on hold - and the run is where these finally get exercised, since an automated fight is exactly where they matter.) The last thing in the potion stack that has never been tested. Everything guarding it is confirmed live - foreground, in-play, the noise floor - but `user_config.txt`'s numbers (`rejuvenation <=30%`, `health <=70%`, `mana <=25%`) are still guesses.
+  - 70% is high; it will drink often. Does the belt last a run?
+  - does the emergency tier beat the ordinary one on a burst?
+  - does it double-drink on one dip? If so the 4.0s health cooldown is too short
+  - `F6` snoozes for 10s; `enabled = no` stops it outright
+
 - [ ] **The Pindle run - ON HOLD (owner's call, 2026-09-11), and what is left when it resumes.** `F7` walks to the portal, through it, to the doorway and kills the pack, confirmed live. Open threads, none urgent:
   - **the unverified assumption**: does the monster name plate stay red while a monster is hurt, or drain with its health? If it drains, a nearly-dead monster stops being cast at and gets re-found by motion instead - watch for casts that stop early
   - `CHICKEN_BELOW` (20%) was chosen by the program, not by the owner
   - chaining `F7` onto the end of `next_game()` so one key runs game after game - **NOT yet** (owner, 2026-09-11): runs stay hand-started while this is being debugged. See Decisions.
   - `F8` (fight only) was removed as not useful - `routes/pindle.py`'s `fight_here()` is still there if a hotkey is ever wanted again
-
-- [ ] **Validate potion drinking in real gameplay.** Thresholds in `user_config.txt` are still unvalidated starting points. `F6` snoozes for 10s; `enabled = no` in that file turns it off. Watch the `F5` panel while taking real damage: does the ordinary tier fire near 35%, does the emergency tier beat it on a burst, does it double-drink on one dip (if so the 4.0s health cooldown is too low)?
 
 - [ ] **Read meters from a higher-resolution frame.** `main.py` measures meters off the 0.3x detection frame, where an orb is ~43 rows tall and one row is 2.3% — that quantization *is* the noise floor that made the lobby artifact indistinguishable from a real low reading, and it currently costs any reading below ~7%. `CLAUDE.md` already anticipated this ("the meter is too small to measure reliably at that downscale and `main.py` should read it from a higher-resolution frame instead"). The meter regions are small, so cropping them out of the full-resolution frame before the downscale should be cheap — measure it.
 

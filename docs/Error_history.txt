@@ -1662,3 +1662,72 @@ Lesson: when a detector sees nothing at all, suspect the step that DESTROYS
   keeps re-recording: a threshold derived for one job is not evidence about
   another. It had to be re-derived for the new channel, and the same number then
   turned out to be wrong for dim UI chrome in the opposite direction.
+
+49. A LO RUNE was found on this program's own debug panel.
+Symptom: the console reported "Found 'LO RUNE' [to collect] at center (1857, 102)" - the top-right
+  corner of the screen, where Diablo II prints the map name and difficulty. The owner could not
+  reproduce it on demand and reported it as probably still there.
+Diagnosis: the text was not the map name. It was the F5 GAME STATE panel, which this program
+  DRAWS ITSELF, showing "no read" for a meter it could not measure. The overlay is composited into
+  the desktop, so mss captures it and everything it draws goes through OCR exactly like an item
+  label. CLAUDE.md had said so for versions, and recorded the check that went with it: none of
+  GAME STATE / health / mana / no read matched any target.
+  That recorded check had been invalidated the day before, by the shared-word slack added for
+  "SUPER MANA PeTIeN" (#48's sibling change). Reproduced from the owner's screenshot:
+      "NO"   vs "LO"     0.500   the 2-letter rung - always allowed one wrong character
+      "READ" vs "RUNE"   0.500   needed 0.75 before; 0.75 - 1/4 = 0.50 after
+  Both cleared, so "NO READ" matched LO RUNE, KO RUNE and IO RUNE at 0.571 each. On the frame that
+  was screenshotted the three-way tie suppressed it - find_text_matches reports nothing when two
+  targets tie - which is why it was intermittent: any reading that broke the tie let one win.
+Fix: a floor under the slack. "One more misread character" is a very different concession at four
+  characters than at twelve - at n=4 it was forgiving a quarter of the word, and two of four wrong
+  is a different word, not a misread. SHARED_WORD_FLOOR (0.6) is placed between the two MEASURED
+  anchors rather than next to either: "READ"/"RUNE" at 0.500 must be refused and "PETIEN"/"POTION"
+  at 0.667 - the real misread the slack exists for - must still pass, leaving 0.1 of margin below
+  and 0.067 above. Equivalently: no word shorter than six characters gets any slack.
+  The recorded check became a TEST (test_targets.py 12) listing every string the panel can draw.
+Lesson: a check written down in prose is not a check. This one was accurate when it was written,
+  stayed in CLAUDE.md word for word, and was quietly falsified by a change three sections away in
+  a different file - because nothing re-ran it. The same sentence as an assertion would have
+  failed the moment the cutoff moved. Anything of the form "X does not currently collide with Y"
+  is a test, not a note.
+  Second lesson, smaller: WE ARE IN OUR OWN FRAME. Every detector in this project sees whatever
+  the overlay drew, so any text it renders is input to the thing it is reporting on.
+
+50. A nearly empty orb read "no read", because the last liquid is the darkest.
+Symptom: "when my mana is really low, it's showing No read". Screenshot: Mana 23/407 = 5.7%, the
+  F5 panel saying "no read" for mana. The same frame read health correctly at 100%, and an earlier
+  frame with Life 42/525 = 8% showed "no read" for HEALTH - which is the dangerous half, because
+  None fires no potion, by design, and 8% health is exactly when the emergency tier exists.
+Diagnosis: not the noise floor, which was the obvious suspect - CLAUDE.md already documents a
+  ~7% readability floor at CAPTURE_SCALE 0.3, and 5.7% sits right under it. That was a coincidence.
+  Sampling the raw HSV down the orb's centre showed the liquid was there and was the right colour:
+      y=1058   H=120  S=165  V=16
+      y=1064   H=120  S=238  V=16
+  against a configured range of H 95-130, S>=70, V>=40. Unmistakably blue, unmistakably saturated,
+  and below the value floor. A globe is shaded toward its edges, so the last liquid in a nearly
+  empty one sits in the most shaded part of it - the orb does not merely get shorter, the part
+  that survives is the dark part.
+  Confirmed synthetically at the measured brightness, and the fill level turned out to be a red
+  herring twice over: at V>=40 a DARK liquid reads "no read" at 6%, 30% AND 90% fill. It only ever
+  showed up at low mana because that is when the only liquid left is the dark part.
+      V>=40   dark 6%=none   dark 30%=none   bright 6%=5%   empty=none
+      V>=10   dark 6%=5%     dark 30%=30%    bright 6%=5%   empty=none
+Fix: the value floor drops from 40 to 10 in every range of every profile in assets/meters.json,
+  and in the presets in tools/calibrate_meters.py so a re-calibration cannot put it back.
+  SATURATION is what actually separates liquid from an empty orb - the empty part of a real orb
+  measures S 25-40 against the S>=70 floor - so the value floor was doing almost no work and all
+  of the harm. 10 sits below the measured 16 with margin and still rejects genuine black.
+  test_game_state.py 98 renders the orb at the MEASURED brightness and also asserts that the
+  shipped assets/meters.json carries a floor low enough to admit it.
+Lesson: A CALIBRATION TOOL SAMPLES ONE MOMENT. calibrate_meters.py asks the user to drag a box
+  round the orb and then measures the pixels inside it - at whatever fill the orb happens to have,
+  which in practice is a full one, brightly lit. It can therefore never learn how dark that same
+  liquid gets when the orb is nearly empty, and it warned about nothing because at calibration
+  time nothing was wrong. Anything calibrated from a single observation needs its range widened
+  deliberately toward the states that were not observed, especially the ones that only occur in an
+  emergency - which are exactly the ones nobody is calibrating during.
+  Second lesson: the module was right and the DATA was wrong. A test of _fill_fraction alone
+  passed through this entire bug, because it built its own ranges. Section 98 now asserts against
+  the shipped JSON too.
+
