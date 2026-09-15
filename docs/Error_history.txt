@@ -1731,3 +1731,26 @@ Lesson: A CALIBRATION TOOL SAMPLES ONE MOMENT. calibrate_meters.py asks the user
   passed through this entire bug, because it built its own ranges. Section 98 now asserts against
   the shipped JSON too.
 
+
+51. "Grand Charm of Inertia" was collected as a plain Grand Charm, despite [exact].
+Symptom: "It is detecting Grand Charm of Inertia even though its 4 words. It has to be 2 words
+  only." The green box covered "GRAND CHARM oF" and stopped short of "INERTIA".
+Diagnosis: [exact] meant "the span is Tesseract's whole line", and Tesseract split the label:
+      ['GRAND', 'CHARM', '6F']   <- one line
+      ['INERTIA']                <- another, same row, 17px to the right
+  The documented limitation only considered the line being too LONG (a neighbour swept on, which
+  refuses the match - safe). Too SHORT is the unsafe direction and nothing guarded it.
+  And even then a 3-word line should not match a 2-word name - but it did, through the merge/split
+  path in _match_ratio: "GRANDCHARM6F" vs "GRANDCHARM" = 2*10/22 = 0.909, over MERGED_WORD_CUTOFF
+  0.9. That path's floor was written to keep out a name's PREFIX (a missing word); an EXTRA short
+  word on a long name costs just as few characters.
+Fix: two guards, both only for [exact] items, both failing toward "refuse":
+  - _has_row_neighbour(): no OCR word may sit on the same row within EXACT_NEIGHBOUR_GAP (2.0) text
+    heights of the span. Judged from the word boxes, so it does not care how Tesseract grouped
+    them. Measured word spacing inside a label: 17px at a 15px height (1.1x).
+  - the span may not have more words than the name. A merge ("GRANDCHARM") still matches.
+  tests/fixtures/charm_grand_of_inertia.png is the real frame; test_targets.py 13.
+Lesson: A GUARD THAT LEANS ON SOMEONE ELSE'S SEGMENTATION INHERITS ITS ERRORS IN BOTH DIRECTIONS.
+  The known-limitation note reasoned carefully about one direction and so read as complete. When a
+  rule is "the whole X", ask what happens when X is cut too short as well as too long - and
+  check the question against the boxes, not against the grouping that produced the problem.

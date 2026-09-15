@@ -229,7 +229,7 @@ def winner_exact(line, specs):
             text = " ".join(words[start:end])
             whole_line = (start == 0 and end == len(words))
             for name, spec in specs.items():
-                if spec.get("exact") and not whole_line:
+                if spec.get("exact") and not (whole_line and len(words) <= len(name.split())):
                     continue
                 ratio = td._match_ratio(text, name, 0.75)
                 if ratio is None:
@@ -432,6 +432,48 @@ check("'PETIEN' vs 'POTION' (0.67) is still above it",
 check("slack never comes out stricter than no slack",
       all(td._required_cutoff(w, base, relaxed=True) <= td._required_cutoff(w, base)
           for w in ("RUNE", "POTION", "REJUVENATION") for base in (0.4, 0.55, 0.75, 0.9)))
+
+print("\n13. '[exact]' is not fooled when Tesseract cuts a label into two lines")
+#Added 2026-09-14 (Error_history.txt #51). "Grand Charm of Inertia" was read as two lines,
+#"GRAND CHARM 6F" and "INERTIA", and collected as a plain Grand Charm. Two holes, one check each.
+#
+#Hole 1: the three-word line matched the two-word name through the merge/split path.
+check("_match_ratio ALONE accepts 'GRAND CHARM 6F' (0.909 despaced) - which is why [exact] needs more",
+      td._match_ratio("GRAND CHARM 6F", "GRAND CHARM", 0.75) is not None)
+check("an [exact] line with an extra word is refused", winner_exact("GRAND CHARM 6F", SPECS) is None)
+check("...but a MERGE of the plain label still matches", winner_exact("GRANDCHARM", SPECS) == "GRAND CHARM")
+#Hole 2: the rest of the label was on another Tesseract line. These are the measured boxes.
+GRAND_CHARM_OF = [("GRAND", 768, 533, 74, 15), ("CHARM", 858, 533, 76, 15), ("6F", 951, 537, 23, 12)]
+INERTIA = [("INERTIA", 991, 533, 88, 15)]
+PLAIN = [("GRAND", 768, 533, 74, 15), ("CHARM", 858, 533, 76, 15)]
+check("the word on the next Tesseract line counts as a row neighbour",
+      td._has_row_neighbour(GRAND_CHARM_OF, [GRAND_CHARM_OF, INERTIA]))
+OF_INERTIA = [("OF", 951, 537, 23, 12), ("INERTIA", 991, 533, 88, 15)]
+check("...and so does the split falling the other way ('GRAND CHARM' / 'OF INERTIA')",
+      td._has_row_neighbour(PLAIN, [PLAIN, OF_INERTIA]))
+check("a plain label on its own has none", not td._has_row_neighbour(PLAIN, [PLAIN]))
+check("a label stacked directly below is not on the same row",
+      not td._has_row_neighbour(PLAIN, [PLAIN, [("GUL", 768, 555, 40, 15)]]))
+check("a speck that cleans to nothing is not a word",
+      not td._has_row_neighbour(PLAIN, [PLAIN, [("|", 940, 530, 5, 20)]]))
+check("a label a normal gap away is a separate label",
+      not td._has_row_neighbour(PLAIN, [PLAIN, [("GUL", 934 + 40, 533, 40, 15)]]))
+
+#End to end, on the real frame. It only measures the split if Tesseract still splits it, so say so.
+path = os.path.join(FIXTURES, "charm_grand_of_inertia.png")
+frame = cv.imread(path)
+if frame is None:
+    check("charm_grand_of_inertia.png is present", False)
+elif not td.ocr_available():
+    check("charm_grand_of_inertia.png: OCR unavailable, nothing checked", False)
+else:
+    found = [m for m in td.find_text_matches(frame, real) if m[4] == "GRAND CHARM"]
+    check(f"'Grand Charm of Inertia' is not a Grand Charm ({found or 'nothing matched'})", not found)
+    if td._tesserocr_api is not None:
+        grouped = [" ".join(w[0] for w in line) for line in
+                   td._group_words_by_line(td._get_words_tesserocr(td._preprocess(frame, td.PREPROCESS_AUTO)))]
+        print(f"  (note) Tesseract's lines on this frame: {grouped} - "
+              f"{'still split, so this measures the bug' if 'INERTIA' in grouped else 'NOT split any more'}")
 
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

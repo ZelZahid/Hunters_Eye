@@ -235,7 +235,26 @@ NAMED_COLORS = {
 #alone, but it does mean an [exact] item in a crowded pile of drops can take a few scans to be
 #seen. Measured on the owner's own frames: both charms came back as their own clean line even
 #with six overlapping labels on screen.
+#
+#Tesseract's line can also be too SHORT, and that direction is not safe, so it is not trusted.
+#Seen live (2026-09-14): "Grand Charm of Inertia" came back as TWO lines, "GRAND CHARM 6F" and
+#"INERTIA", and was collected as a plain Grand Charm. Two separate things let it through, and each
+#has its own guard:
+#  - "INERTIA" was on another line, so "the whole line" was only three words. An [exact] match
+#    therefore also requires that no other word sits beside it on the same ROW (_has_row_neighbour),
+#    judged from the boxes rather than from Tesseract's grouping.
+#  - "GRAND CHARM 6F" still matched the two-word name, through the merge/split path in
+#    _match_ratio: "GRANDCHARM6F" vs "GRANDCHARM" is 0.909, over MERGED_WORD_CUTOFF. A short word is
+#    only two characters of a long name. So an [exact] match may not have MORE words than the name
+#    at all - a merge (fewer words) is still fine, and a split of the plain label ("GR AND CHARM")
+#    is refused, which is the safe direction again.
 COLLECT_EXACT_TAG = "exact"
+#How close another word may sit beside an [exact] match, as a multiple of the match's text height,
+#before it counts as part of the same label. Measured on that frame at OCR_CAPTURE_SCALE 1.0: words
+#within one label are 17px apart at a 15px text height (1.1x). 2.0 leaves room for a wider-spaced
+#font, and erring wide only ever REFUSES a match - a plain charm dropped right beside another label
+#is skipped until the labels move apart.
+EXACT_NEIGHBOUR_GAP = 2.0
 
 COLLECT_BY_CLICK = "click"
 COLLECT_BY_KEY_PREFIX = "key:"
@@ -410,6 +429,34 @@ def _padded_box(words):
     x, y = min(xs) - LABEL_PAD_X, min(ys) - LABEL_PAD_Y
     w, h = (max(x2s) - min(xs)) + 2 * LABEL_PAD_X, (max(y2s) - min(ys)) + 2 * LABEL_PAD_Y
     return max(x, 0), max(y, 0), w, h
+
+
+def _has_row_neighbour(window, lines, max_gap=EXACT_NEIGHBOUR_GAP):
+    """True if any OCR word outside `window` sits on the same row, within `max_gap` text-heights of
+    it on either side - i.e. the label probably continues past what Tesseract called the line. Used
+    only for [exact] (see COLLECT_EXACT_TAG). Words that clean to nothing ("|", ".") are specks of
+    terrain, not text, and are ignored."""
+    inside = {id(w) for w in window}
+    left = min(w[1] for w in window)
+    right = max(w[1] + w[3] for w in window)
+    top = min(w[2] for w in window)
+    bottom = max(w[2] + w[4] for w in window)
+    height = bottom - top
+    for line in lines:
+        for word in line:
+            if id(word) in inside or not _clean_text(word[0]):
+                continue
+            _, word_left, word_top, word_width, word_height = word
+            #Same row = the boxes overlap vertically by at least half the shorter one, so a
+            #lowercase-looking "6F" still counts beside capitals, and a label stacked directly
+            #above or below does not.
+            overlap = min(bottom, word_top + word_height) - max(top, word_top)
+            if overlap < 0.5 * min(height, word_height):
+                continue
+            gap = max(word_left - right, left - (word_left + word_width))
+            if gap < max_gap * height:
+                return True
+    return False
 
 
 #HOW MUCH SLACK A WORD GETS WHEN IT IDENTIFIES NOTHING, measured in misread characters.
@@ -830,7 +877,8 @@ def find_text_matches(frame, target_items, match_cutoff=0.75, preprocess=PREPROC
     shared = shared_words(target_items)
 
     matches = []
-    for line_words in _group_words_by_line(words):
+    lines = _group_words_by_line(words)
+    for line_words in lines:
         # Try every contiguous run of words in this line, not just the whole line - matching
         # (and boxing) only the words that actually make up the item name. Games often render
         # something else on the same OCR-perceived line right next to/below an item's name
@@ -864,13 +912,15 @@ def find_text_matches(frame, target_items, match_cutoff=0.75, preprocess=PREPROC
                 text = _clean_text(" ".join(w[0] for w in window))
                 if not text:
                     continue
-                whole_line = (start == 0 and end == n)
+                #Only ever one whole-line span per line, so the neighbour scan runs once a line.
+                whole_label = (start == 0 and end == n) and not _has_row_neighbour(window, lines)
                 for name in target_items:
-                    # "[exact]" means this name is only itself when it is the whole line - see
-                    # COLLECT_EXACT_TAG. Skipping it as a candidate (rather than rejecting it
-                    # afterwards) is what lets a longer span for some OTHER target still win the
-                    # line normally.
-                    if target_items[name].get("exact") and not whole_line:
+                    # "[exact]" means this name is only itself when it is the whole label, with no
+                    # extra words - see COLLECT_EXACT_TAG. Skipping it as a candidate (rather than
+                    # rejecting it afterwards) is what lets a longer span for some OTHER target
+                    # still win the line normally.
+                    if target_items[name].get("exact") and not (
+                            whole_label and len(text.split()) <= len(name.split())):
                         continue
                     # Not difflib.get_close_matches() and not a bare whole-string ratio - see
                     # _match_ratio() for why matching has to happen word by word.
