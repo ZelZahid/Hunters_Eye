@@ -177,5 +177,14 @@ check("nonsense falls back",
       load(GOOD.replace("snooze = 10", "snooze = 10\nkey_collect_retry = fast")).key_collect_retry
       == user_config.DEFAULTS["key_collect_retry"])
 
+print("\n14. image_search defaults ON, so a missing setting changes nothing")
+#ON as the default for the same reason every other default here reproduces the old behaviour:
+#the reference-image search ran unconditionally before this setting existed. The shipped file
+#is what turns it off.
+check("no setting -> on", load(GOOD).image_search is True)
+check("'no' is read", load(GOOD.replace("snooze = 10", "snooze = 10\nimage_search = no")).image_search is False)
+check("nonsense falls back to on",
+      load(GOOD.replace("snooze = 10", "snooze = 10\nimage_search = maybe")).image_search is True)
+
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

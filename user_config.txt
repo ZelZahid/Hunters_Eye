@@ -41,6 +41,14 @@ snooze = 10
 # to disable and act on any reading at all.
 ignore_below = 0.03
 
+# Look for the picture in assets/image1.png on every frame and draw a box where
+# it appears. This is the single most expensive thing the program does per
+# frame (about 3 of every 4.5 milliseconds), and the picture shipped there is
+# a browser tab used as a demo, not anything in the game - so leave this "no"
+# unless you have put a picture of your own there. Item names, potions, the
+# health/mana orbs and everything else are unaffected either way.
+image_search = no
+
 
 # --- Making a new game (F3 / next_game) --------------------------------------
 
