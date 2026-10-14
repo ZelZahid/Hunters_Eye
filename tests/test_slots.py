@@ -48,7 +48,7 @@ def read(img, region=None):
                           tuple(CONFIG.get("inset", slots.DEFAULT_INSET)))
 
 
-print("\n1. The owner's real belt, read off a full frame")
+print("\nV-201  The owner's real belt, read off a full frame")
 full = cv.imread(str(FIXTURES / "belt_full.png"))
 if full is None:
     check("belt_full.png is present", False)
@@ -64,7 +64,7 @@ else:
     check(f"...and the same at half resolution ({read(half)})",
           read(half) == ["healing", "rejuvenation", "rejuvenation", "mana"])
 
-print("\n2. An empty slot reads as empty, not as something")
+print("\nV-202  An empty slot reads as empty, not as something")
 #"if there is no Mana potion in the belt slot, don't be pressing 4 thinking that there is one."
 #Measured on the real frames: an occupied slot is 26-37% lit and an empty one is 0.0%, so this is
 #not a close call - but it is the single most expensive thing here to get wrong.
@@ -77,7 +77,7 @@ else:
           got == ["healing", "rejuvenation", "rejuvenation", None])
     check("None is a real answer, not a failure - the row itself was read", got is not None)
 
-print("\n3. Nothing to read is a different answer from nothing there")
+print("\nV-203  Nothing to read is a different answer from nothing there")
 #A region that cannot be read at all returns None for the WHOLE ROW, which callers must treat as
 #"cannot tell" and fall back on. A row of empty slots returns a list of Nones, which means
 #"definitely nothing in the belt". Collapsing those two would make an off-screen belt look like an
@@ -89,7 +89,7 @@ check("a region off the frame reads as None (cannot tell)",
 check("a region too narrow to split reads as None",
       read(black, [0.0, 0.0, 0.001, 1.0]) is None)
 
-print("\n4. Synthetic colours land in the right bucket")
+print("\nV-204  Synthetic colours land in the right bucket")
 #Built from the measured modal hues of the real potions: red 0, blue 118, purple 151.
 def swatch(hues):
     img = np.zeros((60, 240, 3), np.uint8)

@@ -11,7 +11,7 @@ the map never saw, one hanging off the map's edge. The temple's held-out frames 
 left out of its map on purpose for this. All are stored at the map's own scale, which is exactly
 the array the live path produces after its resize, so these numbers are bit-for-bit what runs live.
 
-Section 4 is the regression test for the one real failure found so far: with plain matching, a
+Card V-604 is the regression test for the one real failure found so far: with plain matching, a
 temple frame matched the HARROGATH map at 0.630, over its threshold, because both scenes are dark
 and share the same bright red portal. Local contrast normalisation took it to 0.090.
 """
@@ -96,7 +96,7 @@ def located_within(route, held_out, label):
     return scores, wheres
 
 
-print("1. The routes load and are shaped as expected")
+print("\nV-601  The routes load and are shaped as expected")
 route = pindle.Route.load(pindle.HARROGATH_ROUTE)
 temple = pindle.Route.load(pindle.TEMPLE_ROUTE)
 check("assets/routes/harrogath_to_nihlathak.json loads", route is not None)
@@ -113,7 +113,7 @@ check("fits the recorded 1920x1080", route.fits(1920, 1080))
 check("fits the same shape at another size (2560x1440)", route.fits(2560, 1440))
 check("refuses a different shape (1280x800)", not route.fits(1280, 800))
 
-print("\n2. Nothing to go on -> 'cannot tell', never a guess and never a crash")
+print("\nV-602  Nothing to go on -> 'cannot tell', never a guess and never a crash")
 locator = route.locator
 query_shape = (172, 288)   #the live query at map scale: 0.64 x 270 by 0.6 x 480
 check("a None frame -> cannot tell", locator.locate(None).found is None)
@@ -138,10 +138,10 @@ try:
 except ValueError:
     check("MapLocator refuses a missing map", True)
 
-print("\n3. Harrogath screenshots the map was NOT built from are located where they really were")
+print("\nV-603  Harrogath screenshots the map was NOT built from are located where they really were")
 harrogath_scores, harrogath_wheres = located_within(route, HARROGATH_HELD_OUT, "Harrogath")
 
-print("\n4. Neither place is ever mistaken for the other")
+print("\nV-604  Neither place is ever mistaken for the other")
 temple_on_harrogath = []
 for name in TEMPLE_FRAMES:
     frame = fixture(name)
@@ -171,14 +171,14 @@ for name in HARROGATH_HELD_OUT:
         check(f"{name} is not located on the TEMPLE map ({where.fix.score:.3f})",
               where.fix.found is not True)
 
-print("\n5. Temple screenshots the map was NOT built from are located where they really were")
+print("\nV-605  Temple screenshots the map was NOT built from are located where they really were")
 temple_scores, _ = located_within(temple, TEMPLE_HELD_OUT, "temple")
 if pack is not None:
     where = temple.locate(pack)
     check(f"pindle_pack.png, from a different run, is located on the temple map "
           f"({where.fix.score:.3f})", where.fix.found is True)
 
-print("\n6. The temple's arrival point: the red portal places it, independently of the map")
+print("\nV-606  The temple's arrival point: the red portal places it, independently of the map")
 frame = fixture(TEMPLE_ARRIVAL[0])
 if frame is not None:
     by_map = temple.locate(frame, frame_scale=temple.map_scale)
@@ -193,7 +193,7 @@ if frame is not None:
     check("Harrogath has no landmark (its portal is its GOAL, not where it starts)",
           route.locate_by_landmark(frame, frame_scale=route.map_scale).position is None)
 
-print("\n7. Where the route says the portal is, is where the portal is - in a screenshot it never saw")
+print("\nV-607  Where the route says the portal is, is where the portal is - in a screenshot it never saw")
 where_09 = harrogath_wheres.get("route_harrogath_09.png")
 if where_09 is not None and where_09.position is not None:
     x, y = route.to_screen(route.points["portal"], where_09.camera, (0, 0), where_09.zoom)
@@ -229,7 +229,7 @@ def simulate(the_route, start, goal="portal", step_px=150.0, max_steps=80):
     return None, None, problems
 
 
-print("\n8. The walks' decisions, simulated - no game, no mouse")
+print("\nL-401  The walks' decisions, simulated - no game, no mouse")
 steps, kind, problems = simulate(route, route.path[0])
 check(f"Harrogath: from the start it reaches the portal ({steps} clicks)", kind == "portal")
 check("every click is on screen, off the HUD and off the waypoint", not problems)
@@ -253,7 +253,7 @@ for problem in problems[:5]:
 kind, _ = pindle.Walker(temple, None).decide(temple.path[0])
 check("the temple walk never tries to go through a portal", kind == "move")
 
-print("\n9. 'F4' stops a walk outright, without waiting for anything")
+print("\nL-402  'F4' stops a walk outright, without waiting for anything")
 started = time.perf_counter()
 stopped = pindle.walk(route, grab=lambda: (None, None), can_act=lambda: True,
                       in_play=lambda: None, log=lambda *_: None, cancelled=lambda: True)
@@ -263,7 +263,7 @@ elapsed = time.perf_counter() - started
 check(f"a cancelled walk returns False at once ({elapsed * 1000:.0f}ms)",
       stopped is False and elapsed < 1.0)
 
-print("\n10. The portal is only clicked once its label is READ")
+print("\nL-403  The portal is only clicked once its label is READ")
 if not text_detection.ocr_available():
     print("  NOT RUNNING - no OCR backend installed, so the label check cannot be tested here.")
     print("  (Live, the walk then clicks WITHOUT reading the label, and says so.)")
@@ -278,7 +278,7 @@ else:
     check("a black frame has no label", not pindle.label_showing(np.zeros((360, 660, 3),
                                                                           np.uint8), 330, 230))
 
-print("\n11. Cost of one live locate (full-size frame, including its resize) - informational")
+print("\nV-608  Cost of one live locate (full-size frame, including its resize) - informational")
 if pack is not None:
     frame = cv.cvtColor(pack, cv.COLOR_BGR2BGRA)
     route.locate(frame)
