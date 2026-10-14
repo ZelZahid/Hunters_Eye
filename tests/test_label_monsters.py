@@ -60,7 +60,7 @@ def sandbox(tmp):
 
 
 def test_round_trip(image):
-    print("\nround trip: what was drawn is what trains")
+    print("\nT-201  Round trip: what was drawn is what trains")
     boxes = [("defiled_warrior", 100, 200, 169, 305),     # ~69x105, a real Defiled Warrior
              ("pindle", 800, 400, 880, 520),
              ("defiled_warrior", 0, 0, 12, 14)]           # tiny, top-left corner
@@ -77,7 +77,7 @@ def test_round_trip(image):
 
 
 def test_empty_is_not_missing(image):
-    print("\nan empty label and a missing label are opposite intents")
+    print("\nT-202  An empty label and a missing label are opposite intents")
     lm.label_path(image).unlink(missing_ok=True)
     check(lm.read_labels(image, SHAPE, []) is None,
           "no label file reads as None (never labelled)")
@@ -90,7 +90,7 @@ def test_empty_is_not_missing(image):
 
 
 def test_ids_are_append_only(image):
-    print("\nclass ids never shift")
+    print("\nT-203  Class ids never shift")
     lm.CLASSES_FILE.write_text("defiled_warrior\npindle\n", encoding="utf-8")
     before = lm.load_classes()
     lm.write_labels(image, SHAPE, [("zombie", 10, 10, 90, 120), ("pindle", 200, 200, 280, 320)])
@@ -111,7 +111,7 @@ def test_ids_are_append_only(image):
 
 
 def test_edge_clipping(image):
-    print("\na monster half off screen is clipped, not moved")
+    print("\nT-204  A monster half off screen is clipped, not moved")
     lm.CLASSES_FILE.write_text("zombie\n", encoding="utf-8")
     # Half off the left edge: visible part is x 0..30, so cx=15/1920, w=30/1920.
     lm.write_labels(image, SHAPE, [("zombie", -40, 500, 30, 620)])
@@ -128,7 +128,7 @@ def test_edge_clipping(image):
 
 
 def test_import_deduplicates(tmp):
-    print("\nimport is by content, so re-running it is a no-op")
+    print("\nT-205  Import is by content, so re-running it is a no-op")
     source = tmp / "shots"
     source.mkdir(parents=True, exist_ok=True)
     (source / "Screenshot019.png").write_bytes(b"frame-a")
@@ -161,7 +161,7 @@ def real_frame(name):
 
 
 def test_drafts_stay_out_of_labels():
-    print("\na draft is not a label until a person accepts it")
+    print("\nT-206  A draft is not a label until a person accepts it")
     lm.CLASSES_FILE.write_text("defiled_warrior\npindle\n", encoding="utf-8")
     fresh, labelled, drafted = (real_frame("frame_0101.png"), real_frame("frame_0102.png"),
                                 real_frame("frame_0103.png"))
@@ -197,7 +197,7 @@ def test_drafts_stay_out_of_labels():
 
 
 def test_reviewing_a_draft():
-    print("\nopening a draft is the review, moving on accepts it")
+    print("\nT-207  Opening a draft is the review, moving on accepts it")
     frame = real_frame("frame_0201.png")
     guess = [("defiled_warrior", 100, 200, 169, 305)]
     lm.write_labels(frame, SHAPE, guess, lm.draft_path(frame))

@@ -56,7 +56,7 @@ keys = 1
 cooldown = 4.0
 """
 
-print("1. A well-formed file parses as written")
+print("\nC-101  A well-formed file parses as written")
 cfg = load(GOOD)
 check("loaded from a file", cfg.loaded)
 check("enabled", cfg.enabled is True)
@@ -64,12 +64,12 @@ check("min_gap 0.6", cfg.min_gap == 0.6)
 check("ignore_below 0.03", cfg.ignore_below == 0.03)
 check("two rules", len(cfg.rules) == 2)
 
-print("\n2. File ORDER is rule priority - the emergency tier must stay first")
+print("\nC-102  File ORDER is rule priority - the emergency tier must stay first")
 #Order is the only thing expressing "which rule wins when both match", so it has to survive
 #parsing. A dict that reordered sections would silently invert the priority.
 check("rejuvenation before health", [r.label for r in cfg.rules] == ["rejuvenation", "health"])
 
-print("\n3. '20%' and '0.20' mean the same thing")
+print("\nC-103  '20%' and '0.20' mean the same thing")
 #A percent sign is how a person writes a threshold. Rejecting it - or worse, reading 20% as 20.0 -
 #would make the rule fire at every possible value.
 a = load(GOOD).rules[0].at_or_below
@@ -77,21 +77,21 @@ b = load(GOOD.replace("below = 20%", "below = 0.20")).rules[0].at_or_below
 check(f"both parse to 0.20 (got {a} and {b})", a == b == 0.20)
 check("a threshold is never > 1.0", all(r.at_or_below <= 1.0 for r in load(GOOD).rules))
 
-print("\n4. Keys are configurable, including reassigning the belt")
+print("\nC-104  Keys are configurable, including reassigning the belt")
 swapped = load(GOOD.replace("keys = 2, 3", "keys = 1").replace("keys = 1\ncooldown = 4.0",
                                                                "keys = 4\ncooldown = 4.0"))
 check("rejuvenation moved to key 1", swapped.rules[0].keys == ("1",))
 check("health moved to key 4", swapped.rules[1].keys == ("4",))
 check("multi-key rules keep their order", load(GOOD).rules[0].keys == ("2", "3"))
 
-print("\n5. A missing file is a normal condition, not an error")
+print("\nC-105  A missing file is a normal condition, not an error")
 missing = user_config.load(os.path.join(tempfile.mkdtemp(), "nope.txt"), default_rules=FALLBACK)
 check("does not raise", True)
 check("reports it was not loaded", not missing.loaded)
 check("falls back to the built-in rules", missing.rules == FALLBACK)
 check("falls back to default settings", missing.min_gap == user_config.DEFAULTS["min_gap"])
 
-print("\n6. Bad values fall back to a default and never crash")
+print("\nC-106  Bad values fall back to a default and never crash")
 bad = load("""
 [settings]
 min_gap = banana
@@ -111,7 +111,7 @@ check("ignore_below 400 (out of range) -> default", bad.ignore_below == user_con
 check("enabled 'maybe' -> default", bad.enabled == user_config.DEFAULTS["enabled"])
 check("cooldown 'not-a-number' -> default, rule kept", bad.rules[0].cooldown == 1.0)
 
-print("\n7. A rule naming a meter that does not exist is DROPPED, not repointed")
+print("\nC-107  A rule naming a meter that does not exist is DROPPED, not repointed")
 #Pointing a rule at the wrong meter would drink based on a number measured somewhere else.
 #A rule that can never fire is as bad as one that fires wrongly, and much harder to notice.
 typo = load(GOOD.replace("meter = health", "meter = helth", 1),
@@ -119,7 +119,7 @@ typo = load(GOOD.replace("meter = health", "meter = helth", 1),
 check("the typo'd rule is gone", "rejuvenation" not in [r.label for r in typo.rules])
 check("the valid rule survives", "health" in [r.label for r in typo.rules])
 
-print("\n8. Incomplete rules are dropped, the rest of the file still works")
+print("\nC-108  Incomplete rules are dropped, the rest of the file still works")
 partial = load(GOOD + "\n[broken]\nmeter = health\n", default_rules=FALLBACK)
 check("rule with no 'below'/'keys' dropped", "broken" not in [r.label for r in partial.rules])
 check("the good rules survive", len(partial.rules) == 2)
@@ -127,13 +127,13 @@ check("empty keys list drops the rule",
       "x" not in [r.label for r in load("[x]\nmeter=health\nbelow=10%\nkeys=  ,  \n",
                                         default_rules=FALLBACK).rules])
 
-print("\n9. A file with no usable rule at all falls back rather than doing nothing")
+print("\nC-109  A file with no usable rule at all falls back rather than doing nothing")
 #Running with zero rules looks identical to "working fine" from outside, which is the worst
 #possible way to fail for something whose entire job is to act when you are in trouble.
 empty = load("[settings]\nenabled = yes\n", default_rules=FALLBACK)
 check("falls back to built-in rules", empty.rules == FALLBACK)
 
-print("\n10. Garbage that is not even INI shape does not crash the program")
+print("\nC-110  Garbage that is not even INI shape does not crash the program")
 for junk in ("!!! not a config at all", "[unclosed\nmeter=health", "\x00\x01\x02", ""):
     try:
         cfg = load(junk, default_rules=FALLBACK)
@@ -143,12 +143,12 @@ for junk in ("!!! not a config at all", "[unclosed\nmeter=health", "\x00\x01\x02
         print(f"       raised {type(exc).__name__}: {exc}")
     check(f"{junk[:22]!r} -> defaults, no exception", ok)
 
-print("\n11. 'enabled = no' turns it off without deleting the rules")
+print("\nC-111  'enabled = no' turns it off without deleting the rules")
 off = load(GOOD.replace("enabled = yes", "enabled = no"))
 check("enabled is False", off.enabled is False)
 check("rules are still parsed", len(off.rules) == 2)
 
-print("\n12. Teleporting onto a drop is off unless the file asks for it")
+print("\nC-112  Teleporting onto a drop is off unless the file asks for it")
 #The default has to reproduce what the program did before the setting existed, because the
 #setting presses a key into a live game: on a character with something else bound to it, a
 #default of "f" would cast that instead, with nothing to say why.
@@ -167,7 +167,7 @@ check("nonsense falls back too",
       load(GOOD.replace("snooze = 10", "snooze = 10\nteleport_min_distance = far")).teleport_min_distance
       == user_config.DEFAULTS["teleport_min_distance"])
 
-print("\n13. The key-collect retry is its own setting, not the click's")
+print("\nC-113  The key-collect retry is its own setting, not the click's")
 check("it has a default", user_config.DEFAULTS["key_collect_retry"] > 0)
 fast = load(GOOD.replace("snooze = 10", "snooze = 10\nkey_collect_retry = 0.3"))
 check("a plain number is read", abs(fast.key_collect_retry - 0.3) < 1e-9)
@@ -177,7 +177,7 @@ check("nonsense falls back",
       load(GOOD.replace("snooze = 10", "snooze = 10\nkey_collect_retry = fast")).key_collect_retry
       == user_config.DEFAULTS["key_collect_retry"])
 
-print("\n14. image_search defaults ON, so a missing setting changes nothing")
+print("\nC-114  Image_search defaults ON, so a missing setting changes nothing")
 #ON as the default for the same reason every other default here reproduces the old behaviour:
 #the reference-image search ran unconditionally before this setting existed. The shipped file
 #is what turns it off.

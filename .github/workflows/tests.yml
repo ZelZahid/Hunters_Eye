@@ -1,0 +1,48 @@
+# Runs every test card on every pull request and every push to main.
+#
+# Windows, because that is where Hunter's Eye actually runs: pywin32, the Tk overlay, DXGI capture
+# and the `keyboard` package's key names all behave differently (or not at all) on Linux, so a
+# Linux run would skip or fake exactly the parts most likely to break.
+#
+# What it cannot run: the trained monster model (assets/monsters/ is gitignored), so card V-707
+# reports NOT RUN here. Nothing needs the game. See docs/test_cards.md.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to the same branch makes an older run pointless - cancel it instead of queueing.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-cards:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      # Tesseract is a program, not a pip package (see requirements.txt). The installer puts it in
+      # C:\Program Files\Tesseract-OCR, which is where core/text_detection.py looks for it.
+      - name: Install Tesseract OCR
+        run: choco install tesseract --no-progress -y
+
+      - name: Install Python packages
+        run: python -m pip install -r requirements.txt
+
+      - name: Run every test card
+        run: python tests/run_all.py

@@ -79,7 +79,7 @@ Python · OpenCV · NumPy · Tesseract OCR · DXGI / GDI screen capture · Win32
 main.py       the entry point, and the game-specific integration
 core/         the engine — capture, detectors, actions, overlay, config
 tools/        run by hand: calibration and diagnostics
-tests/        eight suites, none of which need the game running
+tests/        numbered test cards (docs/test_cards.md), run on every pull request
 assets/       data, not code — edit these instead of the source
 docs/         changelog, to-do log, and bug history
 legacy/       an earlier prototype, kept for reference

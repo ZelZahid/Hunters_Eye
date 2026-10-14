@@ -38,7 +38,7 @@ def check(label, condition):
     failures += not condition
 
 
-print("1. The shipped in-play config loads")
+print("\nV-301  The shipped in-play config loads")
 p = presence.load(os.path.join(ASSETS, "in_play.json"))
 check("assets/in_play.json loads", p is not None)
 if p is None:
@@ -55,7 +55,7 @@ check(f"there is more than one reference ({[r.name for r in p.references]})",
 lefts = [r.search_region[0] for r in p.references]
 check(f"they look in different places (x fractions {lefts})", max(lefts) - min(lefts) > 0.3)
 
-print("\n2. A missing or broken config is 'no check available', never a crash")
+print("\nV-302  A missing or broken config is 'no check available', never a crash")
 check("missing file -> None", presence.load(os.path.join(ASSETS, "nope-does-not-exist.json")) is None)
 import json, tempfile
 bad = os.path.join(tempfile.mkdtemp(), "bad.json")
@@ -77,7 +77,7 @@ try:
 finally:
     os.remove(no_fields)
 
-print("\n3. An unanswerable question returns None, which is NOT False")
+print("\nV-303  An unanswerable question returns None, which is NOT False")
 #None must never be collapsed into False by a caller: on None the pipeline has to behave exactly
 #as it did before this check existed, or a setup without the config would be permanently disabled.
 found, score = p.check(None, 500)
@@ -90,12 +90,12 @@ check("a frame smaller than the template -> None, not False", found is None)
 found, score = p.check(np.zeros((300, 300), np.uint8), 0)
 check("a zero HUD width -> None, not a divide-by-zero", found is None)
 
-print("\n4. A blank frame is a confident NO, not an error")
+print("\nV-304  A blank frame is a confident NO, not an error")
 found, score = p.check(np.zeros((400, 700), np.uint8), 700, region=(0.0, 0.0, 1.0, 1.0))
 check(f"flat black -> found={found} (score {score if score is None else round(score, 3)})",
       found is False)
 
-print("\n5. The template is rescaled to the HUD's size, not assumed")
+print("\nV-305  The template is rescaled to the HUD's size, not assumed")
 #Without this the check would silently start failing the moment the game ran at a resolution
 #other than the one the reference was cut from.
 first = p.references[0]
@@ -107,10 +107,11 @@ check("an absurd scale is refused rather than producing a 1px template",
       first.template_at(0.0001) is None)
 
 shots = sorted(glob.glob(os.path.join(FIXTURES, "*.png")))
+print("\nV-306  Real screenshots: in-play and lobby separate by a wide margin")
 if not shots:
-    print("\n6. Real-screenshot separation - FIXTURES MISSING, this should not happen")
+    #A committed fixture that is missing is a FAILURE, never a skip - a skip looks like passing.
+    check("tests/fixtures/ holds the real screenshots", False)
 else:
-    print("\n6. Real screenshots: in-play and lobby separate by a wide margin")
     #The numbers that justify the threshold. If a future change narrows this gap, the guard is
     #being eroded and this is where it shows up.
     #Keyed by filename, so a fixture added here without an entry above is simply not scored
@@ -144,7 +145,7 @@ else:
               f"({sorted({r.threshold for r in p.references})})",
               all(scores[False] < r.threshold < scores[True] for r in p.references))
 
-print("\n7. The in-play gate actually stops the potion layer in a lobby")
+print("\nL-117  The in-play gate actually stops the potion layer in a lobby")
 import main
 if not shots:
     print("  SKIPPED (needs the screenshots)")
@@ -164,7 +165,7 @@ else:
         rule = main._potion_due(gated, 10_000.0, {}, 0.0)
         check(f"{os.path.basename(path)[-10:-4]}: gated readings -> no potion", rule is None)
 
-print("\n8. Occlusion: one covered reference must not read as 'not in a game'")
+print("\nV-307  Occlusion: one covered reference must not read as 'not in a game'")
 occluded = sorted(glob.glob(os.path.join(FIXTURES, "in_game_tooltip.png")))
 if not occluded:
     print("  SKIPPED (needs the screenshots)")
@@ -204,7 +205,7 @@ else:
                   (0, 0), fx=0.3, fy=0.3), cv.COLOR_BGR2GRAY), g.shape[1])[0] is False
               for r in p.references))
 
-print("\n9. The negative is debounced, the positive is not")
+print("\nV-308  The negative is debounced, the positive is not")
 import main as pipeline
 import time as _time
 #Named fixtures, not a glob for timestamps from a folder that no longer holds them. This section

@@ -38,7 +38,7 @@ def fixture(name):
     return image
 
 
-print("1. The monster plate: up with a monster under the cursor, and only then")
+print("\nV-708  The monster plate: up with a monster under the cursor, and only then")
 pindleskin = fixture("plate_pindleskin.png")
 warrior = fixture("plate_defiled_warrior.png")
 nothing = fixture("plate_none.png")
@@ -61,7 +61,7 @@ if pindleskin is not None and warrior is not None and nothing is not None:
     else:
         print("  NOT RUNNING the name checks - no OCR backend installed.")
 
-print("\n2. Movement from a still camera points at the pack")
+print("\nV-709  Movement from a still camera points at the pack")
 a, b = fixture("fight_motion_27.png"), fixture("fight_motion_28.png")
 if a is not None and b is not None:
     spots = pindle.motion_candidates(a, b, frame_scale=0.5)
@@ -126,7 +126,7 @@ class World:
         self.bailed += 1
 
 
-print("\n3. The fight, driven through a fake game")
+print("\nL-404  The fight, driven through a fake game")
 if pindleskin is not None and nothing is not None:
     world = World(hits_to_kill=5)
     result = world.fight()
@@ -172,7 +172,7 @@ if pindleskin is not None and nothing is not None:
     check(f"health collapsing mid-fight -> leaves after the cast in flight ({world.casts} casts, "
           f"{result!r})", result == "chickened" and world.bailed == 1 and world.casts == 3)
 
-print("\n4. 'F4' stops the fight outright - it does not resume like the auto-collect snooze")
+print("\nL-405  'F4' stops the fight outright - it does not resume like the auto-collect snooze")
 if pindleskin is not None and nothing is not None:
     world = World(hits_to_kill=50)
     result = world.fight(cancelled=lambda: True)
