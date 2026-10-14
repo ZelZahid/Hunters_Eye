@@ -675,6 +675,24 @@ OCR_MIN_GAP_SECONDS = 0.1
 #30Hz is above the ~19-21Hz this loop was tuned at, so drift per step against TRACK_SEARCH_MARGIN is
 #no worse than the rate that was measured to work.
 TRACK_LOOP_SECONDS = 1 / 30
+#TELEPORTING MOVES EVERY LABEL BY THE SAME AMOUNT, so tracks can follow a teleport instead of being
+#lost to it. Rescanning the moment tracks were lost only got live latency from ~0.53s to ~0.46s,
+#because with several labels on screen one scan costs ~0.29s and a teleport usually lands while one
+#is already running: the wait for it to finish, then a whole new scan, is ~1.5 scans whatever the
+#trigger. The camera is locked to the character and moves by pure translation (measured for
+#localize.py: scale 1.000 +/- 0.0015), so between two frames the whole world shifts by one (dx, dy),
+#and phase correlation finds it in under 1ms on a quarter-scale grey viewport. Every track is moved
+#by that shift BEFORE relocalizing, which then only has to correct the remainder - a teleport no
+#longer breaks tracking at all, and the boxes follow within one relocalization step.
+#Measured on real frames shifted by a known amount: within ~2px at shifts up to 400px.
+#SHIFT_MIN_RESPONSE is the confidence below which the estimate is ignored and tracking behaves
+#exactly as before - a black or uniform scene scored 0.00, real scenes 0.38-1.00 for real shifts.
+SHIFT_SCALE = 0.25
+SHIFT_MIN_RESPONSE = 0.15
+#A shift this large means part of the view is new, and anything lying in that part has never been
+#read - so a teleport still asks for a scan, it just no longer has to wait for one to see its boxes.
+#Walking moves ~10-20px between relocalizations.
+SHIFT_RESCAN_PX = 100
 
 
 def _view_jump_region():
@@ -707,6 +725,41 @@ def _is_view_jump(diff, recent, span=1.0):
         return False
     baseline = float(np.median(recent)) if len(recent) else 0.0
     return diff >= VIEW_JUMP_DIFF and diff >= VIEW_JUMP_RATIO * max(baseline, 1.0) * max(span, 1.0)
+
+def _shift_view(frame_grey):
+    """The quarter-scale grey copy of a frame's viewport that _scene_shift() compares. The HUD is
+    cut away because it never moves, and would vote for a shift of zero."""
+    h = frame_grey.shape[0]
+    view = frame_grey[int(h * VIEWPORT_TOP_MARGIN):int(h * (1 - VIEWPORT_BOTTOM_MARGIN)), :]
+    return cv.resize(view, (0, 0), fx=SHIFT_SCALE, fy=SHIFT_SCALE, interpolation=cv.INTER_AREA).astype(np.float32)
+
+
+_shift_windows = {} #Hanning window per image shape - building one costs more than the correlation
+
+
+def _scene_shift(before, after):
+    """How far the whole scene moved from `before` to `after` (both from _shift_view), as (dx, dy)
+    in full-frame pixels, or None when the estimate is not trustworthy (SHIFT_MIN_RESPONSE) or
+    either view is missing. None means "do not move the tracks", never "it did not move"."""
+    if before is None or after is None or before.shape != after.shape:
+        return None
+    window = _shift_windows.get(before.shape)
+    if window is None:
+        window = _shift_windows[before.shape] = cv.createHanningWindow(before.shape[::-1], cv.CV_32F)
+    (dx, dy), response = cv.phaseCorrelate(before, after, window)
+    if not response >= SHIFT_MIN_RESPONSE: #also rejects NaN, which a flat image can produce
+        return None
+    return dx / SHIFT_SCALE, dy / SHIFT_SCALE
+
+
+def _shift_tracks(tracks, shift):
+    """Each track moved by `shift` - see SHIFT_SCALE. Positions only; relocalization corrects the
+    rest and keeps the box on the frame."""
+    if shift is None:
+        return tracks
+    dx, dy = int(round(shift[0])), int(round(shift[1]))
+    return [(x + dx, y + dy) + tuple(rest) for (x, y, *rest) in tracks]
+
 
 def _relocalize_track(frame, track):
     """Re-finds a previously OCR-matched item in the current frame via a small local
@@ -815,6 +868,22 @@ def detect_text():
         y0 = int((jump_region["top"] - monitor_area["top"]) * s)
         return frame_grey[y0:y0 + int(jump_region["height"] * s), x0:x0 + int(jump_region["width"] * s)].copy()
 
+    shift_ref = None #_shift_view() of the frame local_tracks' positions currently describe
+
+    def follow(frame_grey):
+        """Moves every track by the scene's shift since shift_ref (see SHIFT_SCALE), then
+        relocalizes it in `frame_grey`. True when the next scan should come early: a track was
+        lost, or the view moved far enough to reveal ground nobody has read (SHIFT_RESCAN_PX)."""
+        nonlocal local_tracks, shift_ref
+        view = _shift_view(frame_grey)
+        shift = _scene_shift(shift_ref, view)
+        shift_ref = view
+        before = len(local_tracks)
+        local_tracks = [t for t in (_relocalize_track(frame_grey, track)
+                                    for track in _shift_tracks(local_tracks, shift)) if t is not None]
+        moved_far = shift is not None and math.hypot(*shift) >= SHIFT_RESCAN_PX
+        return len(local_tracks) < before or moved_far
+
     with mss.mss() as sct:
         while True:
             loop_start = time.time()
@@ -919,20 +988,17 @@ def detect_text():
                 #producing a frame nothing looked at.
                 frame_time = last_ocr_time #when frame_grey was captured - see _is_view_jump's span
                 if local_tracks:
-                    found = len(local_tracks)
+                    shift_ref = _shift_view(frame_grey) #the tracks' positions describe this frame
                     frame_time = time.time()
                     frame_grey = grab_frame_grey()
-                    local_tracks = [t for t in (_relocalize_track(frame_grey, track) for track in local_tracks) if t is not None]
-                    #Lost during the call itself: the view moved while OCR was reading the old one.
-                    rescan_now = len(local_tracks) < found
+                    #A view that moved DURING the call is followed here like any other shift.
+                    rescan_now = follow(frame_grey)
                 view_prev, view_prev_time = middle_of(frame_grey), frame_time
             else:
-                tracked = len(local_tracks)
                 frame_time = time.time()
                 frame_grey = grab_frame_grey()
-                local_tracks = [t for t in (_relocalize_track(frame_grey, track) for track in local_tracks) if t is not None]
-                if len(local_tracks) < tracked:
-                    rescan_now = True #picked up, scrolled off, or the view jumped - look again now
+                if follow(frame_grey):
+                    rescan_now = True #picked up, scrolled off, or new ground came into view - look now
                 view_prev, view_prev_time = middle_of(frame_grey), frame_time
 
             with text_tracks_lock:

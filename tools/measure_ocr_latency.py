@@ -39,6 +39,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import argparse
+import math
 import statistics
 import threading
 import time
@@ -111,11 +112,13 @@ def watch_for_jumps(stop, jumps, diffs, threshold):
             time.sleep(max(0.0, JUMP_LOOK_SECONDS - (time.perf_counter() - t)))
 
 
-def run_ocr(stop, scans, interval, old):
-    """main.py's detect_text() loop, timed stage by stage. Appends one dict per full scan.
+def run_ocr(stop, scans, publishes, interval, old):
+    """main.py's detect_text() loop, timed stage by stage. Appends one dict per full scan to
+    `scans`, and (frame captured at, published at, how many boxes) per publish to `publishes`.
 
-    `old` replays the loop as it was before early rescans: the interval alone decides when to scan,
-    nothing looks at the screen while idle, and relocalization is unpaced."""
+    `old` replays the loop as it was before this branch: the interval alone decides when to scan,
+    nothing looks at the screen while idle, tracks do not follow the scene's shift, and
+    relocalization is unpaced."""
     watch = Stopwatch()
     text_detection._preprocess = watch.wrap("preprocess", text_detection._preprocess)
     if text_detection._tesserocr_api is not None:
@@ -130,6 +133,19 @@ def run_ocr(stop, scans, interval, old):
     view_prev_time = 0.0
     view_diffs = deque(maxlen=pipeline.VIEW_JUMP_HISTORY)
     jump_region = pipeline._view_jump_region()
+    shift_ref = None
+
+    def follow(g):
+        nonlocal local_tracks, shift_ref
+        view = pipeline._shift_view(g)
+        shift = None if old else pipeline._scene_shift(shift_ref, view)
+        shift_ref = view
+        before = len(local_tracks)
+        local_tracks = [t for t in (pipeline._relocalize_track(g, tr)
+                                    for tr in pipeline._shift_tracks(local_tracks, shift)) if t]
+        moved_far = shift is not None and math.hypot(*shift) >= pipeline.SHIFT_RESCAN_PX
+        return not old and (len(local_tracks) < before or moved_far)
+
     with _new_sct() as sct:
         def grab(grey):
             img = sct.grab(pipeline.monitor_area)
@@ -193,13 +209,13 @@ def run_ocr(stop, scans, interval, old):
                                 for (x, y, w, h, n, c, col) in results]
                 frame_time = t_start
                 if local_tracks or old:
-                    found = len(local_tracks)
+                    shift_ref = pipeline._shift_view(frame_grey)
                     frame_time = time.perf_counter()
                     frame_grey = grab(grey=True)
-                    local_tracks = [t for t in (pipeline._relocalize_track(frame_grey, tr) for tr in local_tracks) if t]
-                    rescan_now = not old and len(local_tracks) < found
+                    rescan_now = follow(frame_grey)
                 view_prev, view_prev_time = middle_of(frame_grey), frame_time
                 t_published = time.perf_counter()
+                publishes.append((frame_time, t_published, len(local_tracks)))
                 pre = stages.get("preprocess", 0.0)
                 tess = stages.get("tesseract", 0.0)
                 scans.append({
@@ -215,18 +231,17 @@ def run_ocr(stop, scans, interval, old):
                       f"preprocess {pre*1000:4.0f}  tesseract {tess*1000:4.0f}  match {s['match']*1000:3.0f}  "
                       f"catch-up {s['catchup']*1000:3.0f}  = {(t_published - t_start)*1000:4.0f}ms  {s['names']}")
             else:
-                tracked = len(local_tracks)
                 frame_time = time.perf_counter()
                 g = grab(grey=True)
-                local_tracks = [t for t in (pipeline._relocalize_track(g, tr) for tr in local_tracks) if t]
-                if not old and len(local_tracks) < tracked:
+                if follow(g):
                     rescan_now = True
                 view_prev, view_prev_time = middle_of(g), frame_time
+                publishes.append((frame_time, time.perf_counter(), len(local_tracks)))
             if local_tracks and not rescan_now and not old:
                 time.sleep(max(0.0, pipeline.TRACK_LOOP_SECONDS - (time.perf_counter() - loop_start)))
 
 
-def summarise(jumps, scans, diffs, threshold):
+def summarise(jumps, scans, publishes, diffs, threshold):
     def ms(xs):
         return f"median {statistics.median(xs)*1000:5.0f}ms  (min {min(xs)*1000:4.0f}, max {max(xs)*1000:4.0f})"
 
@@ -236,23 +251,25 @@ def summarise(jumps, scans, diffs, threshold):
             print(f"  {key:10s} {ms([s[key] for s in scans])}")
         print(f"  {'total':10s} {ms([s['published'] - s['start'] for s in scans])}   over {len(scans)} scans")
 
-    print("\n=== per jump: view jumped -> labels published ===")
+    print("\n=== per jump: view jumped -> every box back on screen ===")
+    #A jump counts once boxes are published from a frame captured AFTER it, at least as many as
+    #were up just before it - whether a scan found them again or tracking followed them there.
     rows = []
+    scan_publish_times = {sc["published"] for sc in scans}
     for (t_jump, _d) in jumps:
-        after = [s for s in scans if s["start"] >= t_jump and s["names"]]
-        if not after:
+        before = [n for (tf, tp, n) in publishes if tp < t_jump]
+        if not before or before[-1] == 0:
+            continue #nothing was on screen going into this jump - not a measurement
+        back = next(((tp, n) for (tf, tp, n) in publishes if tf >= t_jump and n >= before[-1]), None)
+        if back is None or back[0] - t_jump > 3.0:
             continue
-        s = after[0]
-        if s["start"] - t_jump > 3.0:
-            continue #nothing with a label on screen after this jump - not a measurement
-        rows.append((s["published"] - t_jump, s["start"] - t_jump, s))
-        print(f"  {(s['published'] - t_jump)*1000:5.0f}ms = wait {(s['start'] - t_jump)*1000:4.0f} + "
-              f"scan {(s['published'] - s['start'])*1000:4.0f}   {s['names']}")
+        rows.append(back[0] - t_jump)
+        how = "a scan found them" if back[0] in scan_publish_times else "tracking followed them"
+        print(f"  {(back[0] - t_jump)*1000:5.0f}ms  {back[1]} boxes, {how}")
     if rows:
-        print(f"  latency {ms([r[0] for r in rows])}   over {len(rows)} jumps with labels")
-        print(f"  of which waiting for the scan to start: {ms([r[1] for r in rows])}")
+        print(f"  latency {ms(rows)}   over {len(rows)} jumps with boxes up")
     else:
-        print("  no jump was followed by a scan that found a label - teleport next to a labelled item")
+        print("  no jump happened with boxes on screen - teleport next to labelled items")
 
     if diffs:
         q = np.percentile([d for _, d in diffs], [50, 90, 99, 99.9])
@@ -282,9 +299,9 @@ def main():
           f"{' (old loop)' if args.old else ''}. Teleport next to labelled items.\n")
 
     stop = threading.Event()
-    jumps, diffs, scans = [], [], []
+    jumps, diffs, scans, publishes = [], [], [], []
     threads = [threading.Thread(target=watch_for_jumps, args=(stop, jumps, diffs, args.jump_diff), daemon=True),
-               threading.Thread(target=run_ocr, args=(stop, scans, args.interval, args.old), daemon=True)]
+               threading.Thread(target=run_ocr, args=(stop, scans, publishes, args.interval, args.old), daemon=True)]
     for t in threads:
         t.start()
     try:
@@ -294,7 +311,7 @@ def main():
     stop.set()
     for t in threads:
         t.join(timeout=2.0)
-    summarise(jumps, scans, diffs, args.jump_diff)
+    summarise(jumps, scans, publishes, diffs, args.jump_diff)
     if args.save:
         #One timeline, so a teleport's difference can be lined up against the scans around it.
         with open(args.save, "w", encoding="utf-8") as f:
