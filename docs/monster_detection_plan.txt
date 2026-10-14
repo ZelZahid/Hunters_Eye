@@ -295,6 +295,24 @@ and empty corridors, saved as empty labels. Roughly one in five frames is a
 sensible starting ratio. These are the cheapest frames to produce and they are
 what stops the detector shooting at scenery.
 
+THE MODEL DRAFTS ITS OWN NEXT BATCH - ADDED 2026-10-14. Once a first model
+exists, tools/prelabel.py runs it over new frames and writes its boxes as
+DRAFTS; label_monsters.py opens each as thin "?" boxes for a person to fix, and
+moving on to the next frame accepts it. Each round the model is better, so each
+round is more correcting and less drawing. It fits the measured model well: its
+precision is already good (zero false positives held out), and recall - the
+monsters it misses - is exactly what a person reviewing drafts adds back.
+  DRAFTS LIVE IN _dataset/labels_draft/, NEVER labels/. The trainer reads every
+  file in labels/ as checked truth, so a guess written there trains as if
+  someone had reviewed it. autolabel.py used to write there; it now drafts too.
+  CONSIDERED AND NOT CHOSEN (2026-10-14): training on reference art (extracted
+  game models, wiki images, public datasets) instead of labelled screenshots.
+  No labelled D2R monster dataset was found, and clean reference art lacks the
+  lighting, effects, zoom and overlapping packs of real play, so it would still
+  need real labelled frames mixed in. Rendering the game's own models into
+  cut-paste synthesis is a multi-week project that only pays off at dozens of
+  monster classes. Revisit then.
+
 
 ------------------------------------------------------------------------------
 8. THE FREE WIN THAT MAKES THIS EASIER

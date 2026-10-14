@@ -1,8 +1,15 @@
 """Draw the boxes a monster detector trains on - the human half of the labelling loop.
 
-Step 3 of docs/monster_detection_plan.txt. tools/autolabel.py drafts boxes automatically and gets
-roughly four in five right; this is where a person fixes the fifth, and where frames that were
-never auto-labelled get done by hand. Nothing trains until this has been run.
+Step 3 of docs/monster_detection_plan.txt. tools/prelabel.py (your own trained model) and
+tools/autolabel.py (OWLv2, before any model exists) draft boxes into _dataset/labels_draft/; this
+is where a person fixes them, and where frames that were never drafted get done by hand. Nothing
+trains until this has been run.
+
+DRAFTS ARE REVIEWED HERE, AND MOVING ON IS ACCEPTING. A frame with a draft and no real label
+opens with the draft's boxes drawn thin and marked "?". Fix what is wrong, then move to the next
+frame: that saves your version to labels/ and deletes the draft, exactly as if you had drawn the
+boxes. That includes a draft with NO boxes - moving past it saves "nothing here", so look for a
+monster the model missed before you leave. The trainer never reads labels_draft/.
 
     python tools/label_monsters.py --import assets/zelScreenshots   # bring frames in, then label
     python tools/label_monsters.py                                  # label what is already in
@@ -59,6 +66,10 @@ MONSTERS_DIR = REPO_ROOT / "assets" / "monsters"
 DATASET_DIR = MONSTERS_DIR / "_dataset"
 IMAGES_DIR = DATASET_DIR / "images"
 LABELS_DIR = DATASET_DIR / "labels"
+# Machine-drawn boxes waiting for a person (tools/prelabel.py, tools/autolabel.py). A SEPARATE
+# folder, because the trainer reads every file in labels/ as checked truth: a draft written there
+# would train exactly as if someone had reviewed it, torch boxes and all.
+DRAFTS_DIR = DATASET_DIR / "labels_draft"
 CLASSES_FILE = DATASET_DIR / "classes.txt"
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp")
@@ -123,9 +134,16 @@ def label_path(image_path):
     return LABELS_DIR / (image_path.stem + ".txt")
 
 
-def read_labels(image_path, shape, classes):
-    """YOLO file -> [(name, x0, y0, x1, y1)] in frame pixels, or None if never labelled."""
-    path = label_path(image_path)
+def draft_path(image_path):
+    return DRAFTS_DIR / (image_path.stem + ".txt")
+
+
+def read_labels(image_path, shape, classes, path=None):
+    """YOLO file -> [(name, x0, y0, x1, y1)] in frame pixels, or None if never labelled.
+
+    Reads the real label by default; pass path=draft_path(...) to read a draft instead.
+    """
+    path = path or label_path(image_path)
     if not path.exists():
         return None                    # distinct from [] - "never labelled" vs "nothing here"
     height, width = shape[:2]
@@ -149,8 +167,11 @@ def read_labels(image_path, shape, classes):
     return boxes
 
 
-def write_labels(image_path, shape, boxes):
-    """Frame-pixel boxes -> YOLO file. Writes an EMPTY file for an empty list, deliberately."""
+def write_labels(image_path, shape, boxes, path=None):
+    """Frame-pixel boxes -> YOLO file. Writes an EMPTY file for an empty list, deliberately.
+
+    Writes the real label by default; pass path=draft_path(...) to write a draft instead.
+    """
     height, width = shape[:2]
     ids = ensure_class_ids(sorted({name for name, *_ in boxes}))
     lines = []
@@ -167,8 +188,9 @@ def write_labels(image_path, shape, boxes):
         lines.append("%d %.6f %.6f %.6f %.6f"
                      % (ids[name], ((x0 + x1) / 2) / width, ((y0 + y1) / 2) / height,
                         (x1 - x0) / width, (y1 - y0) / height))
-    LABELS_DIR.mkdir(parents=True, exist_ok=True)
-    label_path(image_path).write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    path = path or label_path(image_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
 def export_crops(image, image_path, boxes):
@@ -248,6 +270,7 @@ class Labeller:
         self.undo_stack = []
         self.dirty = False
         self.never_labelled = True
+        self.from_draft = False
         self.scale = 1.0
         self.drag_start = None
         self.cursor = (0, 0)
@@ -269,6 +292,7 @@ class Labeller:
         self.undo_stack = []
         self.dirty = False
         self.message = ""
+        self.from_draft = False
         if self.image is None:
             self.message = "could not read %s" % path.name
             self.boxes, self.never_labelled = [], True
@@ -276,13 +300,25 @@ class Labeller:
         existing = read_labels(path, self.image.shape, load_classes())
         self.never_labelled = existing is None
         self.boxes = list(existing or [])
+        if existing is None:
+            draft = read_labels(path, self.image.shape, load_classes(), draft_path(path))
+            if draft is not None:
+                # A draft loads as UNSAVED work: leaving the frame saves it as a real label, the
+                # same as boxes you drew yourself. Showing it to you is the review - fix what is
+                # wrong first, because what you leave behind is what trains.
+                self.boxes = list(draft)
+                self.from_draft = True
+                self.dirty = True
 
     def save(self):
         if self.image is None:
             return
         path = self.frames[self.index]
         write_labels(path, self.image.shape, self.boxes)
+        # The real label supersedes the draft; leaving it would only offer it again later.
+        draft_path(path).unlink(missing_ok=True)
         self.never_labelled = False
+        self.from_draft = False
         self.dirty = False
         if self.export_on_save and self.boxes:
             export_crops(self.image, path, self.boxes)
@@ -351,11 +387,14 @@ class Labeller:
         for name, x0, y0, x1, y1 in self.boxes:
             color = class_color(self.classes.index(name) if name in self.classes else 9)
             p0, p1 = self.to_display(x0, y0), self.to_display(x1, y1)
-            cv.rectangle(display, p0, p1, color, 2)
+            # Draft boxes are drawn thin and marked "?" so a machine's guess never looks like
+            # something you have already checked.
+            cv.rectangle(display, p0, p1, color, 1 if self.from_draft else 2)
+            text = name + "?" if self.from_draft else name
             label_y = max(12, p0[1] - 4)
-            cv.putText(display, name, (p0[0], label_y), cv.FONT_HERSHEY_SIMPLEX, 0.45,
+            cv.putText(display, text, (p0[0], label_y), cv.FONT_HERSHEY_SIMPLEX, 0.45,
                        (0, 0, 0), 3, cv.LINE_AA)
-            cv.putText(display, name, (p0[0], label_y), cv.FONT_HERSHEY_SIMPLEX, 0.45,
+            cv.putText(display, text, (p0[0], label_y), cv.FONT_HERSHEY_SIMPLEX, 0.45,
                        color, 1, cv.LINE_AA)
 
         if self.drag_start is not None:
@@ -389,7 +428,8 @@ class Labeller:
 
     def draw_status(self, display):
         done = sum(1 for f in self.frames if label_path(f).exists())
-        state = "unsaved" if self.dirty else ("NEW" if self.never_labelled else "saved")
+        state = ("DRAFT - fix, then move on to accept" if self.from_draft else
+                 "unsaved" if self.dirty else ("NEW" if self.never_labelled else "saved"))
         lines = [
             "frame %d/%d  %s   [%s]   boxes: %d   labelled frames: %d/%d"
             % (self.index + 1, len(self.frames), self.frames[self.index].name, state,
@@ -409,7 +449,7 @@ class Labeller:
                 "right-click  delete the box under the cursor",
                 "1-9 / tab    choose class",
                 "a / d        previous / next frame (autosaves)",
-                "n            next frame with no label file",
+                "n            next frame with no label file (drafts included)",
                 "e            mark EMPTY (no monsters) and save - a real label",
                 "u  undo      c  clear frame      s  save now",
                 "k            export crops of this frame to the class folders",
