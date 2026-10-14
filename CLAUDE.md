@@ -129,7 +129,7 @@ data the tools write or the engine reads.
 One-time setup before `game_state.py` reports anything:
 `python tools/calibrate_meters.py` (re-run after any resolution or UI-scale change).
 
-No linter or CI. Fourteen test files in `tests/`, none needing the game running — run each
+No linter or CI. Fifteen test files in `tests/`, none needing the game running — run each
 with `python tests/<file>`.
 
 ## Architecture
@@ -146,7 +146,8 @@ Four background daemon threads plus a main-thread output loop, connected by two 
    60. **Higher FPS is not the goal; the same work for less CPU is.**
 2. **`detect_objects()`** — the fast path. `cv.matchTemplate` against `assets/image1.png`,
    overlaps collapsed via `cv.dnn.NMSBoxes` (**not** `cv.groupRectangles` — OpenCV 5
-   removed it from the Python bindings), merged with whatever `detect_text()` last
+   removed it from the Python bindings), switched off by `user_config.txt`'s `image_search`
+   (it is ~3 of the thread's ~4.5ms/frame, and the shipped needle is a demo browser tab), merged with whatever `detect_text()` last
    published to `shared_text_tracks` (read behind a lock, **never blocks on OCR**).
    Matching runs on a **grayscale** copy, converted *after* `game_state` reads the frame
    (meter reading genuinely needs colour). Every rectangle carries its own `(r,g,b)` draw
@@ -1202,6 +1203,7 @@ tests/                   # none of them need the game running
   fixtures/              #   REAL frames the tests measure against - committed, see its README
   test_auto_collect.py   #   teleport decision, item ranking, retry cadences, UI panel filter
   test_game_state.py     #   meter fill measurement + Smoother
+  test_image_search.py   #   the reference-image search, held to its pre-shortcut output
   test_label_monsters.py #   the YOLO label file: round trip, empty-vs-missing, stable ids
   test_monster_detection.py # letterbox mapping, class-aware NMS, graceful degradation
   test_next_game.py      #   name increment/validation, lobby form location, OCR field read
@@ -1233,6 +1235,7 @@ docs/
   todolist.md            #   what to work on next, ideas, open questions, settled decisions
   Error_history.txt      #   bugs that took real effort, with root cause + fix + lesson
   design_notes.md        #   the long-form rationale behind everything in this file
+  diagrams/              #   system_map.svg (README-ready) + system_map.html - the whole system on one page
   monster_detection_plan.txt
 
 legacy/                  # earlier, incompatible prototype - reference only

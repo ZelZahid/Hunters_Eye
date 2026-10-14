@@ -74,6 +74,11 @@ DEFAULTS = {
     #it is to try numbers while playing.
     "click_settle": 0.05,
     "aim_settle": 0.20,
+    #Whether the reference-image detector (main.py's needle search) runs at all. ON when the file
+    #is missing, so behaviour is unchanged from before the setting existed - the same rule every
+    #default here follows. It is the single most expensive thing on the per-frame path (~3ms of a
+    #~4.5ms frame), so a user who has no picture to look for should be able to stop paying for it.
+    "image_search": True,
 }
 
 #Sanity bounds. These are not taste, they are "this value cannot possibly be what you meant":
@@ -95,7 +100,7 @@ _LIMITS = {
 class Config(namedtuple("Config",
                        "enabled min_gap snooze ignore_below use_password password game_name "
                        "teleport_key teleport_min_distance key_collect_retry click_settle "
-                       "aim_settle rules source")):
+                       "aim_settle image_search rules source")):
     """Loaded settings. `source` is the file it came from, or None when defaults were used."""
 
     @property
@@ -105,7 +110,7 @@ class Config(namedtuple("Config",
 
 _FIELDS = ("enabled", "min_gap", "snooze", "ignore_below", "use_password", "password",
            "game_name", "teleport_key", "teleport_min_distance", "key_collect_retry",
-           "click_settle", "aim_settle")
+           "click_settle", "aim_settle", "image_search")
 
 
 def _defaults(rules):
@@ -187,7 +192,7 @@ def load(path, known_meters=None, default_rules=()):
                 except Exception as exc:  # noqa: BLE001
                     _warn(f"[{SETTINGS_SECTION}]", f"{key} could not be read ({exc}); "
                                                    f"using {DEFAULTS[key]}")
-        for key in ("enabled", "use_password"):
+        for key in ("enabled", "use_password", "image_search"):
             if key in section:
                 try:
                     settings[key] = section.getboolean(key)

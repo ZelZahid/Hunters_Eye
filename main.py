@@ -42,8 +42,6 @@ SCALE_TO_NATIVE = 1 / CAPTURE_SCALE #detection runs at CAPTURE_SCALE - anything 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 needle_image = cv.imread(str(ASSETS_DIR / "image1.png"))
 needle_image = cv.resize(needle_image, (0,0) , fx=CAPTURE_SCALE, fy=CAPTURE_SCALE)
-needle_w = needle_image.shape[1]
-needle_h = needle_image.shape[0]
 #Template matching runs on GRAYSCALE, not colour, and this is a pure speed win rather than a
 #trade: TM_CCOEFF_NORMED subtracts the mean and normalises across the whole patch, which on a
 #3-channel image makes it very nearly colour-blind already. Measured against this needle, a
@@ -511,10 +509,55 @@ def get_screenshot():
         if remaining > 0:
             time.sleep(remaining)
 
+NEEDLE_THRESHOLD = 0.60
+NEEDLE_MAX_RESULTS = 10
+
+
+def _match_needle(frame_gray, template, threshold=NEEDLE_THRESHOLD, max_results=NEEDLE_MAX_RESULTS):
+    """[[x, y, w, h], ...] for every place `template` appears in `frame_gray`, overlaps collapsed.
+
+    Pure (no globals, no clock) so tests/test_image_search.py can hold it to its old output.
+
+    THE matchTemplate CALL IS MOST OF THE DETECTION THREAD. Measured at CAPTURE_SCALE on real
+    frames: ~3.0ms of a ~4.5ms iteration, i.e. ~0.18 of a core at 60 FPS on its own. Nothing here
+    can make the call itself cheaper without changing what it finds, which is why
+    user_config.txt's image_search can switch it off entirely instead.
+
+    WHAT IS CHEAPER IS EVERYTHING AFTER IT, in the common case. np.where over the whole score map
+    walks all ~156,000 scores to build index arrays - ~0.3ms - and on almost every frame the needle
+    is not on screen, so it builds two empty arrays. minMaxLoc reads the same map once without
+    allocating (~0.02ms) and answers "is anything over the threshold at all?". Only when something
+    is does the full scan run, so the result is identical on every frame; only the empty case got
+    cheaper.
+    """
+    result = cv.matchTemplate(frame_gray, template, method=cv.TM_CCOEFF_NORMED) #returns confidence score
+    if cv.minMaxLoc(result)[1] < threshold:
+        return []
+    locations = np.where(result >= threshold) #array([334,335]), array [91,92]
+    #zip into position tuples:
+    locations = list(zip(*locations[::-1]))
+
+    #building list
+    needle_h, needle_w = template.shape[:2]
+    rectangles = [[int(x), int(y), needle_w, needle_h] for (x, y) in locations]
+    scores = [float(result[y, x]) for (x, y) in locations]
+    #collapsing overlapping matches down to their single best-scoring box
+    #(cv.groupRectangles doesn't exist in OpenCV 5+, so this is done via NMS instead)
+    indices = cv.dnn.NMSBoxes(rectangles, scores, threshold, nms_threshold=0.3)
+    rectangles = [rectangles[i] for i in indices]
+    if len(rectangles) > max_results:
+        print("Too Many Results, raise the threshhold [max_results]")
+        rectangles = rectangles[:max_results] #keep the top max_results matches
+    return rectangles
+
+
 #Thread 2
 def detect_objects():
     global shared_game_state, shared_game_state_time
     print("Detecting Objects...")
+    if not IMAGE_SEARCH_ENABLED:
+        print("  Image search is off (image_search = no in user_config.txt) - "
+              "assets/image1.png is not being looked for.")
     meter_smoother = game_state.Smoother()
     last_state_print = 0.0
 
@@ -565,23 +608,8 @@ def detect_objects():
         #frame_gray was converted once at the top of this loop and is reused here - see there.
         #`screenshot` itself is still the untouched colour frame, which is what game_state needs
         #(meter reading is an HSV threshold). See needle_gray for why matching does not need it.
-        result = cv.matchTemplate(frame_gray, needle_gray, method=cv.TM_CCOEFF_NORMED) #returns confidence score
-        threshold = 0.60
-        max_results = 10 #Limiting results #
-        locations = np.where(result >= threshold) #array([334,335]), array [91,92]
-        #zip into position tuples:
-        locations = list(zip(*locations[::-1]))
-
-        #building list
-        rectangles = [[int(x), int(y), needle_w, needle_h] for (x, y) in locations]
-        scores = [float(result[y, x]) for (x, y) in locations]
-        #collapsing overlapping matches down to their single best-scoring box
-        #(cv.groupRectangles doesn't exist in OpenCV 5+, so this is done via NMS instead)
-        indices = cv.dnn.NMSBoxes(rectangles, scores, threshold, nms_threshold=0.3)
-        rectangles = [rectangles[i] for i in indices]
-        if len(rectangles) > max_results:
-            print("Too Many Results, raise the threshhold [max_results]")
-            rectangles = rectangles[:max_results] #keep the top max_results matches
+        #Switched off by user_config.txt's image_search - see _match_needle for what it costs.
+        rectangles = _match_needle(frame_gray, needle_gray) if IMAGE_SEARCH_ENABLED else []
 
         #Image-template matches aren't tied to targets.txt's per-item [color] tags (those only
         #apply to OCR matches), so they always draw in the same default color OCR falls back to
@@ -1581,6 +1609,9 @@ POTION_IGNORE_BELOW = potion_config.ignore_below
 POTION_POLL_SECONDS = 0.15
 POTION_SNOOZE_SECONDS = potion_config.snooze #'F6', same re-arming snooze as auto-collect's 'F4'
 POTION_DRINKING_ENABLED = potion_config.enabled
+#Read here because this is where user_config.txt is loaded; used by detect_objects(). See
+#_match_needle for why a person would want it off.
+IMAGE_SEARCH_ENABLED = potion_config.image_search
 
 potion_snooze_until = 0.0
 
