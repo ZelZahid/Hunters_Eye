@@ -48,6 +48,7 @@ MONSTERS_DIR = REPO_ROOT / "assets" / "monsters"
 DATASET_DIR = MONSTERS_DIR / "_dataset"
 IMAGES_DIR = DATASET_DIR / "images"
 LABELS_DIR = DATASET_DIR / "labels"
+DRAFTS_DIR = DATASET_DIR / "labels_draft"      #read only to COUNT them - never trained on
 CLASSES_FILE = DATASET_DIR / "classes.txt"
 
 OUT_MODEL = MONSTERS_DIR / "monsters.onnx"
@@ -97,13 +98,14 @@ def check_dataset(classes):
         return fatal, warnings, {}
 
     per_class = {name: 0 for name in classes}
-    labelled = empty = missing = 0
+    labelled = empty = missing = drafted = 0
     boxes_total = 0
 
     for image in images:
         label = LABELS_DIR / (image.stem + ".txt")
         if not label.exists():
             missing += 1
+            drafted += (DRAFTS_DIR / (image.stem + ".txt")).exists()
             continue
         lines = [l.strip() for l in label.read_text(encoding="utf-8").splitlines() if l.strip()]
         if not lines:
@@ -146,6 +148,10 @@ def check_dataset(classes):
         warnings.append("%d image(s) have no label file at all. YOLO treats those as EMPTY "
                         "scenes, so any monsters in them teach the model to miss monsters. "
                         "Label them, or move them out of images/." % missing)
+        if drafted:
+            warnings.append("%d of those have a machine draft waiting for review. Drafts are "
+                            "never trained on - review them with "
+                            "tools/label_monsters.py --only-unlabelled." % drafted)
     if len(images) < MIN_SENSIBLE_IMAGES:
         warnings.append("only %d images - expect memorisation rather than generalisation. "
                         "Fine to prove the loop, not fine to trust the result." % len(images))

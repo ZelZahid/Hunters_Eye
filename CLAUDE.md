@@ -1192,6 +1192,7 @@ tools/                   # run by hand, never by the pipeline
   build_route_map.py     #   stitch route screenshots into assets/routes/<name>.png/.json
   calibrate_meters.py    #   one-time setup: define + live-validate the HUD meters
   label_monsters.py      #   draw the boxes the monster detector trains on; --import frames
+  prelabel.py            #   the trained model drafts boxes on new frames, for review
   train_monster.py       #   labelled frames -> assets/monsters/monsters.onnx
   diagnose_monsters.py   #   "why wasn't this monster detected?" - and model vs. your labels
   diagnose_ocr.py        #   "why wasn't this item detected?" - what Tesseract actually read
