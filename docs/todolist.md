@@ -28,6 +28,11 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 
 *In order — each depends on the one above it.*
 
+- [ ] **Try the bot test mode in the game.** (Added 2026-10-14, owner's request: teleport back and forth over items by itself so timing tests run with nobody at the keyboard.) `python tools/teleport_bot.py --dry-run` first (points nowhere, presses nothing, shows the guards), then for real next to some items out of town. Tested only against real frames and a fake game - what is NOT yet seen live:
+  - does the scene-shift check see real teleports land? The console prints `landed` / `nothing moved` / `could not tell` per teleport; lots of `could not tell` means `MIN_SHIFT_RESPONSE` (0.2) is too strict for live frames
+  - `--distance` 0.3 of the window height is a guess; too far and the items leave the screen, which leaves the latency tool nothing to time
+  - `--measure` needs `tools/measure_ocr_latency.py`, which is on the `ocr-latency` branch until that merges
+
 - [ ] **Confirm the cursor hold fixed the first-attempt misses.** (Added 2026-09-14, resolved-in-principle the same day.) Owner reported telekinesis and teleport-then-click missing the first attempt, then diagnosed it themselves: *"it works when I am not doing anything... it only fails first attempt if I'm using my left click and moving around or teleporting"*. That is the answer — every settle was "move the cursor, then sleep", and the player's own mouse drags it off target during the sleep. **A longer settle made it worse, which is why raising `aim_settle` did nothing.** `core/actions.hold_cursor()` now re-asserts the position every 10ms for the length of the settle.
   - the console says which attempt each pickup landed on — "1st try" while moving is the thing to look for
   - if it still misses while moving, the next suspect is the player's held LEFT BUTTON rather than the cursor: a click of ours inside their hold is ambiguous to the game. `BlockInput` would settle it but needs privileges and can strand a machine with no input, so it is a last resort, not a next step.
