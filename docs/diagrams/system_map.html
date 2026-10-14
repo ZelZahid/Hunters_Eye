@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hunter's Eye System Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: one wide figure that is the page, then short reference sections in a readable column. */
+:root{--bg:#F1F3EF;--surface:#FFFFFF;--ink:#17212A;--ink-2:#2E3A44;--muted:#5C6772;--line:#CBD1D4;--line-strong:#73808A;
+--teal:#0D726E;--teal-t:#E1F0EE;--amber:#A35500;--amber-t:#FBEEDC;--red:#B5302A;--red-t:#FBE5E2;--violet:#5847AD;--violet-t:#ECE8F8;--plumb-t:#F1F3F4; --sans:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;--mono:'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0E1316;--surface:#161D22;--ink:#E4E9EB;--ink-2:#C6CED3;--muted:#97A3AB;--line:#2E3A42;--line-strong:#8995A0;
+--teal:#4EC2B8;--teal-t:#12302D;--amber:#F2A54A;--amber-t:#33250F;--red:#FF7B6F;--red-t:#3A1A18;--violet:#ABA0F3;--violet-t:#231E3C;--plumb-t:#1C252B; color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0E1316;--surface:#161D22;--ink:#E4E9EB;--ink-2:#C6CED3;--muted:#97A3AB;--line:#2E3A42;--line-strong:#8995A0;
+--teal:#4EC2B8;--teal-t:#12302D;--amber:#F2A54A;--amber-t:#33250F;--red:#FF7B6F;--red-t:#3A1A18;--violet:#ABA0F3;--violet-t:#231E3C;--plumb-t:#1C252B; color-scheme:dark}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.55;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:40px 64px}
+.wrap{max-width:1440px;margin:0 auto;display:flex;flex-direction:column;gap:40px}
+.col{max-width:900px;display:flex;flex-direction:column;gap:16px;min-width:0}
+header{display:flex;flex-direction:column;gap:10px;max-width:820px}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+h1{font-size:clamp(30px,4.4vw,46px);line-height:1.08;letter-spacing:-.02em;margin:0;font-weight:700;text-wrap:balance}
+h1 .eye{color:var(--teal)}
+h2{font-size:20px;margin:0;letter-spacing:-.01em;text-wrap:balance}
+p{margin:0;max-width:68ch;color:var(--ink-2)}
+code{font-family:var(--mono);font-size:.88em;color:var(--ink)}
+.legend{display:flex;flex-wrap:wrap;gap:8px 22px;font-size:13px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:8px}
+.sw{width:14px;height:14px;border-radius:3px;border:1.4px solid}
+.sw.s{background:var(--teal-t);border-color:var(--teal)}.sw.a{background:var(--amber-t);border-color:var(--amber)}
+.sw.g{background:var(--red-t);border-color:var(--red)}.sw.d{background:var(--violet-t);border-color:var(--violet)}
+figure{margin:0;display:flex;flex-direction:column;gap:12px}
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--bg)}
+.sysmap{display:block;width:100%;min-width:1080px;height:auto;padding:18px 18px 8px;box-sizing:border-box}
+figcaption{font-size:13px;color:var(--muted);max-width:90ch}
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;list-style:none;margin:0;padding:0;counter-reset:s}
+.steps li{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:6px;min-width:0;counter-increment:s}
+.steps li b{font-size:14px}
+.steps li b::before{content:counter(s) "  ";font-family:var(--mono);color:var(--muted);font-weight:600}
+.steps li p{font-size:13.5px}
+.tbl{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:640px;font-size:13.5px}
+th{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-align:left;font-weight:600;padding:8px 12px;border-bottom:1.5px solid var(--line-strong)}
+td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--ink-2)}
+td:first-child{font-family:var(--mono);font-size:12.5px;color:var(--teal);white-space:nowrap}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+tr.off td:first-child{color:var(--muted)}
+.rules{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.rule{border-left:3px solid var(--line-strong);padding:2px 0 2px 14px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.rule.g{border-color:var(--red)}.rule.s{border-color:var(--teal)}.rule.a{border-color:var(--amber)}
+.rule b{font-size:14.5px}
+.rule p{font-size:13.5px}
+.note{font-size:13px;color:var(--muted)}
+
+.bgfill{fill:var(--bg)}
+.box{fill:var(--surface);stroke:var(--line);stroke-width:1.2}
+.screen{fill:var(--surface);stroke:var(--ink);stroke-width:2}
+.panel{fill:var(--surface);stroke:var(--line);stroke-width:1.2}
+.chip{stroke-width:1.2}
+.k-sense{fill:var(--teal-t);stroke:var(--teal)}
+.k-act{fill:var(--amber-t);stroke:var(--amber)}
+.k-safe{fill:var(--red-t);stroke:var(--red)}
+.k-data{fill:var(--violet-t);stroke:var(--violet)}
+.k-plumb{fill:var(--plumb-t);stroke:var(--line-strong)}
+.dashed{stroke-dasharray:5 4}
+.title{font-family:var(--sans);font-size:14.5px;font-weight:600;fill:var(--ink)}
+.q{font-family:var(--sans);font-size:12.5px;font-weight:600;fill:var(--ink)}
+.d{font-family:var(--sans);font-size:11.5px;fill:var(--muted)}
+.d2{font-family:var(--sans);font-size:12px;fill:var(--ink-2)}
+.d3{font-family:var(--sans);font-size:11px;font-style:italic;fill:var(--muted)}
+.mono{font-family:var(--mono);font-size:11.5px;fill:var(--muted)}
+.sm{font-size:10.5px} .sm2{font-size:11px}
+.c-sense{fill:var(--teal)} .c-act{fill:var(--amber)} .c-data{fill:var(--violet)} .c-plumb{fill:var(--muted)}
+.hdr{font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:.14em;fill:var(--muted)}
+.lab{font-family:var(--sans);font-size:11px;fill:var(--muted)}
+.lab-act{font-family:var(--sans);font-size:12px;font-weight:600;fill:var(--amber)}
+.lab-safe{font-family:var(--sans);font-size:11px;font-weight:600;fill:var(--red)}
+.gate{font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:.12em;fill:var(--red)}
+.arr{fill:none;stroke:var(--line-strong);stroke-width:1.4}
+.arr-act{fill:none;stroke:var(--amber);stroke-width:1.8}
+.arr-safe{fill:none;stroke:var(--red);stroke-width:1.6;stroke-dasharray:6 4}
+.ah{fill:var(--line-strong)} .ah-act{fill:var(--amber)} .ah-safe{fill:var(--red)}
+.eye{fill:var(--teal-t);stroke:var(--teal);stroke-width:2}
+.iris{fill:none;stroke:var(--teal);stroke-width:2.5}
+.pupil{fill:var(--ink)}
+.key{fill:var(--bg);stroke:var(--line-strong);stroke-width:1}
+.keyt{font-family:var(--mono);font-size:11px;font-weight:600;fill:var(--ink)}
+.bigt{font-family:var(--sans);font-size:24px;font-weight:700;fill:var(--ink);letter-spacing:-.01em}
+
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">System map · main at v0.020</div>
+    <h1>Hunter's <span class="eye">Eye</span>, end to end</h1>
+    <p>A real-time computer-vision engine that only ever looks at pixels. It reads the screen, decides what to do, and moves the mouse and keyboard, then looks again to see what changed. Diablo II: Resurrected is the test bed; the same engine is meant to run against a browser window or a robot's camera.</p>
+    <div class="legend" aria-label="Colour key">
+      <span><i class="sw s"></i>senses (detectors)</span>
+      <span><i class="sw a"></i>decides and acts</span>
+      <span><i class="sw g"></i>safety gate</span>
+      <span><i class="sw d"></i>data and offline tools</span>
+    </div>
+  </header>
+
+  <figure>
+    <div class="scroll"><svg viewBox="0 0 1420 1300" role="img" aria-label="Hunter&#x27;s Eye system map: the screen is captured three ways; thread 2 reads meters, belt, in-play and focus every frame while thread 3 reads item names with OCR; results go to lock-protected shared state; potions, auto-collect and hotkey sequences decide, pass a safety gate, and act through core/actions with mouse and keyboard, which changes the game and the next frame." class="sysmap" xmlns="http://www.w3.org/2000/svg"><defs>
+<marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="ah"/></marker>
+<marker id="ah-act" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="ah-act"/></marker>
+<marker id="ah-safe" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="ah-safe"/></marker>
+</defs><text x="20" y="26" class="hdr">1  SEE</text>
+<text x="250" y="26" class="hdr">2  READ</text>
+<text x="720" y="26" class="hdr">3  SHARE</text>
+<text x="960" y="26" class="hdr">4  DECIDE</text>
+<text x="1240" y="26" class="hdr">5  ACT</text>
+<rect x="20" y="60" width="170" height="830" rx="10" class="screen"/>
+<text x="36" y="90" class="title">The screen</text>
+<text x="36" y="112" class="d">Diablo II: Resurrected,</text>
+<text x="36" y="131" class="d">the current test bed</text>
+<path d="M53.0 470 Q105.0 426 157.0 470 Q105.0 514 53.0 470 Z" class="eye"/>
+<circle cx="105.0" cy="470" r="17" class="iris"/>
+<circle cx="105.0" cy="470" r="6" class="pupil"/>
+<text x="105.0" y="532" class="d" text-anchor="middle">pixels in,</text>
+<text x="105.0" y="550" class="d" text-anchor="middle">nothing else</text>
+<text x="36" y="798" class="d">No game memory,</text>
+<text x="36" y="817" class="d">no network traffic.</text>
+<text x="36" y="836" class="d">Any window, browser</text>
+<text x="36" y="855" class="d">or camera works too.</text>
+<rect x="250" y="60" width="430" height="110" rx="8" class="box"/>
+<text x="266" y="86" class="title">Thread 1 · Capture</text>
+<text x="664" y="86" class="mono" text-anchor="end">get_screenshot()</text>
+<rect x="266" y="90" width="196" height="66" rx="6" class="chip k-plumb"/>
+<text x="278" y="109" class="mono c-plumb">core/frame_source</text>
+<text x="278" y="129" class="q">DXGI on Windows</text>
+<text x="278" y="146" class="d">falls back to mss</text>
+<text x="478" y="113" class="d2">Paced to 60 FPS</text>
+<text x="478" y="132" class="d2">Shrunk to 0.3× scale</text>
+<text x="478" y="151" class="d2">Colour (BGR) frames</text>
+<path d="M190 115 H246" class="arr" marker-end="url(#ah)"/>
+<text x="220" y="108" class="lab" text-anchor="middle">0.3×</text>
+<path d="M310 170 V211" class="arr" marker-end="url(#ah)"/>
+<text x="322" y="197" class="lab">screenshot_queue · 3 frames, drop oldest</text>
+<rect x="250" y="215" width="430" height="300" rx="8" class="box"/>
+<text x="266" y="241" class="title">Thread 2 · Fast detection</text>
+<text x="664" y="241" class="mono" text-anchor="end">detect_objects()</text>
+<text x="266" y="261" class="d">Every frame, all from that one small frame (about 5 ms)</text>
+<rect x="266" y="272" width="193" height="66" rx="6" class="chip k-sense"/>
+<text x="278" y="291" class="mono c-sense">core/game_state</text>
+<text x="278" y="311" class="q">How full is each meter?</text>
+<text x="278" y="328" class="d">0.0 – 1.0, or None</text>
+<rect x="471" y="272" width="193" height="66" rx="6" class="chip k-sense"/>
+<text x="483" y="291" class="mono c-sense">core/slots</text>
+<text x="483" y="311" class="q">What&#x27;s in each belt slot?</text>
+<text x="483" y="328" class="d">colour per cell · every 0.5 s</text>
+<rect x="266" y="352" width="193" height="66" rx="6" class="chip k-sense"/>
+<text x="278" y="371" class="mono c-sense">core/presence</text>
+<text x="278" y="391" class="q">Is the game in play?</text>
+<text x="278" y="408" class="d">HUD art match · 0.2 ms</text>
+<rect x="471" y="352" width="193" height="66" rx="6" class="chip k-sense"/>
+<text x="483" y="371" class="mono c-sense">core/window_region</text>
+<text x="483" y="391" class="q">Is the game focused?</text>
+<text x="483" y="408" class="d">yes / no / can&#x27;t tell</text>
+<rect x="266" y="432" width="193" height="66" rx="6" class="chip k-sense"/>
+<text x="278" y="451" class="mono c-sense">cv.matchTemplate</text>
+<text x="278" y="471" class="q">Where is this picture?</text>
+<text x="278" y="488" class="d">image1.png · off by default</text>
+<rect x="471" y="432" width="193" height="66" rx="6" class="chip k-plumb"/>
+<text x="483" y="451" class="mono c-plumb">main.py</text>
+<text x="483" y="471" class="q">Merge in OCR boxes</text>
+<text x="483" y="488" class="d">read, never waited on</text>
+<rect x="250" y="545" width="430" height="255" rx="8" class="box"/>
+<text x="266" y="571" class="title">Thread 3 · Text (slow path)</text>
+<text x="664" y="571" class="mono" text-anchor="end">detect_text()</text>
+<text x="266" y="591" class="d">Own thread and own full-size capture, so OCR never stalls the fast path</text>
+<rect x="266" y="597" width="398" height="56" rx="6" class="chip k-sense"/>
+<text x="278" y="617" class="mono c-sense">core/text_detection</text>
+<text x="416" y="617" class="q">Which listed names are here?</text>
+<text x="416" y="635" class="d">Tesseract every 0.4 s · fuzzy match</text>
+<rect x="266" y="661" width="398" height="56" rx="6" class="chip k-sense"/>
+<text x="278" y="681" class="mono c-sense">relocalize</text>
+<text x="416" y="681" class="q">Where did each label move?</text>
+<text x="416" y="699" class="d">small greyscale match, between scans</text>
+<rect x="266" y="725" width="398" height="56" rx="6" class="chip k-sense"/>
+<text x="278" y="745" class="mono c-sense">panel filter</text>
+<text x="416" y="745" class="q">On an open inventory or stash?</text>
+<text x="416" y="763" class="d">then it&#x27;s a tooltip, not a drop: skip</text>
+<path d="M190 640 H246" class="arr" marker-end="url(#ah)"/>
+<text x="220" y="633" class="lab" text-anchor="middle">1.0×</text>
+<rect x="720" y="215" width="200" height="80" rx="8" class="box"/>
+<text x="734" y="239" class="title">Meters + belt</text>
+<text x="734" y="258" class="mono">shared_game_state</text>
+<text x="734" y="278" class="d">health, mana, slot contents</text>
+<rect x="720" y="310" width="200" height="80" rx="8" class="box"/>
+<text x="734" y="334" class="title">In play? Focused?</text>
+<text x="734" y="353" class="mono">in_play · anchor_focused</text>
+<text x="734" y="373" class="d">yes / no / can&#x27;t tell</text>
+<rect x="720" y="600" width="200" height="90" rx="8" class="box"/>
+<text x="734" y="624" class="title">Found items</text>
+<text x="734" y="643" class="mono">shared_text_tracks</text>
+<text x="734" y="663" class="d">box, name, collect it?</text>
+<text x="734" y="682" class="d">in 0.3× coordinates</text>
+<text x="720" y="420" class="d3">lock-protected, read by</text>
+<text x="720" y="437" class="d3">everything to the right</text>
+<path d="M680 285 H716" class="arr" marker-end="url(#ah)"/>
+<path d="M680 370 H716" class="arr" marker-end="url(#ah)"/>
+<path d="M680 645 H716" class="arr" marker-end="url(#ah)"/>
+<path d="M720 618 H700 V466 H668" class="arr" marker-end="url(#ah)"/>
+<path d="M680 232 H700 V150 H956" class="arr" marker-end="url(#ah)"/>
+<text x="800" y="143" class="lab" text-anchor="middle">detection_queue · frame + boxes</text>
+<rect x="960" y="60" width="440" height="110" rx="8" class="box"/>
+<text x="976" y="86" class="title">Main thread · Overlay</text>
+<text x="1384" y="86" class="mono" text-anchor="end">run_overlay()</text>
+<text x="976" y="109" class="d2">Transparent, click-through window over the game.</text>
+<text x="976" y="128" class="d2">Draws the boxes and the F5 debug panel, repainted at most 30×/s.</text>
+<text x="976" y="147" class="d2">On macOS it falls back to a plain debug window.</text>
+<path d="M1020 60 V44 H105.0 V56" class="arr" marker-end="url(#ah)"/>
+<text x="600" y="38" class="lab" text-anchor="middle">drawn on top of the game</text>
+<rect x="960" y="215" width="260" height="130" rx="8" class="chip k-act"/>
+<text x="976" y="239" class="title">Thread 5 · Potions</text>
+<text x="976" y="258" class="mono c-act">run_potion_drinking()</text>
+<text x="976" y="280" class="d2">Meter at or below a threshold: drink.</text>
+<text x="976" y="299" class="d2">Rules come from user_config.txt.</text>
+<text x="976" y="318" class="d2">Keys are read off the belt.</text>
+<rect x="960" y="390" width="260" height="190" rx="8" class="chip k-act"/>
+<text x="976" y="414" class="title">Thread 4 · Auto-collect</text>
+<text x="976" y="433" class="mono c-act">run_auto_collect()</text>
+<text x="976" y="456" class="d2">Picks the best item on the ground</text>
+<text x="976" y="475" class="d2">(lower in targets.txt wins).</text>
+<text x="976" y="494" class="d2">Far away? Teleport onto it first.</text>
+<text x="976" y="513" class="d2">Click or cast until it&#x27;s gone,</text>
+<text x="976" y="532" class="d2">give up after 5 s.</text>
+<text x="976" y="551" class="d2">F4 snoozes it for 10 s.</text>
+<rect x="960" y="605" width="260" height="255" rx="8" class="chip k-act"/>
+<text x="976" y="629" class="title">Hotkey sequences</text>
+<text x="976" y="648" class="mono c-act">own thread, one at a time</text>
+<text x="976" y="674" class="q">F3 · Next game</text>
+<text x="976" y="693" class="d2">quit, read the lobby&#x27;s game name,</text>
+<text x="976" y="712" class="d2">add 1, create the game</text>
+<text x="976" y="740" class="q">F7 · Pindle run</text>
+<text x="1204" y="740" class="mono" text-anchor="end">routes/pindle.py</text>
+<text x="976" y="759" class="d2">find itself on a stitched map, walk,</text>
+<text x="976" y="778" class="d2">read the portal&#x27;s label, go through,</text>
+<text x="976" y="797" class="d2">fight whatever moves, and leave the</text>
+<text x="976" y="816" class="d2">game below 20% health. F4 stops it.</text>
+<path d="M920 250 H956" class="arr" marker-end="url(#ah)"/>
+<path d="M920 630 H940 V540 H956" class="arr" marker-end="url(#ah)"/>
+<text x="956" y="585" class="lab" text-anchor="middle" transform="rotate(-90 956 585)">to collect</text>
+<path d="M190 845 H956" class="arr" marker-end="url(#ah)"/>
+<text x="220" y="838" class="lab" text-anchor="middle">1.0×</text>
+<text x="575" y="838" class="lab" text-anchor="middle">own full-size capture for F3 and F7, only while one runs</text>
+<rect x="1240" y="215" width="50" height="645" rx="8" class="chip k-safe"/>
+<text x="1265.0" y="537" class="gate" text-anchor="middle" transform="rotate(-90 1265.0 537)">SAFETY GATE · actions_allowed()</text>
+<path d="M920 360 H1236" class="arr-safe" marker-end="url(#ah-safe)"/>
+<text x="1090" y="380" class="lab-safe" text-anchor="middle">if either says no, nothing acts</text>
+<rect x="1310" y="215" width="90" height="645" rx="8" class="box"/>
+<text x="1355.0" y="243" class="mono" text-anchor="middle">core/</text>
+<text x="1355.0" y="262" class="title" text-anchor="middle">actions</text>
+<text x="1355.0" y="330" class="d2" text-anchor="middle">move</text>
+<text x="1355.0" y="400" class="d2" text-anchor="middle">hold</text>
+<text x="1355.0" y="470" class="d2" text-anchor="middle">click</text>
+<text x="1355.0" y="540" class="d2" text-anchor="middle">press</text>
+<text x="1355.0" y="610" class="d2" text-anchor="middle">type</text>
+<text x="1355.0" y="680" class="d2" text-anchor="middle">wait</text>
+<path d="M1220 280 H1236" class="arr-act" marker-end="url(#ah-act)"/>
+<path d="M1290 280 H1306" class="arr-act" marker-end="url(#ah-act)"/>
+<path d="M1220 485 H1236" class="arr-act" marker-end="url(#ah-act)"/>
+<path d="M1290 485 H1306" class="arr-act" marker-end="url(#ah-act)"/>
+<path d="M1220 730 H1236" class="arr-act" marker-end="url(#ah-act)"/>
+<path d="M1290 730 H1306" class="arr-act" marker-end="url(#ah-act)"/>
+<path d="M1355.0 860 V930 H105.0 V894" class="arr-act" marker-end="url(#ah-act)"/>
+<text x="700" y="922" class="lab-act" text-anchor="middle">mouse &amp; keyboard with real scancodes  →  the game reacts  →  the next frame shows it</text>
+<rect x="20" y="965" width="560" height="260" rx="10" class="panel"/>
+<text x="36" y="993" class="title">Data you edit, not code</text>
+<text x="36" y="1012" class="d">read at startup · change behaviour without touching Python</text>
+<rect x="36" y="1030" width="528" height="26" rx="5" class="chip k-data"/>
+<text x="48" y="1047" class="mono c-data">user_config.txt</text>
+<text x="238" y="1047" class="d2">potion rules, teleport key, timings, game name</text>
+<rect x="36" y="1064" width="528" height="26" rx="5" class="chip k-data"/>
+<text x="48" y="1081" class="mono c-data">assets/targets.txt</text>
+<text x="238" y="1081" class="d2">what OCR looks for · line order = priority</text>
+<rect x="36" y="1098" width="528" height="26" rx="5" class="chip k-data"/>
+<text x="48" y="1115" class="mono c-data">meters.json · belt.json</text>
+<text x="238" y="1115" class="d2">where the orbs and potion belt are</text>
+<rect x="36" y="1132" width="528" height="26" rx="5" class="chip k-data"/>
+<text x="48" y="1149" class="mono c-data">assets/*.png + .json</text>
+<text x="238" y="1149" class="d2">reference art: in play, inventory, stash, Save and Exit</text>
+<rect x="36" y="1166" width="528" height="26" rx="5" class="chip k-data"/>
+<text x="48" y="1183" class="mono c-data">assets/routes/</text>
+<text x="238" y="1183" class="d2">stitched maps + the path actually walked</text>
+<rect x="600" y="965" width="800" height="260" rx="10" class="panel"/>
+<text x="616" y="993" class="title">Offline tools · tools/, run by hand, never by the pipeline</text>
+<rect x="616" y="1009" width="248" height="66" rx="6" class="chip k-data"/>
+<text x="628" y="1028" class="mono c-data">calibrate_meters</text>
+<text x="628" y="1048" class="q">drag a box round each orb</text>
+<text x="628" y="1065" class="d">writes meters.json</text>
+<rect x="876" y="1009" width="248" height="66" rx="6" class="chip k-data"/>
+<text x="888" y="1028" class="mono c-data">build_route_map</text>
+<text x="888" y="1048" class="q">stitch walk screenshots</text>
+<text x="888" y="1065" class="d">writes assets/routes/</text>
+<rect x="1136" y="1009" width="248" height="66" rx="6" class="chip k-data"/>
+<text x="1148" y="1028" class="mono c-data">diagnose_*</text>
+<text x="1148" y="1048" class="q">why didn&#x27;t it see X?</text>
+<text x="1148" y="1065" class="d">ocr · monsters · quit · lobby</text>
+<text x="616" y="1105" class="q">Monster detector training loop</text>
+<rect x="616" y="1119" width="120" height="50" rx="6" class="chip k-data"/>
+<text x="624" y="1140" class="mono sm c-data">capture_frames</text>
+<text x="624" y="1158" class="d sm2">record gameplay</text>
+<path d="M736 1144 H743" class="arr" marker-end="url(#ah)"/>
+<rect x="746" y="1119" width="120" height="50" rx="6" class="chip k-data"/>
+<text x="754" y="1140" class="mono sm c-data">prelabel</text>
+<text x="754" y="1158" class="d sm2">model drafts boxes</text>
+<path d="M866 1144 H873" class="arr" marker-end="url(#ah)"/>
+<rect x="876" y="1119" width="120" height="50" rx="6" class="chip k-data"/>
+<text x="884" y="1140" class="mono sm c-data">label_monsters</text>
+<text x="884" y="1158" class="d sm2">you fix them</text>
+<path d="M996 1144 H1003" class="arr" marker-end="url(#ah)"/>
+<rect x="1006" y="1119" width="120" height="50" rx="6" class="chip k-data"/>
+<text x="1014" y="1140" class="mono sm c-data">train_monster</text>
+<text x="1014" y="1158" class="d sm2">YOLO11n → ONNX</text>
+<path d="M1126 1144 H1133" class="arr" marker-end="url(#ah)"/>
+<rect x="1136" y="1119" width="120" height="50" rx="6" class="chip k-data"/>
+<text x="1144" y="1140" class="mono sm c-data">monsters.onnx</text>
+<text x="1144" y="1158" class="d sm2">1 model, N classes</text>
+<path d="M1256 1144 H1263" class="arr" marker-end="url(#ah)"/>
+<rect x="1266" y="1119" width="120" height="50" rx="6" class="chip k-sense dashed"/>
+<text x="1274" y="1140" class="mono sm c-sense">monster_detection</text>
+<text x="1274" y="1158" class="d sm2">~34 ms per frame</text>
+<path d="M1196.0 1169 V1191 H806.0 V1173" class="arr" marker-end="url(#ah)"/>
+<text x="1001.0" y="1208" class="lab" text-anchor="middle">the trained model drafts the next batch</text>
+<text x="1326.0" y="1191" class="lab" text-anchor="middle">not in the live run yet</text>
+<rect x="20" y="1245" width="1380" height="40" rx="8" class="panel"/>
+<text x="36" y="1270" class="hdr">HOTKEYS</text>
+<rect x="130" y="1255" width="36" height="20" rx="4" class="key"/>
+<text x="148.0" y="1269" class="keyt" text-anchor="middle">End</text>
+<text x="174" y="1270" class="d2">quit</text>
+<rect x="234.4" y="1255" width="28" height="20" rx="4" class="key"/>
+<text x="248.4" y="1269" class="keyt" text-anchor="middle">F3</text>
+<text x="270.4" y="1270" class="d2">next game</text>
+<rect x="363.8" y="1255" width="28" height="20" rx="4" class="key"/>
+<text x="377.8" y="1269" class="keyt" text-anchor="middle">F4</text>
+<text x="399.8" y="1270" class="d2">snooze pickup / stop a run</text>
+<rect x="605.4" y="1255" width="28" height="20" rx="4" class="key"/>
+<text x="619.4" y="1269" class="keyt" text-anchor="middle">F5</text>
+<text x="641.4" y="1270" class="d2">debug panel</text>
+<rect x="748.0" y="1255" width="28" height="20" rx="4" class="key"/>
+<text x="762.0" y="1269" class="keyt" text-anchor="middle">F6</text>
+<text x="784.0" y="1270" class="d2">snooze potions</text>
+<rect x="910.4" y="1255" width="28" height="20" rx="4" class="key"/>
+<text x="924.4" y="1269" class="keyt" text-anchor="middle">F7</text>
+<text x="946.4" y="1270" class="d2">Pindle run</text></svg></div>
+    <figcaption>Five threads share one screen. Thread 1 captures small frames for the fast path, thread 3 takes its own full-size frames for OCR, and the hotkey sequences take theirs only while running. Everything that acts goes through the safety gate and <code>core/actions</code>, and the orange loop at the bottom is the whole idea: act, then look again.</figcaption>
+  </figure>
+
+  <section class="col">
+    <h2>Reading it left to right</h2>
+    <ol class="steps">
+      <li><b>See</b><p>Grab the screen. DXGI on Windows, <code>mss</code> anywhere else or if DXGI drops out mid-session.</p></li>
+      <li><b>Read</b><p>Each detector answers one question about the frame. Cheap ones run every frame; OCR runs a few times a second on its own thread.</p></li>
+      <li><b>Share</b><p>Answers land in lock-protected variables. Nothing downstream ever waits on a slow detector.</p></li>
+      <li><b>Decide</b><p>Potions, auto-collect and the F3 and F7 sequences each turn readings into one next action.</p></li>
+      <li><b>Act</b><p>The safety gate checks the game is focused and in play, then <code>core/actions</code> moves, clicks and presses.</p></li>
+    </ol>
+  </section>
+
+  <section class="col">
+    <h2>The detectors</h2>
+    <p>Each lives in its own module under <code>core/</code>, takes a colour frame, and never imports another detector. Remove one and nothing else has to change.</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Module</th><th>Question it answers</th><th>Shape of the answer</th><th>Cost</th></tr></thead>
+      <tbody>
+        <tr><td>text_detection</td><td>Which of the listed names are on screen?</td><td>boxes + names, from <code>targets.txt</code></td><td class="num">0.1–0.26 s per scan</td></tr>
+        <tr><td>cv.matchTemplate</td><td>Where is this reference picture?</td><td>boxes</td><td class="num">~3 ms per frame</td></tr>
+        <tr><td>game_state</td><td>How full is each meter?</td><td>0.0–1.0, or None</td><td class="num">0.15 ms</td></tr>
+        <tr><td>presence</td><td>Is this reference art on screen?</td><td>yes, no, or can't tell</td><td class="num">0.2 ms</td></tr>
+        <tr><td>slots</td><td>What is in each belt slot?</td><td>a supply per cell, empty, or can't see</td><td class="num">under 1 ms</td></tr>
+        <tr><td>localize</td><td>Where on the map is the camera looking?</td><td>a map position, or None</td><td class="num">~18 ms</td></tr>
+        <tr class="off"><td>monster_detection</td><td>Which trained monsters are where?</td><td>boxes + class + confidence</td><td class="num">33–35 ms</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">Costs were measured on the development PC and are directional. <code>window_region</code> isn't a detector: it finds the game window and says whether it is in front. The monster detector is trained and tested but not yet called by the live run; F7 finds targets by motion and the red name plate instead.</p>
+  </section>
+
+  <section class="col">
+    <h2>Three rules the diagram depends on</h2>
+    <div class="rules">
+      <div class="rule g"><b>"Can't tell" is its own answer</b><p>Every sensor returns yes, no, or None. An unreadable health orb is None, never 0%, so alt-tabbing can't look like an emergency and empty the potion belt.</p></div>
+      <div class="rule a"><b>Nothing acts without the gate</b><p>Potions, pickups and sequences all ask <code>actions_allowed()</code> first. If the game isn't focused or the HUD isn't showing, keys and clicks stop.</p></div>
+      <div class="rule s"><b>Different detectors, different frames</b><p>The fast path works on a 0.3× frame. OCR needs full size to read small text, so it takes its own capture rather than sharing one that suits neither.</p></div>
+    </div>
+  </section>
+
+  <p class="note">Drawn from the code on <code>main</code> at v0.020. The item-text loop (thread 3) is being reworked on the <code>ocr-latency</code> branch, so that box may change.</p>
+</div>
+</body>
+</html>

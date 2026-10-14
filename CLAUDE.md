@@ -1235,6 +1235,7 @@ docs/
   todolist.md            #   what to work on next, ideas, open questions, settled decisions
   Error_history.txt      #   bugs that took real effort, with root cause + fix + lesson
   design_notes.md        #   the long-form rationale behind everything in this file
+  diagrams/              #   system_map.svg (README-ready) + system_map.html - the whole system on one page
   monster_detection_plan.txt
 
 legacy/                  # earlier, incompatible prototype - reference only
