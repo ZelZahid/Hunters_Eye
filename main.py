@@ -17,7 +17,7 @@ import threading
 import traceback
 import re
 import keyboard
-from collections import Counter, namedtuple
+from collections import Counter, deque, namedtuple
 from pathlib import Path
 from queue import Queue, Empty
 
@@ -642,8 +642,8 @@ OCR_DEBUG_TIMING = False
 #on average, before a scan that itself takes ~0.1s even started. Two signals end the wait early:
 #  - a track was lost. The loop is already capturing every frame while it tracks, so this is free,
 #    and a teleport with items on screen loses every track at once.
-#  - nothing is tracked and a small crop of the middle of the screen changed by more than
-#    VIEW_JUMP_DIFF since the last look. Without this, teleporting into a room whose labels nobody
+#  - nothing is tracked and a small crop of the middle of the screen suddenly changed (see
+#    _is_view_jump). Without this, teleporting into a room whose labels nobody
 #    has seen yet still waits out the interval. It costs a ~5ms grab every VIEW_WATCH_SECONDS while
 #    idle - ~15% of one core - which is the price of the idle thread reacting at all; the full-screen
 #    grab it replaces in that role is what EH#36 removed for burning a whole core.
@@ -653,7 +653,21 @@ VIEW_WATCH_REGION = (0.25, 0.25, 0.5, 1 / 3) #(x, y, w, h) fractions of monitor_
                                                #where a jump changes everything and the HUD does not
 VIEW_WATCH_SECONDS = 0.03 #also how long the idle loop sleeps between clock checks - it used to be a
                           #separate IDLE_POLL_SECONDS (0.02), but every idle wake-up is now a look
-VIEW_JUMP_DIFF = 25.0 #mean grey difference (0-255) between two looks that counts as the view jumping
+#A JUMP IS A CHANGE THAT IS SUDDEN, NOT ONE THAT IS LARGE - an absolute threshold cannot tell a
+#teleport from walking. Measured live over 60s of teleporting around potions: a teleport landing
+#is a spike of 12-18 lasting one or two looks, but walking scrolls the whole scene and holds a
+#steady 8-13 for seconds at a time. Those ranges overlap, so the first version's fixed 25 never
+#fired on a real teleport at all, and any fixed number low enough to catch one would rescan
+#continuously while walking with nothing on screen. What separates them is the baseline: a
+#landing is at least VIEW_JUMP_RATIO times the median of the last VIEW_JUMP_HISTORY looks, and
+#walking is roughly its own median. VIEW_JUMP_DIFF is the floor under that, so cursor movement
+#and animation over a still scene (~0.5-1) can never qualify however quiet the baseline.
+#On that recording the detector's count was stable - 39-48 jumps across floors 6-10 and ratios
+#1.5-2.5 - which is the sign it is measuring the event rather than the settings. Known gap: a
+#teleport WHILE walking only reaches ~1.5x its baseline and is left to the interval.
+VIEW_JUMP_DIFF = 8.0
+VIEW_JUMP_RATIO = 2.0
+VIEW_JUMP_HISTORY = 10
 OCR_MIN_GAP_SECONDS = 0.1
 #WHILE SOMETHING IS TRACKED, RELOCALIZATION WAS UNPACED, and it kept a core busy for as long as an
 #item lay on the ground - a full-screen grab plus ~7ms per track, as fast as the loop could go.
@@ -676,6 +690,23 @@ def _view_difference(a, b):
     if a is None or b is None or a.shape != b.shape:
         return None
     return float(cv.absdiff(a, b).mean())
+
+
+def _is_view_jump(diff, recent, span=1.0):
+    """Whether `diff` (from _view_difference) is a sudden change against `recent`, the differences
+    between looks just before it. Pure, so test_auto_collect.py can drive it - see VIEW_JUMP_DIFF
+    for the rule.
+
+    `span` is how many VIEW_WATCH_SECONDS the two looks were apart. It is normally 1, but the first
+    look after a scan is compared against the scan's own frame, ~0.1s or more earlier - and while
+    walking, a scene that scrolls for three times as long differs about three times as much. Left
+    unscaled that reads as a jump, which triggers a scan, whose first look after reads as a jump...
+    OCR would run back to back for as long as the character walked past nothing. A teleport does
+    not grow with time, so scaling the baseline by the span keeps catching those."""
+    if diff is None:
+        return False
+    baseline = float(np.median(recent)) if len(recent) else 0.0
+    return diff >= VIEW_JUMP_DIFF and diff >= VIEW_JUMP_RATIO * max(baseline, 1.0) * max(span, 1.0)
 
 def _relocalize_track(frame, track):
     """Re-finds a previously OCR-matched item in the current frame via a small local
@@ -761,10 +792,12 @@ def detect_text():
         """Single-channel frame - all track relocalization needs. See _relocalize_track()."""
         return _grab(grey=True)
 
-    #The early-rescan signals - see VIEW_JUMP_DIFF and OCR_MIN_GAP_SECONDS.
+    #The early-rescan signals - see _is_view_jump and OCR_MIN_GAP_SECONDS.
     rescan_now = False
     jump_region = _view_jump_region()
     view_prev = None #the last look at jump_region, from a scan, a relocalization or an idle look
+    view_prev_time = 0.0
+    view_diffs = deque(maxlen=VIEW_JUMP_HISTORY) #the baseline _is_view_jump() compares against
 
     def look_at_middle():
         """A small grab of jump_region only - what the idle loop compares to notice a jump."""
@@ -804,13 +837,17 @@ def detect_text():
             if rescan_now and since_scan >= OCR_MIN_GAP_SECONDS:
                 until_scan = 0
             if until_scan > 0 and not local_tracks:
-                #Idle, but still looking - a small crop, not a frame (see VIEW_JUMP_DIFF).
+                #Idle, but still looking - a small crop, not a frame (see _is_view_jump).
                 time.sleep(min(until_scan, VIEW_WATCH_SECONDS))
                 look = look_at_middle()
+                now = time.time()
+                span = (now - view_prev_time) / VIEW_WATCH_SECONDS
                 diff = _view_difference(look, view_prev)
-                view_prev = look
-                if diff is not None and diff >= VIEW_JUMP_DIFF:
+                view_prev, view_prev_time = look, now
+                if _is_view_jump(diff, view_diffs, span):
                     rescan_now = True
+                if diff is not None and span < 1.5: #only like-for-like gaps make the baseline
+                    view_diffs.append(diff)
                 continue
 
             if until_scan <= 0:
@@ -880,20 +917,23 @@ def detect_text():
                 #instead of leaving it stale until the next loop iteration.
                 #Only when there is something to catch up - with no matches this grab was ~15-20ms
                 #producing a frame nothing looked at.
+                frame_time = last_ocr_time #when frame_grey was captured - see _is_view_jump's span
                 if local_tracks:
                     found = len(local_tracks)
+                    frame_time = time.time()
                     frame_grey = grab_frame_grey()
                     local_tracks = [t for t in (_relocalize_track(frame_grey, track) for track in local_tracks) if t is not None]
                     #Lost during the call itself: the view moved while OCR was reading the old one.
                     rescan_now = len(local_tracks) < found
-                view_prev = middle_of(frame_grey)
+                view_prev, view_prev_time = middle_of(frame_grey), frame_time
             else:
                 tracked = len(local_tracks)
+                frame_time = time.time()
                 frame_grey = grab_frame_grey()
                 local_tracks = [t for t in (_relocalize_track(frame_grey, track) for track in local_tracks) if t is not None]
                 if len(local_tracks) < tracked:
                     rescan_now = True #picked up, scrolled off, or the view jumped - look again now
-                view_prev = middle_of(frame_grey)
+                view_prev, view_prev_time = middle_of(frame_grey), frame_time
 
             with text_tracks_lock:
                 shared_text_tracks = [

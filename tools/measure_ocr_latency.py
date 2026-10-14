@@ -22,11 +22,11 @@ different fix. Measured per scan and reported per jump:
   match      fuzzy-matching what was read against targets.txt, plus the open-panel filter
   catch-up   the extra grab + relocalization main.py does before publishing
 
-A jump is "the view changed a lot in VIEW_WATCH_SECONDS": mean absolute grey difference over the
-same crop of the middle of the screen main.py watches (VIEW_WATCH_REGION / VIEW_JUMP_DIFF). Walking scrolls a few pixels per frame and
-stays well under the threshold; a teleport replaces most of the scene at once. The distribution
-of differences is printed at the end, so if the threshold catches walking (or misses a teleport)
-on another game, --jump-diff is the knob.
+A jump is what main.py's _is_view_jump() calls one: the same crop of the middle of the screen
+(VIEW_WATCH_REGION) changing suddenly against its own recent baseline. Walking holds a steady
+difference; a teleport is a spike above it. With --save, every difference and scan is written to
+one CSV timeline, which is what VIEW_JUMP_DIFF / VIEW_JUMP_RATIO were chosen from - re-derive them
+from one of those on another game. --jump-diff moves the floor.
 
 The OCR loop below is a REPLICA of main.py's detect_text() using main.py's own constants and
 helpers, so it measures what the pipeline does rather than an idealised version of it. If
@@ -42,6 +42,7 @@ import argparse
 import statistics
 import threading
 import time
+from collections import deque
 
 import cv2 as cv
 import mss
@@ -87,6 +88,8 @@ def watch_for_jumps(stop, jumps, diffs, threshold):
     the one VIEW_JUMP_DIFF has to be chosen from. Looking every 10ms rather than every 30ms is
     only for the timestamp: it puts the jump within ~10ms of when it really happened."""
     history = []
+    #The same ~0.3s of baseline main.py keeps, at this loop's finer cadence.
+    recent = deque(maxlen=pipeline.VIEW_JUMP_HISTORY * max(1, round(pipeline.VIEW_WATCH_SECONDS / JUMP_LOOK_SECONDS)))
     back = max(1, round(pipeline.VIEW_WATCH_SECONDS / JUMP_LOOK_SECONDS))
     last_jump = 0.0
     region = pipeline._view_jump_region()
@@ -98,8 +101,10 @@ def watch_for_jumps(stop, jumps, diffs, threshold):
             history.append(cv.cvtColor(f, cv.COLOR_BGRA2GRAY))
             if len(history) > back:
                 d = pipeline._view_difference(history[-1], history.pop(0))
-                diffs.append(d)
-                if d >= threshold and t - last_jump >= JUMP_COOLDOWN_SECONDS:
+                diffs.append((t, d))
+                jumped = pipeline._is_view_jump(d, recent)
+                recent.append(d)
+                if jumped and t - last_jump >= JUMP_COOLDOWN_SECONDS:
                     jumps.append((t, d))
                     last_jump = t
                     print(f"{t:10.3f}  JUMP (diff {d:.1f})")
@@ -122,6 +127,8 @@ def run_ocr(stop, scans, interval, old):
     last_ocr_time = -1e9
     rescan_now = False
     view_prev = None
+    view_prev_time = 0.0
+    view_diffs = deque(maxlen=pipeline.VIEW_JUMP_HISTORY)
     jump_region = pipeline._view_jump_region()
     with _new_sct() as sct:
         def grab(grey):
@@ -155,10 +162,14 @@ def run_ocr(stop, scans, interval, old):
                     continue
                 time.sleep(min(until_scan, pipeline.VIEW_WATCH_SECONDS))
                 g = look()
+                now = time.perf_counter()
+                span = (now - view_prev_time) / pipeline.VIEW_WATCH_SECONDS
                 diff = pipeline._view_difference(g, view_prev)
-                view_prev = g
-                if diff is not None and diff >= pipeline.VIEW_JUMP_DIFF:
+                view_prev, view_prev_time = g, now
+                if pipeline._is_view_jump(diff, view_diffs, span):
                     rescan_now = True
+                if diff is not None and span < 1.5:
+                    view_diffs.append(diff)
                 continue
 
             if until_scan <= 0:
@@ -180,12 +191,14 @@ def run_ocr(stop, scans, interval, old):
                 stages = watch.take()
                 local_tracks = [(x, y, w, h, n, c, col, frame_grey[y:y + h, x:x + w].copy())
                                 for (x, y, w, h, n, c, col) in results]
+                frame_time = t_start
                 if local_tracks or old:
                     found = len(local_tracks)
+                    frame_time = time.perf_counter()
                     frame_grey = grab(grey=True)
                     local_tracks = [t for t in (pipeline._relocalize_track(frame_grey, tr) for tr in local_tracks) if t]
                     rescan_now = not old and len(local_tracks) < found
-                view_prev = middle_of(frame_grey)
+                view_prev, view_prev_time = middle_of(frame_grey), frame_time
                 t_published = time.perf_counter()
                 pre = stages.get("preprocess", 0.0)
                 tess = stages.get("tesseract", 0.0)
@@ -203,11 +216,12 @@ def run_ocr(stop, scans, interval, old):
                       f"catch-up {s['catchup']*1000:3.0f}  = {(t_published - t_start)*1000:4.0f}ms  {s['names']}")
             else:
                 tracked = len(local_tracks)
+                frame_time = time.perf_counter()
                 g = grab(grey=True)
                 local_tracks = [t for t in (pipeline._relocalize_track(g, tr) for tr in local_tracks) if t]
                 if not old and len(local_tracks) < tracked:
                     rescan_now = True
-                view_prev = middle_of(g)
+                view_prev, view_prev_time = middle_of(g), frame_time
             if local_tracks and not rescan_now and not old:
                 time.sleep(max(0.0, pipeline.TRACK_LOOP_SECONDS - (time.perf_counter() - loop_start)))
 
@@ -241,9 +255,9 @@ def summarise(jumps, scans, diffs, threshold):
         print("  no jump was followed by a scan that found a label - teleport next to a labelled item")
 
     if diffs:
-        q = np.percentile(diffs, [50, 90, 99, 99.9])
+        q = np.percentile([d for _, d in diffs], [50, 90, 99, 99.9])
         print(f"\nframe difference percentiles 50/90/99/99.9: {q[0]:.1f} / {q[1]:.1f} / {q[2]:.1f} / "
-              f"{q[3]:.1f}   max {max(diffs):.1f}   (jump threshold {threshold})")
+              f"{q[3]:.1f}   max {max(d for _, d in diffs):.1f}   (jump threshold {threshold})")
 
 
 def main():
@@ -255,7 +269,8 @@ def main():
     parser.add_argument("--old", action="store_true",
                         help="replay the loop as it was before early rescans, for a before/after")
     parser.add_argument("--jump-diff", type=float, default=pipeline.VIEW_JUMP_DIFF,
-                        help=f"mean grey difference (0-255) that counts as a jump (main.py: {pipeline.VIEW_JUMP_DIFF})")
+                        help=f"the floor under a jump, mean grey difference 0-255 (main.py's VIEW_JUMP_DIFF: {pipeline.VIEW_JUMP_DIFF})")
+    parser.add_argument("--save", type=Path, help="also write every frame difference and scan to this CSV")
     args = parser.parse_args()
 
     pipeline.VIEW_JUMP_DIFF = args.jump_diff #so the replica and the ground truth agree on what a jump is
@@ -280,6 +295,15 @@ def main():
     for t in threads:
         t.join(timeout=2.0)
     summarise(jumps, scans, diffs, args.jump_diff)
+    if args.save:
+        #One timeline, so a teleport's difference can be lined up against the scans around it.
+        with open(args.save, "w", encoding="utf-8") as f:
+            f.write("time,kind,value,names\n")
+            for t, d in diffs:
+                f.write(f"{t:.3f},diff,{d:.2f},\n")
+            for sc in scans:
+                f.write(f"{sc['start']:.3f},scan,{(sc['published'] - sc['start']) * 1000:.0f},{'|'.join(sc['names'])}\n")
+        print(f"timeline written to {args.save}")
 
 
 if __name__ == "__main__":
