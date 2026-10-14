@@ -117,7 +117,10 @@ def _preprocess(frame, mode, threshold=BRIGHT_TEXT_THRESHOLD):
         #as a white one. "Is this frame dark overall?" is perceived brightness, which is what
         #separates a document from a night-time game scene, and is left on luminance because that
         #is what the four cases it was verified against were chosen with.
-        lit = frame.max(axis=2)
+        #cv.max channel by channel, not frame.max(axis=2): bit-identical output, but numpy's
+        #reduction over the innermost axis of a 1920x720 viewport measured ~22ms against ~3ms -
+        #the single largest step of a scan after Tesseract itself, spent on a max of three bytes.
+        lit = cv.max(cv.max(frame[:, :, 0], frame[:, :, 1]), frame[:, :, 2])
         brightness = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
     if mode == PREPROCESS_AUTO:
         #Subsampled: the median only has to be roughly right to pick a branch, and every 8th
@@ -375,13 +378,38 @@ def _clean_text(raw_text):
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _get_words_tesserocr(frame):
-    """Returns [(text, left, top, width, height, block_num, par_num, line_num), ...]."""
+#TESSERACT RE-READS ANYTHING IT IS UNSURE OF A SECOND TIME, UPSIDE DOWN IN COLOUR - its
+#tessedit_do_invert setting, on by default, retries every low-confidence word as white-on-black.
+#That retry is how a plain Tesseract reads light text on a dark banner. It is pure waste on an
+#image _preprocess() binarized, because inverting is the first thing that already did: the text
+#is dark on white by then, and what the retry gets to look at is the junk that was low-confidence
+#for a reason. Measured over six real frames: 20% of Tesseract's time (479ms -> 377ms in total),
+#and the only lines that changed were 1-3 character fragments of terrain ('a', 'q', 'ys' -> 'Ne').
+#No target was gained or lost, and every OCR test passes either way. So it is switched off only
+#for images that were binarized - a frame handed over untouched (a document, PREPROCESS_NONE)
+#keeps the retry, since there it can still be the thing that reads the white-on-dark heading.
+NO_INVERT_RETRY = "0"
+DEFAULT_INVERT_RETRY = "1"
+
+
+def _get_words_tesserocr(frame, binarized=False):
+    """Returns [(text, left, top, width, height, block_num, par_num, line_num), ...].
+
+    `binarized` says _preprocess() already turned the image into dark text on white - see
+    NO_INVERT_RETRY."""
     #_preprocess may hand us a single-channel binarized image; PIL takes that directly.
     prepared = frame if frame.ndim == 2 else cv.cvtColor(frame, cv.COLOR_BGR2RGB)
     with _tesserocr_lock:
-        _tesserocr_api.SetImage(Image.fromarray(prepared))
-        tsv = _tesserocr_api.GetTSVText(0) #same column layout as pytesseract's image_to_data DICT
+        if binarized:
+            _tesserocr_api.SetVariable("tessedit_do_invert", NO_INVERT_RETRY)
+        try:
+            _tesserocr_api.SetImage(Image.fromarray(prepared))
+            tsv = _tesserocr_api.GetTSVText(0) #same column layout as pytesseract's image_to_data DICT
+        finally:
+            #Restored inside the lock, for the reason read_line() restores its page-seg mode: the
+            #engine is shared, and the next caller may be handing it an untouched frame.
+            if binarized:
+                _tesserocr_api.SetVariable("tessedit_do_invert", DEFAULT_INVERT_RETRY)
 
     words = []
     for line in tsv.strip().split("\n"):
@@ -396,9 +424,10 @@ def _get_words_tesserocr(frame):
     return words
 
 
-def _get_words_pytesseract(frame):
+def _get_words_pytesseract(frame, binarized=False):
     """Returns [(text, left, top, width, height, block_num, par_num, line_num), ...]."""
-    ocr_data = pytesseract.image_to_data(frame, config="--psm 11", output_type=pytesseract.Output.DICT)
+    config = "--psm 11" + (f" -c tessedit_do_invert={NO_INVERT_RETRY}" if binarized else "")
+    ocr_data = pytesseract.image_to_data(frame, config=config, output_type=pytesseract.Output.DICT)
     words = []
     for i, word in enumerate(ocr_data["text"]):
         word = word.strip()
@@ -814,17 +843,19 @@ def read_lines(frame, preprocess=PREPROCESS_AUTO, threshold=BRIGHT_TEXT_THRESHOL
     `threshold` defaults to what an item label over game terrain needs. A caller reading dim UI
     chrome instead should pass DIM_UI_TEXT_THRESHOLD - see the note there.
     """
-    frame = _preprocess(frame, preprocess, threshold)
+    prepared = _preprocess(frame, preprocess, threshold)
+    binarized = prepared is not frame
+    frame = prepared
 
     if _tesserocr_api is not None:
         try:
-            words = _get_words_tesserocr(frame)
+            words = _get_words_tesserocr(frame, binarized)
         except Exception as e:
             print(f"WARNING: OCR call failed, skipping this read ({e})")
             return []
     elif _pytesseract_available:
         try:
-            words = _get_words_pytesseract(frame)
+            words = _get_words_pytesseract(frame, binarized)
         except pytesseract.TesseractError as e:
             print(f"WARNING: OCR call failed, skipping this read ({e})")
             return []
@@ -852,17 +883,19 @@ def find_text_matches(frame, target_items, match_cutoff=0.75, preprocess=PREPROC
     Runs exactly one OCR call - see the module docstring for why and which backend. The frame is
     binarized first when it looks like light-text-on-dark (see _preprocess), which on real game
     frames is the difference between reading the labels and reading nothing at all."""
-    frame = _preprocess(frame, preprocess)
+    prepared = _preprocess(frame, preprocess)
+    binarized = prepared is not frame
+    frame = prepared
 
     if _tesserocr_api is not None:
         try:
-            words = _get_words_tesserocr(frame)
+            words = _get_words_tesserocr(frame, binarized)
         except Exception as e:
             print(f"WARNING: OCR call failed, skipping this scan ({e})")
             return []
     elif _pytesseract_available:
         try:
-            words = _get_words_pytesseract(frame)
+            words = _get_words_pytesseract(frame, binarized)
         except pytesseract.TesseractError as e:
             # Tesseract is an external subprocess we don't control - an occasional transient
             # failure there shouldn't be allowed to take down the whole detection thread.
