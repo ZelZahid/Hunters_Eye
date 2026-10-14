@@ -635,9 +635,47 @@ TRACK_MIN_CONFIDENCE = 0.5 #below this, the item has likely been picked up or sc
 #margin tuning above was actually diagnosed (see the comments on those constants) - keep them
 #available for the next time those need re-tuning, but they're too noisy to leave on by default.
 OCR_DEBUG_TIMING = False
-#How long to idle between clock checks when this thread has nothing to do - no tracks to
-#relocalize and no scan yet due. See the loop in detect_text() for why this matters.
-IDLE_POLL_SECONDS = 0.02
+#A SCAN DOES NOT HAVE TO WAIT FOR THE INTERVAL WHEN THE VIEW HAS JUST CHANGED UNDER US. The interval
+#throttles scans of a screen that is probably the same as last time; it was never meant to sit
+#between a teleport and the first look at where it landed. Measured (tools/measure_ocr_latency.py),
+#waiting out the interval was the biggest part of "the labels show up late": 0 to 0.4s, about 0.2s
+#on average, before a scan that itself takes ~0.1s even started. Two signals end the wait early:
+#  - a track was lost. The loop is already capturing every frame while it tracks, so this is free,
+#    and a teleport with items on screen loses every track at once.
+#  - nothing is tracked and a small crop of the middle of the screen changed by more than
+#    VIEW_JUMP_DIFF since the last look. Without this, teleporting into a room whose labels nobody
+#    has seen yet still waits out the interval. It costs a ~5ms grab every VIEW_WATCH_SECONDS while
+#    idle - ~15% of one core - which is the price of the idle thread reacting at all; the full-screen
+#    grab it replaces in that role is what EH#36 removed for burning a whole core.
+#OCR_MIN_GAP_SECONDS keeps the early scans from running back to back: a label that flickers lost
+#and found every scan would otherwise make OCR run continuously.
+VIEW_WATCH_REGION = (0.25, 0.25, 0.5, 1 / 3) #(x, y, w, h) fractions of monitor_area - the middle,
+                                               #where a jump changes everything and the HUD does not
+VIEW_WATCH_SECONDS = 0.03 #also how long the idle loop sleeps between clock checks - it used to be a
+                          #separate IDLE_POLL_SECONDS (0.02), but every idle wake-up is now a look
+VIEW_JUMP_DIFF = 25.0 #mean grey difference (0-255) between two looks that counts as the view jumping
+OCR_MIN_GAP_SECONDS = 0.1
+#WHILE SOMETHING IS TRACKED, RELOCALIZATION WAS UNPACED, and it kept a core busy for as long as an
+#item lay on the ground - a full-screen grab plus ~7ms per track, as fast as the loop could go.
+#Nothing downstream can use more than the overlay's own repaint cap (overlay.BOX_REDRAW_HZ, 30), and
+#30Hz is above the ~19-21Hz this loop was tuned at, so drift per step against TRACK_SEARCH_MARGIN is
+#no worse than the rate that was measured to work.
+TRACK_LOOP_SECONDS = 1 / 30
+
+
+def _view_jump_region():
+    x, y, w, h = VIEW_WATCH_REGION
+    return {"left": monitor_area["left"] + int(x * monitor_area["width"]),
+            "top": monitor_area["top"] + int(y * monitor_area["height"]),
+            "width": int(w * monitor_area["width"]), "height": int(h * monitor_area["height"])}
+
+
+def _view_difference(a, b):
+    """Mean absolute grey difference between two looks at the same region, 0-255. None if either
+    look is missing - "nothing to compare against" is not "nothing changed"."""
+    if a is None or b is None or a.shape != b.shape:
+        return None
+    return float(cv.absdiff(a, b).mean())
 
 def _relocalize_track(frame, track):
     """Re-finds a previously OCR-matched item in the current frame via a small local
@@ -723,8 +761,30 @@ def detect_text():
         """Single-channel frame - all track relocalization needs. See _relocalize_track()."""
         return _grab(grey=True)
 
+    #The early-rescan signals - see VIEW_JUMP_DIFF and OCR_MIN_GAP_SECONDS.
+    rescan_now = False
+    jump_region = _view_jump_region()
+    view_prev = None #the last look at jump_region, from a scan, a relocalization or an idle look
+
+    def look_at_middle():
+        """A small grab of jump_region only - what the idle loop compares to notice a jump."""
+        img = sct.grab(jump_region)
+        f = np.frombuffer(img.raw, dtype=np.uint8).reshape(img.height, img.width, 4)
+        return cv.cvtColor(f, cv.COLOR_BGRA2GRAY)
+
+    def middle_of(frame_grey):
+        """jump_region cut out of a full OCR-scale frame already captured, so a jump that happens
+        during a scan or while tracking is still measured against what the screen looked like
+        then. At an OCR_CAPTURE_SCALE other than 1.0 the shapes differ and _view_difference()
+        says None, which only costs that one comparison."""
+        s = OCR_CAPTURE_SCALE
+        x0 = int((jump_region["left"] - monitor_area["left"]) * s)
+        y0 = int((jump_region["top"] - monitor_area["top"]) * s)
+        return frame_grey[y0:y0 + int(jump_region["height"] * s), x0:x0 + int(jump_region["width"] * s)].copy()
+
     with mss.mss() as sct:
         while True:
+            loop_start = time.time()
             loop_count += 1
             elapsed = time.time() - rate_window_start
             if elapsed >= 2.0:
@@ -739,12 +799,22 @@ def detect_text():
             #it ~45 times a second, so an idle thread was burning an entire CPU core and roughly
             #400MB/s of memory bandwidth competing with the two threads that actually set the
             #FPS. Nothing on screen is the normal case, so this is most of the time.
-            until_scan = OCR_INTERVAL_SECONDS - (time.time() - last_ocr_time)
+            since_scan = time.time() - last_ocr_time
+            until_scan = OCR_INTERVAL_SECONDS - since_scan
+            if rescan_now and since_scan >= OCR_MIN_GAP_SECONDS:
+                until_scan = 0
             if until_scan > 0 and not local_tracks:
-                time.sleep(min(until_scan, IDLE_POLL_SECONDS))
+                #Idle, but still looking - a small crop, not a frame (see VIEW_JUMP_DIFF).
+                time.sleep(min(until_scan, VIEW_WATCH_SECONDS))
+                look = look_at_middle()
+                diff = _view_difference(look, view_prev)
+                view_prev = look
+                if diff is not None and diff >= VIEW_JUMP_DIFF:
+                    rescan_now = True
                 continue
 
             if until_scan <= 0:
+                rescan_now = False
                 frame = grab_frame()
                 #Timestamp the START of the call, not its completion. A call takes ~0.5s and the
                 #interval is 0.7s - timing from completion meant the real gap between scans was
@@ -808,17 +878,32 @@ def detect_text():
                 #(confidence 0.08-0.30, nowhere close to threshold - genuinely outside the
                 #search window, not a near miss). Catch it up immediately against a fresh frame
                 #instead of leaving it stale until the next loop iteration.
-                catch_up_frame = grab_frame_grey()
-                local_tracks = [t for t in (_relocalize_track(catch_up_frame, track) for track in local_tracks) if t is not None]
+                #Only when there is something to catch up - with no matches this grab was ~15-20ms
+                #producing a frame nothing looked at.
+                if local_tracks:
+                    found = len(local_tracks)
+                    frame_grey = grab_frame_grey()
+                    local_tracks = [t for t in (_relocalize_track(frame_grey, track) for track in local_tracks) if t is not None]
+                    #Lost during the call itself: the view moved while OCR was reading the old one.
+                    rescan_now = len(local_tracks) < found
+                view_prev = middle_of(frame_grey)
             else:
+                tracked = len(local_tracks)
                 frame_grey = grab_frame_grey()
                 local_tracks = [t for t in (_relocalize_track(frame_grey, track) for track in local_tracks) if t is not None]
+                if len(local_tracks) < tracked:
+                    rescan_now = True #picked up, scrolled off, or the view jumped - look again now
+                view_prev = middle_of(frame_grey)
 
             with text_tracks_lock:
                 shared_text_tracks = [
                     (int(x * coord_scale), int(y * coord_scale), int(w * coord_scale), int(h * coord_scale), name, to_collect, color)
                     for (x, y, w, h, name, to_collect, color, _) in local_tracks
                 ]
+
+            #Pace relocalization (TRACK_LOOP_SECONDS) - but never hold up a rescan that was asked for.
+            if local_tracks and not rescan_now:
+                time.sleep(max(0.0, TRACK_LOOP_SECONDS - (time.time() - loop_start)))
 
 #Thread 4 - auto-collect: the first concrete use of the "action" seam from CLAUDE.md (move
 #mouse / click). Reads whatever detect_text() published in shared_text_tracks (never blocks

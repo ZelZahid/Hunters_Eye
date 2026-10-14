@@ -3,7 +3,7 @@
     python tools/measure_ocr_latency.py                  # 60s, the same schedule main.py uses
     python tools/measure_ocr_latency.py --seconds 120
     python tools/measure_ocr_latency.py --interval 0     # try a different OCR_INTERVAL_SECONDS
-    python tools/measure_ocr_latency.py --rescan-on-jump # try scanning the moment the view jumps
+    python tools/measure_ocr_latency.py --old            # the loop as it was before early rescans
 
 Run it, switch to the game, and teleport (or otherwise make the whole view jump - a camera cut,
 a door, a new page) next to something with a label. It PRESSES AND CLICKS NOTHING; it only looks.
@@ -22,8 +22,8 @@ different fix. Measured per scan and reported per jump:
   match      fuzzy-matching what was read against targets.txt, plus the open-panel filter
   catch-up   the extra grab + relocalization main.py does before publishing
 
-A jump is "the view changed a lot between two frames ~10ms apart": mean absolute difference over
-a downscaled grey crop of the middle of the screen. Walking scrolls a few pixels per frame and
+A jump is "the view changed a lot in VIEW_WATCH_SECONDS": mean absolute grey difference over the
+same crop of the middle of the screen main.py watches (VIEW_WATCH_REGION / VIEW_JUMP_DIFF). Walking scrolls a few pixels per frame and
 stays well under the threshold; a teleport replaces most of the scene at once. The distribution
 of differences is printed at the end, so if the threshold catches walking (or misses a teleport)
 on another game, --jump-diff is the knob.
@@ -51,7 +51,7 @@ import main as pipeline
 from core import text_detection
 
 JUMP_COOLDOWN_SECONDS = 0.3 #a teleport's landing can span a couple of frames - count it once
-JUMP_DOWNSCALE = 0.25
+JUMP_LOOK_SECONDS = 0.01
 
 
 def _new_sct():
@@ -78,30 +78,39 @@ class Stopwatch:
         return totals
 
 
-def watch_for_jumps(stop, jumps, diffs, threshold, region):
-    """Records the time of every frame-to-frame jump in `jumps`, and every difference in `diffs`."""
-    prev = None
+def watch_for_jumps(stop, jumps, diffs, threshold):
+    """The ground truth for "when did the view jump": looks at main.py's own jump region every
+    ~10ms and records the time of every jump in `jumps`.
+
+    Each look is compared with the one from VIEW_WATCH_SECONDS earlier, not the one just before,
+    because that is the gap main.py's idle loop compares across - so the distribution in `diffs` is
+    the one VIEW_JUMP_DIFF has to be chosen from. Looking every 10ms rather than every 30ms is
+    only for the timestamp: it puts the jump within ~10ms of when it really happened."""
+    history = []
+    back = max(1, round(pipeline.VIEW_WATCH_SECONDS / JUMP_LOOK_SECONDS))
     last_jump = 0.0
+    region = pipeline._view_jump_region()
     with _new_sct() as sct:
         while not stop.is_set():
             t = time.perf_counter()
             img = sct.grab(region)
             f = np.frombuffer(img.raw, dtype=np.uint8).reshape(img.height, img.width, 4)
-            g = cv.resize(cv.cvtColor(f, cv.COLOR_BGRA2GRAY), (0, 0), fx=JUMP_DOWNSCALE,
-                          fy=JUMP_DOWNSCALE, interpolation=cv.INTER_AREA)
-            if prev is not None:
-                d = float(cv.absdiff(g, prev).mean())
+            history.append(cv.cvtColor(f, cv.COLOR_BGRA2GRAY))
+            if len(history) > back:
+                d = pipeline._view_difference(history[-1], history.pop(0))
                 diffs.append(d)
                 if d >= threshold and t - last_jump >= JUMP_COOLDOWN_SECONDS:
                     jumps.append((t, d))
                     last_jump = t
                     print(f"{t:10.3f}  JUMP (diff {d:.1f})")
-            prev = g
-            time.sleep(0.005)
+            time.sleep(max(0.0, JUMP_LOOK_SECONDS - (time.perf_counter() - t)))
 
 
-def run_ocr(stop, scans, interval, rescan_on_jump, jumps):
-    """main.py's detect_text() loop, timed stage by stage. Appends one dict per full scan."""
+def run_ocr(stop, scans, interval, old):
+    """main.py's detect_text() loop, timed stage by stage. Appends one dict per full scan.
+
+    `old` replays the loop as it was before early rescans: the interval alone decides when to scan,
+    nothing looks at the screen while idle, and relocalization is unpaced."""
     watch = Stopwatch()
     text_detection._preprocess = watch.wrap("preprocess", text_detection._preprocess)
     if text_detection._tesserocr_api is not None:
@@ -111,7 +120,9 @@ def run_ocr(stop, scans, interval, rescan_on_jump, jumps):
 
     local_tracks = []
     last_ocr_time = -1e9
-    jumps_seen = 0
+    rescan_now = False
+    view_prev = None
+    jump_region = pipeline._view_jump_region()
     with _new_sct() as sct:
         def grab(grey):
             img = sct.grab(pipeline.monitor_area)
@@ -121,20 +132,40 @@ def run_ocr(stop, scans, interval, rescan_on_jump, jumps):
                 f = cv.resize(f, (0, 0), fx=pipeline.OCR_CAPTURE_SCALE, fy=pipeline.OCR_CAPTURE_SCALE)
             return f
 
+        def look():
+            img = sct.grab(jump_region)
+            f = np.frombuffer(img.raw, dtype=np.uint8).reshape(img.height, img.width, 4)
+            return cv.cvtColor(f, cv.COLOR_BGRA2GRAY)
+
+        def middle_of(g):
+            s = pipeline.OCR_CAPTURE_SCALE
+            x0 = int((jump_region["left"] - pipeline.monitor_area["left"]) * s)
+            y0 = int((jump_region["top"] - pipeline.monitor_area["top"]) * s)
+            return g[y0:y0 + int(jump_region["height"] * s), x0:x0 + int(jump_region["width"] * s)].copy()
+
         while not stop.is_set():
-            forced = False
-            if rescan_on_jump and len(jumps) > jumps_seen:
-                jumps_seen = len(jumps)
-                forced = True
-            until_scan = interval - (time.perf_counter() - last_ocr_time)
-            if until_scan > 0 and not local_tracks and not forced:
-                time.sleep(min(until_scan, pipeline.IDLE_POLL_SECONDS))
+            loop_start = time.perf_counter()
+            since_scan = loop_start - last_ocr_time
+            until_scan = interval - since_scan
+            if rescan_now and since_scan >= pipeline.OCR_MIN_GAP_SECONDS:
+                until_scan = 0
+            if until_scan > 0 and not local_tracks:
+                if old:
+                    time.sleep(min(until_scan, 0.02))
+                    continue
+                time.sleep(min(until_scan, pipeline.VIEW_WATCH_SECONDS))
+                g = look()
+                diff = pipeline._view_difference(g, view_prev)
+                view_prev = g
+                if diff is not None and diff >= pipeline.VIEW_JUMP_DIFF:
+                    rescan_now = True
                 continue
 
-            if until_scan <= 0 or forced:
+            if until_scan <= 0:
+                forced = rescan_now
+                rescan_now = False
                 t_start = time.perf_counter()
                 frame = grab(grey=False)
-                t_captured = time.perf_counter()
                 last_ocr_time = t_start
                 frame_grey = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
                 frame_h = frame.shape[0]
@@ -149,26 +180,36 @@ def run_ocr(stop, scans, interval, rescan_on_jump, jumps):
                 stages = watch.take()
                 local_tracks = [(x, y, w, h, n, c, col, frame_grey[y:y + h, x:x + w].copy())
                                 for (x, y, w, h, n, c, col) in results]
-                catch_up = grab(grey=True)
-                local_tracks = [t for t in (pipeline._relocalize_track(catch_up, tr) for tr in local_tracks) if t]
+                if local_tracks or old:
+                    found = len(local_tracks)
+                    frame_grey = grab(grey=True)
+                    local_tracks = [t for t in (pipeline._relocalize_track(frame_grey, tr) for tr in local_tracks) if t]
+                    rescan_now = not old and len(local_tracks) < found
+                view_prev = middle_of(frame_grey)
                 t_published = time.perf_counter()
                 pre = stages.get("preprocess", 0.0)
                 tess = stages.get("tesseract", 0.0)
                 scans.append({
                     "start": t_start, "published": t_published, "forced": forced,
-                    "capture": t_captured - t_start + (t_ocr - t_captured), #+ grey convert and crop
+                    "capture": t_ocr - t_start, #the grab plus the grey convert and crop
                     "preprocess": pre, "tesseract": tess,
                     "match": (t_matched - t_ocr) - pre - tess,
                     "catchup": t_published - t_matched,
                     "names": [t[4] for t in local_tracks],
                 })
                 s = scans[-1]
-                print(f"{t_start:10.3f}  scan{' (forced)' if forced else ''}: capture {s['capture']*1000:4.0f}  "
+                print(f"{t_start:10.3f}  scan{' (early)' if forced else ''}: capture {s['capture']*1000:4.0f}  "
                       f"preprocess {pre*1000:4.0f}  tesseract {tess*1000:4.0f}  match {s['match']*1000:3.0f}  "
                       f"catch-up {s['catchup']*1000:3.0f}  = {(t_published - t_start)*1000:4.0f}ms  {s['names']}")
             else:
+                tracked = len(local_tracks)
                 g = grab(grey=True)
                 local_tracks = [t for t in (pipeline._relocalize_track(g, tr) for tr in local_tracks) if t]
+                if not old and len(local_tracks) < tracked:
+                    rescan_now = True
+                view_prev = middle_of(g)
+            if local_tracks and not rescan_now and not old:
+                time.sleep(max(0.0, pipeline.TRACK_LOOP_SECONDS - (time.perf_counter() - loop_start)))
 
 
 def summarise(jumps, scans, diffs, threshold):
@@ -211,28 +252,24 @@ def main():
     parser.add_argument("--delay", type=float, default=3.0, help="countdown before measuring starts")
     parser.add_argument("--interval", type=float, default=pipeline.OCR_INTERVAL_SECONDS,
                         help=f"seconds between full OCR scans (main.py: {pipeline.OCR_INTERVAL_SECONDS})")
-    parser.add_argument("--rescan-on-jump", action="store_true",
-                        help="start a full scan the moment the view jumps, not when the interval is up")
-    parser.add_argument("--jump-diff", type=float, default=25.0,
-                        help="mean grey difference (0-255) between two frames that counts as a jump")
+    parser.add_argument("--old", action="store_true",
+                        help="replay the loop as it was before early rescans, for a before/after")
+    parser.add_argument("--jump-diff", type=float, default=pipeline.VIEW_JUMP_DIFF,
+                        help=f"mean grey difference (0-255) that counts as a jump (main.py: {pipeline.VIEW_JUMP_DIFF})")
     args = parser.parse_args()
 
-    m = pipeline.monitor_area
-    #The middle of the gameplay viewport: where a teleport changes everything and the HUD, which
-    #never moves, is not diluting the difference.
-    region = {"left": m["left"] + m["width"] // 4, "top": m["top"] + m["height"] // 4,
-              "width": m["width"] // 2, "height": m["height"] // 3}
+    pipeline.VIEW_JUMP_DIFF = args.jump_diff #so the replica and the ground truth agree on what a jump is
 
     for remaining in range(int(args.delay), 0, -1):
         print(f"starting in {remaining}...")
         time.sleep(1)
     print(f"measuring for {args.seconds:.0f}s - interval {args.interval}s"
-          f"{', rescan on jump' if args.rescan_on_jump else ''}. Teleport next to labelled items.\n")
+          f"{' (old loop)' if args.old else ''}. Teleport next to labelled items.\n")
 
     stop = threading.Event()
     jumps, diffs, scans = [], [], []
-    threads = [threading.Thread(target=watch_for_jumps, args=(stop, jumps, diffs, args.jump_diff, region), daemon=True),
-               threading.Thread(target=run_ocr, args=(stop, scans, args.interval, args.rescan_on_jump, jumps), daemon=True)]
+    threads = [threading.Thread(target=watch_for_jumps, args=(stop, jumps, diffs, args.jump_diff), daemon=True),
+               threading.Thread(target=run_ocr, args=(stop, scans, args.interval, args.old), daemon=True)]
     for t in threads:
         t.start()
     try:
