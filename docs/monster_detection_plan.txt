@@ -299,7 +299,8 @@ THE MODEL DRAFTS ITS OWN NEXT BATCH - ADDED 2026-10-14. Once a first model
 exists, tools/prelabel.py runs it over new frames and writes its boxes as
 DRAFTS; label_monsters.py opens each as thin "?" boxes for a person to fix, and
 moving on to the next frame accepts it. Each round the model is better, so each
-round is more correcting and less drawing. It fits the measured model well: its
+round is more correcting and less drawing. First live try (owner,
+2026-10-14): on a frame with six monsters, one box needed fixing. It fits the measured model well: its
 precision is already good (zero false positives held out), and recall - the
 monsters it misses - is exactly what a person reviewing drafts adds back.
   DRAFTS LIVE IN _dataset/labels_draft/, NEVER labels/. The trainer reads every

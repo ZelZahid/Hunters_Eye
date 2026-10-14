@@ -11,6 +11,10 @@ that tag rather than guessing from commit history - that's what these are for.
 ------------------------------------------------------------------------------
 AT A GLANCE - newest first. Full entries are below, oldest first.
 ------------------------------------------------------------------------------
+0.019  The trained monster model DRAFTS ITS OWN NEXT BATCH of labels
+       (tools/prelabel.py); a person only fixes what it got wrong. First live
+       try: about 1 box in 6 needed fixing. Drafts can no longer train
+       unreviewed.
 0.018  The potion keys are READ OFF THE BELT instead of written down, so an
        empty or rearranged slot is never pressed. Two bugs where a detector
        threw away the very thing it was looking for: a nearly empty orb read
@@ -1397,3 +1401,36 @@ is what turns "it misses the first try" into something tunable.
 New: core/slots.py, assets/belt.json, tests/test_slots.py, fixtures
 belt_full.png and belt_empty_slot.png. Fourteen test files, all passing. No new
 dependencies.
+
+0.019 - 2026-10-14
+------------------------------------------------------------------------------
+THE MODEL LABELS ITS OWN NEXT BATCH, AND A PERSON ONLY CORRECTS IT. The owner
+asked whether a website or database of D2R monsters could replace hand
+labelling. None exists in usable form (the public "Diablo" datasets found were
+unlabelled by game, oddly classed, or empty), and clean reference art lacks the
+lighting, effects, zoom and overlapping packs of real play - so it would still
+need real labelled frames mixed in. Recorded in monster_detection_plan.txt
+section 7 as considered and not chosen.
+
+The cheaper answer was already half built. The measured model's precision is
+good and its recall is not - so let it draw the boxes and let a person add back
+what it missed. tools/prelabel.py runs monsters.onnx over every frame with no
+label and writes its boxes as DRAFTS; label_monsters.py opens each one with thin
+"?" boxes, and moving on to the next frame accepts it as a real label.
+MEASURED BY THE OWNER ON THE FIRST LIVE TRY: on a frame with six monsters, one
+box needed fixing. Each retrain should make the next round cheaper still.
+
+AND A LATENT BUG CLOSED ON THE WAY: autolabel.py wrote its OWLv2 guesses
+straight into _dataset/labels/, where the trainer reads every file as checked
+truth - an unreviewed guess (by its own docstring, one box in five wrong)
+trained exactly like a reviewed label. All drafts now live in labels_draft/,
+which the trainer never reads; train_monster.py --check says how many are
+waiting. A frame with a real label is never re-drafted, with or without
+--overwrite.
+
+Also in this version, landed since 0.018: one console line per new item
+sighting rather than per OCR scan, docs/worktrees.md, and CLAUDE.md's long-form
+rationale split out into docs/design_notes.md.
+
+New: tools/prelabel.py. tests/test_label_monsters.py 19 -> 33 checks, all
+passing. No new dependencies.
