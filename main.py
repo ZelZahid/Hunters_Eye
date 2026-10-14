@@ -683,6 +683,7 @@ def _relocalize_track(frame, track):
 def detect_text():
     global shared_text_tracks
     local_tracks = [] #(x, y, w, h, matched_name, to_collect, color, patch) - patch is only needed here for tracking
+    announced = Counter() #how many of each name the LAST scan reported, so a still-present item is not reported again
     last_ocr_time = 0.0
     prev_scan_start = None #diagnostic only: measures the real gap between successive scan starts
     coord_scale = CAPTURE_SCALE / OCR_CAPTURE_SCALE #converts OCR_CAPTURE_SCALE coords -> CAPTURE_SCALE coords for shared_text_tracks
@@ -780,11 +781,24 @@ def detect_text():
                 #identically-named things do we want" contest to the one on a panel.
                 ocr_results = _outside_open_panels(ocr_results, frame_grey)
 
+                #ONE LINE PER NEW SIGHTING, not one per scan. A full OCR pass re-finds
+                #everything still on the ground every OCR_INTERVAL_SECONDS, so an item that just
+                #lies there - a Super Mana Potion nobody collects, since it has no "*" - reported
+                #itself every 0.7s for as long as it was on screen and buried the lines that carry
+                #information (which pickup landed, what gave up, what went wrong). Counted BY NAME
+                #rather than remembered as a set, so a second potion dropping beside the first is
+                #still announced. An item that drops out of one scan and returns is announced
+                #again: that is the safe direction for a log, since a silent re-find would be
+                #indistinguishable from never having lost it.
+                seen = Counter()
                 local_tracks = []
                 for (tx, ty, tw, th, matched_name, to_collect, color) in ocr_results:
                     patch = frame_grey[ty:ty + th, tx:tx + tw].copy()
                     local_tracks.append((tx, ty, tw, th, matched_name, to_collect, color, patch))
-                    print(f"Found '{matched_name}'{' [to collect]' if to_collect else ''} at center {(tx + tw // 2, ty + th // 2)}")
+                    seen[matched_name] += 1
+                    if seen[matched_name] > announced[matched_name]:
+                        print(f"Found '{matched_name}'{' [to collect]' if to_collect else ''} at center {(tx + tw // 2, ty + th // 2)}")
+                announced = seen
 
                 #The OCR call above took real time (measured ~0.4-0.6s against a real viewport
                 #crop) - the position it returned describes where
