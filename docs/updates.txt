@@ -11,6 +11,9 @@ that tag rather than guessing from commit history - that's what these are for.
 ------------------------------------------------------------------------------
 AT A GLANCE - newest first. Full entries are below, oldest first.
 ------------------------------------------------------------------------------
+0.020  The demo image search (a browser tab, ~3 of 4.5ms per detection frame)
+       can be switched off in user_config.txt and ships off. When on, frames
+       with no match skip a full scan of the score map.
 0.019  The trained monster model DRAFTS ITS OWN NEXT BATCH of labels
        (tools/prelabel.py); a person only fixes what it got wrong. First live
        try: about 1 box in 6 needed fixing. Drafts can no longer train
@@ -1434,3 +1437,30 @@ rationale split out into docs/design_notes.md.
 
 New: tools/prelabel.py. tests/test_label_monsters.py 19 -> 33 checks, all
 passing. No new dependencies.
+
+0.020 - 2026-10-14
+------------------------------------------------------------------------------
+A FIRST PASS AT "MAKE IT MORE EFFICIENT", AND THE FINDING IS THAT THE PER-FRAME
+PATH WAS ALREADY LEAN - EXCEPT FOR ONE THING. Measured on the committed fixture
+frames, the detection thread's iteration is ~4.5ms, and ~3ms of it is the
+matchTemplate search for assets/image1.png - a screenshot of a browser tab used
+as a demo, which nothing in the game ever matches. user_config.txt's new
+image_search setting turns it off (shipped "no"); a missing line keeps it ON, so
+a config that does not ask behaves exactly as before. Off, the thread measured
+6.5 -> ~2.5 CPU-ms per frame on a cloud CPU - directional, not the dev machine.
+
+When it IS on: np.where walked all ~156,000 scores every frame to build two
+empty arrays, since the needle is almost never on screen. minMaxLoc now answers
+"is anything over 0.60 at all?" first (~0.02ms vs ~0.3ms) and the full scan
+only runs when something is. Same boxes on every frame - tests/test_image_search.py
+holds _match_needle to the old code's output on five real frames, with and
+without the needle pasted in.
+
+Proposed, not done (each a tradeoff): TARGET_FPS 60 -> 30 (roughly halves
+capture + detection CPU; meters react ~80ms later); capturing only the game
+window (measured 3.4 vs 7.0 CPU-ms/frame, changes every consumer's coordinates);
+and pacing detect_text()'s relocalize loop, which runs with no sleep while any
+item is tracked and holds about a core for as long as one is on the ground.
+
+New: tests/test_image_search.py; tests/test_user_config.py section 14. Fifteen
+test files. No new dependencies.
