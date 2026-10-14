@@ -9,8 +9,9 @@ and rewrites the one file a person hand-edits. Its dangerous failures are quiet 
   - a bot that freezes because the panel stopped reading its output.
 Each section below is one of those.
 
-Sections 1-2 need nothing. Sections 3-4 need tkinter (gui.py imports it); section 4 also needs a
-display, and says so when it skips.
+T-401 and C-119 need nothing. T-402 and T-403 need tkinter (gui.py imports it); T-403 also needs a
+display. Either one skipping is a FAILURE under CI (the CI environment variable), where both are
+expected to run - a check that quietly skips on the machine meant to run it looks like a pass.
 """
 import sys
 from pathlib import Path
@@ -28,6 +29,7 @@ import time
 from core import command_channel, user_config
 
 failures = 0
+UNDER_CI = bool(os.environ.get("CI"))
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -46,7 +48,7 @@ def wait_for(condition, timeout=5.0):
     return condition()
 
 
-print("1. command_channel: one word per line, unknown words ignored, errors survived")
+print("\nT-401  The command channel: one word per line, unknown words ignored, errors survived")
 print("   (a RuntimeError traceback below is expected - it is the handler that fails on purpose)")
 calls, logged, closed = [], [], threading.Event()
 
@@ -68,7 +70,7 @@ check("a handler that raises is reported and the next command still runs",
 check("end of input is reported to on_close", closed.is_set())
 
 
-print("2. user_config: editing the file keeps everything it was not asked to change")
+print("\nC-119  Editing user_config.txt keeps everything it was not asked to change")
 SAMPLE = textwrap.dedent("""\
     # Header comment - must survive.
     [settings]
@@ -151,10 +153,12 @@ try:
     import gui
 except ImportError as exc:  #tkinter is part of the standard installer on Windows and macOS
     gui = None
-    print(f"\nSKIPPED sections 3-4: gui.py cannot be imported here ({exc}).")
+    print(f"\nSKIPPED T-402, T-403: gui.py cannot be imported here ({exc}).")
+    if UNDER_CI:
+        check("T-402/T-403 need tkinter, which CI's Python includes - it is missing", False)
 
 if gui is not None:
-    print("3. BotProcess: start, command, output, stop - against a stand-in for main.py")
+    print("\nT-402  Starting, commanding, reading and stopping the bot - against a stand-in")
     STAND_IN = textwrap.dedent("""\
         import sys, time
         print("Starting stand-in...")
@@ -227,7 +231,7 @@ if gui is not None:
     killed.kill_now()
     check("closing the window ends the bot before it returns", not killed.running())
 
-    print("4. The window itself")
+    print("\nT-403  The control panel window: settings form, Save, buttons, status")
     check("help text: the file's hard wraps are joined back into paragraphs",
           gui.reflow("one\ntwo\n\nthree") == "one two\n\nthree")
     check("help text: a list item's wrapped lines join; the next item starts a new line",
@@ -238,6 +242,8 @@ if gui is not None:
     except Exception as exc:  # noqa: BLE001 - no display
         root = None
         print(f"  SKIPPED: no display for a window ({exc}).")
+        if UNDER_CI:
+            check("T-403 needs a display, which CI's Windows runner has - it is missing", False)
 
     if root is not None:
         root.withdraw()

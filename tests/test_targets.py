@@ -41,7 +41,7 @@ def load(text):
     return items, buffer.getvalue()
 
 
-print("1. The line syntax parses as documented")
+print("\nC-201  The line syntax parses as documented")
 items, _ = load(
     "# a comment\n"
     "\n"
@@ -62,7 +62,7 @@ check("'*' and '[colour]' together", items["BOTH"]["to_collect"] is True
 check("leading '-' sets ignore", items["LOOK ALIKE"]["ignore"] is True)
 check("no '-' means not ignored", items["PLAIN ITEM"]["ignore"] is False)
 
-print("\n2. A duplicate name WARNS instead of silently overwriting")
+print("\nC-202  A duplicate name WARNS instead of silently overwriting")
 #The actual bug: "Rejuvenation Potion" was listed once as a real target near the top and again as
 #a "-" look-alike far below. A plain dict assignment let the look-alike win, so the item was
 #matched and thrown away on every frame - which from outside looks exactly like "OCR cannot read
@@ -77,7 +77,7 @@ check("an unrelated entry is untouched", items["OTHER THING"]["ignore"] is False
 items, output = load("Alpha\nBravo\nCharlie\n")
 check("no warning when there are no duplicates", "listed twice" not in output)
 
-print("\n3. An unrecognised tag warns and falls back, it does not crash")
+print("\nC-203  An unrecognised tag warns and falls back, it does not crash")
 #Since 2026-09-12 a "[...]" tag can be a colour OR how to collect the item, so an unknown
 #word in one is no longer specifically a bad colour - the warning names the tag and lists
 #what is accepted, and the line still loads.
@@ -86,7 +86,7 @@ check("warns, naming the tag", "unrecognized tag" in output and "nosuchcolour" i
 check("falls back to the default", items["THING"]["color"] == td.DEFAULT_BOX_COLOR)
 check("the item is still usable", items["THING"]["ignore"] is False)
 
-print("\n4. The shipped targets.txt has no duplicates and reports the small Rejuvenation Potion")
+print("\nC-204  The shipped targets.txt has no duplicates and reports the small Rejuvenation Potion")
 shipped = os.path.join(REPO_ROOT, "assets", "targets.txt")
 buffer = io.StringIO()
 with redirect_stdout(buffer):
@@ -100,7 +100,7 @@ check("'Full Rejuvenation Potion' is still a separate, collected target",
       real["FULL REJUVENATION POTION"]["ignore"] is False
       and real["FULL REJUVENATION POTION"]["to_collect"] is True)
 
-print("\n5. Both potions still resolve correctly now that neither is a look-alike")
+print("\nC-205  Both potions still resolve correctly now that neither is a look-alike")
 #This is what made the look-alike line unnecessary, and it is the property that would break if
 #span ranking were ever changed back to ratio-first: the key is (words matched, ratio), so a
 #three-word line outranks its own two-word tail instead of tying with it.
@@ -134,7 +134,7 @@ check("neither is ambiguous", winner(FULL, (FULL, SMALL)) is not None
 check("a misread 'FVLL Rejuvenation Potion' still reports FULL",
       winner("FVLL REJUVENATION POTION", (FULL, SMALL)) == FULL)
 
-print("\n6. Look-alikes still do their job for the runes")
+print("\nC-206  Look-alikes still do their job for the runes")
 #The mechanism is still load-bearing everywhere else: without these entries a "Ral Rune" gets
 #attributed to whichever listed rune it resembles most, and then clicked on.
 check("'Ral Rune' is listed and ignored", real.get("RAL RUNE", {}).get("ignore") is True)
@@ -143,7 +143,7 @@ check("'Jah Rune' is a real, collected target",
 check("a 'Ral Rune' line wins its own match rather than becoming a Jah Rune",
       winner("RAL RUNE", ("RAL RUNE", "JAH RUNE", "MAL RUNE")) == "RAL RUNE")
 
-print("\n7. How to collect an item is a tag, like its colour")
+print("\nC-207  How to collect an item is a tag, like its colour")
 #Added 2026-09-12. A sorceress with Telekinesis bound to a key takes an item from across the
 #room, so for her a potion is collected by pointing at it and pressing that key, not by clicking
 #it and walking over. That is per-item, and it is data - the parser only carries the string.
@@ -202,7 +202,7 @@ if _keyboard is not None:
     check(f"every key named in targets.txt is one this system recognises ({bad or 'all valid'})",
           not bad)
 
-print("\n8. '[exact]' refuses to match a name inside a longer label")
+print("\nV-401  '[exact]' refuses to match a name inside a longer label")
 #Added 2026-09-13. A plain "Grand Charm" is worth taking; "Serpent's Grand Charm of Vita" is a
 #different item and the owner does not want it. Normally the opposite is wanted - every
 #contiguous run of words is tried, which is how "GUL" is found inside "GUL RUNE" - so this is a
@@ -255,7 +255,7 @@ check("a one-character misread of the plain label still matches",
 check("an untagged name is still found inside a longer line",
       winner_exact("GUL RUNE DROPPED", SPECS) == "GUL RUNE")
 
-print("\n9. Blue item labels survive preprocessing (the channel, not the threshold)")
+print("\nV-402  Blue item labels survive preprocessing (the channel, not the threshold)")
 #Diablo II draws magic items in BLUE, and cv.COLOR_BGR2GRAY weights blue at 0.114 - so the
 #charm labels the owner reported as undetectable measured luminance ~119 with a maximum of 127,
 #against a threshold of 150. No threshold could fix that; the information was destroyed by the
@@ -292,7 +292,7 @@ for fixture, want in (("charm_grand.png", "GRAND CHARM"), ("charm_small.png", "S
     check(f"{fixture}: bright in the strongest channel - max {val.max()} > {td.BRIGHT_TEXT_THRESHOLD}",
           val.max() > td.BRIGHT_TEXT_THRESHOLD)
 
-print("\n10. A word that identifies nothing gets one more misread character")
+print("\nV-403  A word that identifies nothing gets one more misread character")
 #Added 2026-09-14. Seen live: a Super Mana Potion label read "SUPER MANA PeTIeN". SUPER and MANA -
 #the two words that say WHICH potion it is - both scored 1.000; POTION scored 0.667 against a
 #cutoff of 0.75 and the whole line was thrown away. POTION appears in three target names, so it
@@ -315,7 +315,7 @@ check("a shared word read into nonsense is still rejected",
 check("a misread DISTINGUISHING word is still rejected",
       td._match_ratio("SUPER MENE POTION", "SUPER MANA POTION", 0.75, REAL_SHARED) is None)
 
-print("\n11. ...and the look-alike protection still holds with that slack active")
+print("\nV-404  ...and the look-alike protection still holds with that slack active")
 #The existing checks above call _match_ratio with no vocabulary, so they measure the STRICT path.
 #Production passes the shared set, so the cases the per-word rule was written for have to be
 #re-run with it - otherwise the guard is only tested in a configuration that never runs.
@@ -364,12 +364,12 @@ check("a 2-letter shared word would still be held to 0.5",
 check("a merge/split is not forgiven more than before",
       td._match_ratio("SUPERMANAPETIEN", "SUPER MANA POTION", 0.75, REAL_SHARED) is None)
 
-print("\n12. This program's OWN overlay text must never match a target")
+print("\nV-405  This program's OWN overlay text must never match a target")
 #THIS IS A REGRESSION TEST FOR A BUG THAT SHIPPED. Reported as "the program detected a LO RUNE on
 #the text where it says the map name and difficulty", and the text turned out to be the F5 debug
 #panel's own "no read". The overlay is composited into the screen we capture, so everything it
 #draws goes through OCR exactly like an item label - CLAUDE.md has always said so and recorded
-#that none of the panel's words matched a target. Section 10's shared-word slack invalidated that
+#that none of the panel's words matched a target. Card V-403's shared-word slack invalidated that
 #recorded check without anyone re-running it, because it took "READ" vs "RUNE" from needing 0.75
 #down to needing 0.50, and 2 of 4 characters wrong is a different word, not a misread.
 #
@@ -433,7 +433,7 @@ check("slack never comes out stricter than no slack",
       all(td._required_cutoff(w, base, relaxed=True) <= td._required_cutoff(w, base)
           for w in ("RUNE", "POTION", "REJUVENATION") for base in (0.4, 0.55, 0.75, 0.9)))
 
-print("\n13. '[exact]' is not fooled when Tesseract cuts a label into two lines")
+print("\nV-406  '[exact]' is not fooled when Tesseract cuts a label into two lines")
 #Added 2026-09-14 (Error_history.txt #51). "Grand Charm of Inertia" was read as two lines,
 #"GRAND CHARM 6F" and "INERTIA", and collected as a plain Grand Charm. Two holes, one check each.
 #

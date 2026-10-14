@@ -9,7 +9,7 @@ error - it just quietly costs you the run. Same reasoning as test_game_state.py.
 
 THE LOGIC IS TESTED AGAINST FIXED RULES DEFINED HERE, NOT AGAINST user_config.txt. That file
 exists to be retuned by the user, so asserting against its current thresholds would report their
-edit as a code defect the first time they changed one. Section 8 checks the shipped file instead,
+edit as a code defect the first time they changed one. Card C-116 checks the shipped file instead,
 and checks only the things that must be true of ANY sane configuration.
 """
 import sys
@@ -58,11 +58,11 @@ def due(readings, now=NOW, last_fired=None, last_any=NEVER, rules=RULES, floor=F
     return None if rule is None else rule.label
 
 
-print("1. A healthy character drinks nothing")
+print("\nL-101  A healthy character drinks nothing")
 check("health 100%, mana 100% -> no potion", due({"health": 1.0, "mana": 1.0}) is None)
 check("health just above the threshold -> no potion", due({"health": 0.36, "mana": 1.0}) is None)
 
-print("\n2. An unreadable meter is NOT an emergency")
+print("\nL-102  An unreadable meter is NOT an emergency")
 #The single most important case here. None means "could not read" - alt-tabbed, window lost,
 #Smoother past MAX_CARRIED_FAILURES. Treating it as a low value would dump the whole belt at
 #exactly the moment nothing is wrong.
@@ -71,7 +71,7 @@ check("health None, mana None -> no potion", due({"health": None, "mana": None})
 check("empty readings (startup, before any frame) -> no potion", due({}) is None)
 check("health None does not block a genuinely low MANA", due({"health": None, "mana": 0.1}) == "mana")
 
-print("\n3. A reading below the noise floor is ignored, not treated as critical")
+print("\nL-103  A reading below the noise floor is ignored, not treated as critical")
 #At CAPTURE_SCALE 0.3 an orb is only ~43 rows tall, so one row is 2.3% and the smallest possible
 #non-zero reading is indistinguishable from a stray patch of the right colour where the meter
 #should be. Seen live: the Diablo II lobby, where red character names sit where the health orb
@@ -92,19 +92,19 @@ check("the lobby case end to end: health 2%, mana unreadable -> nothing",
 check("a floor of 0 disables the filter entirely",
       due({"health": 0.01, "mana": 1.0}, floor=0.0) == "rejuvenation")
 
-print("\n4. The right tier fires for the right severity")
+print("\nL-104  The right tier fires for the right severity")
 check("health 30% -> ordinary health potion", due({"health": 0.30, "mana": 1.0}) == "health")
 check("health 20% -> rejuvenation (at the boundary)", due({"health": 0.20, "mana": 1.0}) == "rejuvenation")
 check("health 15% -> rejuvenation", due({"health": 0.15, "mana": 1.0}) == "rejuvenation")
 check("health 35% -> health potion (at the boundary)", due({"health": 0.35, "mana": 1.0}) == "health")
 check("mana 20% -> mana potion", due({"health": 1.0, "mana": 0.20}) == "mana")
 
-print("\n5. Urgency wins: the first matching rule takes priority")
+print("\nL-105  Urgency wins: the first matching rule takes priority")
 #File order is priority, which is what makes "put the emergency tier first" meaningful.
 check("health 10% AND mana 5% -> rejuvenation first", due({"health": 0.10, "mana": 0.05}) == "rejuvenation")
 check("health 30% AND mana 5% -> health before mana", due({"health": 0.30, "mana": 0.05}) == "health")
 
-print("\n6. Each rule cools down on its OWN clock")
+print("\nL-106  Each rule cools down on its OWN clock")
 #The emergency tier must not be blocked by an ordinary heal drunk a second ago - taking a big hit
 #right after a healing potion is precisely when a rejuvenation is needed.
 just_healed = {"health": NOW - 1.0}
@@ -117,7 +117,7 @@ check("health potion 5s ago no longer blocks (cooldown 4s)",
 check("a health cooldown does not block MANA",
       due({"health": 1.0, "mana": 0.1}, last_fired=just_healed, last_any=NOW - 1.0) == "mana")
 
-print("\n7. The global floor stops any burst, whatever the rules say")
+print("\nL-107  The global floor stops any burst, whatever the rules say")
 #The safety net under a mistuned threshold or a misreading orb: per-rule cooldowns are the knob,
 #this is what makes "empty the belt in one second" impossible regardless of them.
 check("a potion 0.1s ago blocks even a critical drink",
@@ -125,7 +125,7 @@ check("a potion 0.1s ago blocks even a critical drink",
 check("...and stops blocking once the gap has passed",
       due({"health": 0.08}, last_any=NOW - (main.POTION_MIN_GAP_SECONDS + 0.01)) == "rejuvenation")
 
-print("\n8. Sustained low health drinks at the cooldown rate, not the poll rate")
+print("\nL-108  Sustained low health drinks at the cooldown rate, not the poll rate")
 fired, last_fired, last_any = [], {}, NEVER
 t = NOW
 for _ in range(int(10.0 / main.POTION_POLL_SECONDS)):
@@ -140,13 +140,13 @@ check(f"10s at 30% health -> {len(fired)} potions, not {int(10.0 / main.POTION_P
       2 <= len(fired) <= 4)
 check("every one of them was the ordinary health tier", set(fired) == {"health"})
 
-print("\n9. Alternating keys spread across every column a rule lists")
+print("\nL-109  Alternating keys spread across every column a rule lists")
 rejuv = next(r for r in RULES if r.label == "rejuvenation")
 used = [rejuv.keys[i % len(rejuv.keys)] for i in range(6)]
 check(f"6 emergency drinks use both columns evenly: {used}",
       used.count("2") == 3 and used.count("3") == 3)
 
-print("\n10. The SHIPPED user_config.txt is sane (not: has particular values)")
+print("\nC-116  The SHIPPED user_config.txt is sane (not: has particular values)")
 #Thresholds and bindings are the user's to tune, so this asserts only what must be true of any
 #configuration - anything stricter would fail the first time they retuned a number.
 cfg = main.potion_config
@@ -158,14 +158,14 @@ check("every rule names a calibrated meter",
       all(r.meter in {m.name for m in main.meters} for r in cfg.rules))
 #A rule says what to press EITHER by naming keys outright or by naming a potion to look up in the
 #belt. It used to have to be keys; requiring that now would fail the shipped config, which is the
-#whole point of the change - see sections 11-17.
+#whole point of the change - see cards L-110 to L-116.
 check("every rule can say what to press", all(r.keys or r.use for r in cfg.rules))
 check("every cooldown is non-negative", all(r.cooldown >= 0 for r in cfg.rules))
 check("the global gap is a real floor", main.POTION_MIN_GAP_SECONDS > 0)
 print("      configured: " + " | ".join(
     f"{r.label} <={r.at_or_below:.0%} -> {'/'.join(r.keys)}" for r in cfg.rules))
 
-print("\n11. The keys come from the BELT, not from the config file")
+print("\nL-110  The keys come from the BELT, not from the config file")
 #The owner's ask, and the bug it removes: a key written down by hand is a claim about the world
 #that stops being true the moment the belt is rearranged or a column runs dry. The program then
 #presses a dead key while dying, or spends a rejuvenation potion - the rarest one - on mana.
@@ -199,14 +199,14 @@ check("two rejuvenation slots give two keys to alternate between",
       keys_for(BELT_RULES[0], FULL_BELT) == ("2", "3"))
 check("mana resolves to its own slot", keys_for(BELT_RULES[3], FULL_BELT) == ("4",))
 
-print("\n12. Rearranging the belt moves the keys, with nothing to edit")
+print("\nL-111  Rearranging the belt moves the keys, with nothing to edit")
 #"lets say the rejuvenation potion is on 4 instead of the usual 2,3. then use that on key 4."
 check("rejuvenation on slot 4 is pressed as '4'", keys_for(BELT_RULES[0], MOVED) == ("4",))
 check("mana moved to 1 and 2 gives both", keys_for(BELT_RULES[3], MOVED) == ("1", "2"))
 check("and the rule that has nothing left resolves to nothing",
       keys_for(BELT_RULES[1], MOVED) == ())
 
-print("\n13. An empty slot is never pressed")
+print("\nL-112  An empty slot is never pressed")
 #"if there is no Mana potion in the belt slot, don't be pressing 4 thinking that there is one."
 check("no mana in the belt -> the mana rule cannot fire, at any mana level",
       due({"health": 1.0, "mana": 0.01}, NO_MANA) is None)
@@ -217,7 +217,7 @@ check("...and mana is simply allowed to sit at zero",
 check("no rule ever spends a rejuvenation potion on mana",
       all(r.use != "rejuvenation" for r in BELT_RULES if r.meter == "mana"))
 
-print("\n14. With a healing potion in the belt, nothing changes")
+print("\nL-113  With a healing potion in the belt, nothing changes")
 check("70% drinks a healing potion", (due({"health": 0.70, "mana": 1.0}, FULL_BELT) or _N).label == "health")
 check("...on its own key", keys_for(due({"health": 0.70, "mana": 1.0}, FULL_BELT), FULL_BELT) == ("1",))
 check("30% escalates to rejuvenation",
@@ -225,7 +225,7 @@ check("30% escalates to rejuvenation",
 check("45% still takes the ordinary healing potion, not a rejuvenation one",
       (due({"health": 0.45, "mana": 1.0}, FULL_BELT) or _N).label == "health")
 
-print("\n15. With NO healing potion, rejuvenation stands in - but only from 50%")
+print("\nL-114  With NO healing potion, rejuvenation stands in - but only from 50%")
 #"If there is no Health potion to drink, when my health gets to 50% or below, it is okay to drink
 #a rejuvenation potion, but only after the health reaches at least 50%."
 check("65% does nothing - too expensive to spend a rejuvenation potion on",
@@ -242,7 +242,7 @@ check("30% is still the emergency rule, which is more urgent and has its own coo
 check("the healing rule matching but being unsatisfiable does not block the rule below it",
       due({"health": 0.50, "mana": 1.0}, NO_HEALING) is not None)
 
-print("\n16. A belt that cannot be read falls back to the configured keys")
+print("\nL-115  A belt that cannot be read falls back to the configured keys")
 #None means "cannot tell", which everywhere in this project means "behave as before this existed".
 #Before this existed, the keys were written in user_config.txt.
 LEGACY = (main.PotionRule("health", 0.70, ("1",), 4.0, "health", "healing", ""),)
@@ -254,7 +254,7 @@ check("...and the rule still fires", (due({"health": 0.5}, None, rules=LEGACY) o
 check("a last-resort rule does not fire when the belt cannot be read",
       due({"health": 0.50}, None, rules=BELT_RULES) is None)
 
-print("\n17. The shipped rules express the owner's policy")
+print("\nL-116  The shipped rules express the owner's policy")
 real = main.POTION_RULES
 by_label = {r.label: r for r in real}
 check("every rule names a potion to use", all(r.use for r in real))

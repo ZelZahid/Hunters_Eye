@@ -27,7 +27,7 @@ REGION = (ORB_BOX[0] / FRAME_W, ORB_BOX[1] / FRAME_H, ORB_BOX[2] / FRAME_W, ORB_
 #These mirror the presets in tools/calibrate_meters.py. THE VALUE FLOOR IS 10, NOT 40: a nearly
 #empty globe keeps its last liquid in its most shaded part, measured at V=16 on a real frame, and
 #a floor of 40 discarded it - reporting "no read" at exactly the fill that matters. Saturation is
-#what separates liquid from the empty orb. See section 98 and Error_history.txt #50.
+#what separates liquid from the empty orb. See card V-114 and Error_history.txt #50.
 RED = ((0, 70, 10), (10, 255, 255))
 RED_WRAP = ((168, 70, 10), (179, 255, 255))
 BLUE = ((95, 70, 10), (130, 255, 255))
@@ -67,23 +67,23 @@ def check(label, expected, actual, tolerance=0.04):
 
 failures = 0
 
-print("1. Accuracy across fill levels (full resolution)")
+print("\nV-101  Accuracy across fill levels (full resolution)")
 #0.0 is deliberately absent: an orb with no liquid is indistinguishable from no orb at all, so
-#it reads None rather than 0%. See section 12 and _fill_fraction's docstring.
+#it reads None rather than 0%. See card V-112 and _fill_fraction's docstring.
 for fill in (0.15, 0.25, 0.5, 0.75, 0.9, 1.0):
     failures += not check(f"fill {fill:.2f}", fill, game_state.read_meter(make_frame(fill), health))
 
-print("\n2. Same, but downscaled to main.py's fast-path scale (0.3)")
+print("\nV-102  Same, but downscaled to main.py's fast-path scale (0.3)")
 for fill in (0.15, 0.4, 0.6, 0.85):
     small = cv.resize(make_frame(fill), (0, 0), fx=0.3, fy=0.3)
     failures += not check(f"fill {fill:.2f} @0.3x", fill, game_state.read_meter(small, health), tolerance=0.06)
 
-print("\n3. Robustness: sensor noise + a gloss highlight streak over the liquid")
+print("\nV-103  Robustness: sensor noise + a gloss highlight streak over the liquid")
 for fill in (0.3, 0.65):
     frame = make_frame(fill, noise=True, gloss=True)
     failures += not check(f"fill {fill:.2f} noisy+gloss", fill, game_state.read_meter(frame, health))
 
-print("\n4. The reason for row-scanning: area fraction != height fraction on a circle")
+print("\nV-104  The reason for row-scanning: area fraction != height fraction on a circle")
 frame = make_frame(0.25)
 value = game_state.read_meter(frame, health)
 _, _, mask = game_state.read_meter(frame, health, return_debug=True)
@@ -93,13 +93,13 @@ print(f"  a 25%-full circle measures {value * 100:.1f}% by height (correct) "
       f"but {area_fraction * 100:.1f}% by pixel count (wrong - would under-report low health)")
 failures += not (abs(value - 0.25) < 0.04 and area_fraction < 0.22)
 
-print("\n5. Wrong color does not read as full")
+print("\nV-105  Wrong color does not read as full")
 mana_meter = game_state.Meter("mana", REGION, (BLUE,), "ellipse", "bottom")
 value = game_state.read_meter(make_frame(0.8), mana_meter)   # red orb, blue detector
 print(f"  blue detector on a red orb: {value}")
 failures += not (value is None)   # None = cannot read, which is the honest answer
 
-print("\n6. A horizontal bar filling from the left")
+print("\nV-106  A horizontal bar filling from the left")
 bar = game_state.Meter("bar", (0.1, 0.1, 0.5, 0.05), (BLUE,), "rect", "left")
 frame = np.full((FRAME_H, FRAME_W, 3), 20, dtype=np.uint8)
 bx, by = int(0.1 * FRAME_W), int(0.1 * FRAME_H)
@@ -107,13 +107,13 @@ bw, bh = int(0.5 * FRAME_W), int(0.05 * FRAME_H)
 frame[by:by + bh, bx:bx + int(bw * 0.6)] = (200, 60, 40)
 failures += not check("bar 60% from left", 0.6, game_state.read_meter(frame, bar))
 
-print("\n7. Off-screen / degenerate region returns None, not 0.0")
+print("\nV-107  Off-screen / degenerate region returns None, not 0.0")
 offscreen = game_state.Meter("gone", (1.5, 1.5, 0.1, 0.1), (RED,), "ellipse", "bottom")
 value = game_state.read_meter(make_frame(0.5), offscreen)
 print(f"  {'ok  ' if value is None else 'FAIL'} off-screen region -> {value}")
 failures += not (value is None)
 
-print("\n8. Smoother rejects a single bad frame")
+print("\nV-108  Smoother rejects a single bad frame")
 smoother = game_state.Smoother(window=5)
 out = None
 for reading in (0.80, 0.79, 0.81, 0.02, 0.80):   # 0.02 = a tooltip covering the orb for one frame
@@ -128,7 +128,7 @@ kept = smoother2.update({"health": None})["health"]
 print(f"  {'ok  ' if kept == 0.7 else 'FAIL'} a failed read keeps the last good value ({kept})")
 failures += not (kept == 0.7)
 
-print("\n9. A stray patch of the meter's own color ABOVE the liquid does not inflate the reading")
+print("\nV-109  A stray patch of the meter's own color ABOVE the liquid does not inflate the reading")
 frame = make_frame(0.20)
 x, y, w, h = ORB_BOX
 cv.circle(frame, (x + w // 2, y + int(h * 0.2)), 12, (30, 30, 200), -1)   # e.g. a red spell effect
@@ -137,7 +137,7 @@ ok = value is not None and abs(value - 0.20) < 0.08
 print(f"  {'ok  ' if ok else 'FAIL'} 20% orb with a red blob near the top reads {value * 100:.1f}%")
 failures += not ok
 
-print("\n10. A gloss streak ABOVE the liquid does not read as liquid")
+print("\nV-110  A gloss streak ABOVE the liquid does not read as liquid")
 frame = make_frame(0.30)
 cv.line(frame, (x, y + int(h * 0.3)), (x + w, y + int(h * 0.28)), (230, 230, 255), 3)
 value = game_state.read_meter(frame, health)
@@ -145,7 +145,7 @@ ok = value is not None and abs(value - 0.30) < 0.06
 print(f"  {'ok  ' if ok else 'FAIL'} 30% orb with a highlight above the surface reads {value * 100:.1f}%")
 failures += not ok
 
-print("\n11. A failed read carries the last good value, but NOT indefinitely")
+print("\nV-111  A failed read carries the last good value, but NOT indefinitely")
 #Both a dropped frame and "we are not looking at the game any more" arrive as None. Carrying
 #forever turns the second one into a frozen number that LOOKS live, which a consumer then acts
 #on with full confidence - see Smoother's docstring.
@@ -203,7 +203,7 @@ ok = out["health"] == 0.5 and out["mana"] is None
 print(f"  {'ok  ' if ok else 'FAIL'} a dead meter goes None without muting a live one (health={out['health']}, mana={out['mana']!r})")
 failures += not ok
 
-print("\n12. An UNREADABLE meter reports None, never 0% - the lobby / dimmed-menu bug")
+print("\nV-112  An UNREADABLE meter reports None, never 0% - the lobby / dimmed-menu bug")
 #Reporting 0% for a meter that is simply not visible tells a consumer "you are about to die" at
 #the moment nothing is wrong - with an action layer attached that empties a potion belt. Both
 #cases below were seen live in Diablo II.
@@ -244,7 +244,7 @@ for fill in (0.05, 0.10, 0.20):
     print(f"  {'ok  ' if ok else 'FAIL'} a real {fill:.0%} orb still reads {shown} - low health must stay actionable")
     failures += not ok
 
-print("\n13. A single row of stray colour is not a reading - the lobby 2% bug")
+print("\nV-113  A single row of stray colour is not a reading - the lobby 2% bug")
 #The surface test asks "are the rows below this one filled too?", which a row at the very BOTTOM
 #of the band passes vacuously: there are no rows below it, so 0 of 0 is 100%. One stray row
 #therefore produced a real-looking value, and at CAPTURE_SCALE 0.3 an orb is only ~43 rows tall,
@@ -284,7 +284,7 @@ print(f"  {'ok  ' if ok else 'FAIL'} at 0.3x a real 15% orb still reads {shown} 
       f"that matter stay measurable")
 failures += not ok
 
-print("\n98. A DARK liquid is still liquid - the value floor must not exclude it")
+print("\nV-114  A DARK liquid is still liquid - the value floor must not exclude it")
 #REGRESSION TEST. Reported as "when my mana is really low, it's showing no read", with a screenshot
 #showing Mana 23/407 = 5.7% and the panel saying "no read". The cause was not the fill level and
 #not the noise floor: a nearly-empty globe keeps its last liquid in the most shaded part of itself,
@@ -295,7 +295,7 @@ print("\n98. A DARK liquid is still liquid - the value floor must not exclude it
 #S 25-40 against the S>=70 floor - so the value floor was doing almost no work and all of the harm.
 #
 #The half that matters is health, not mana: an unreadable health orb is None, None fires no potion
-#(deliberately - see section 2), and the moment it goes dark is the moment the emergency tier
+#(deliberately - see test_potions.py, card L-102), and the moment it goes dark is the moment the emergency tier
 #exists for. So this is tested at the exact brightness that was measured.
 DARK_V = 16   #measured on the owner's frame
 dark_blue = cv.cvtColor(np.uint8([[[120, 200, DARK_V]]]), cv.COLOR_HSV2BGR)[0][0].tolist()
