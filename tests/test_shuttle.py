@@ -67,7 +67,7 @@ def gray_fixture(name):
     return cv.cvtColor(image, cv.COLOR_BGR2GRAY)
 
 
-print("1. scene_shift() on real frames")
+print("\nV-609  How far the view slid, measured on real frames - and 'cannot tell' between different places")
 for a, b in SAME_PLACE_PAIRS:
     fa, fb = gray_fixture(a), gray_fixture(b)
     if fa is None or fb is None:
@@ -106,7 +106,7 @@ if frame is not None:
     check("no frame -> None", shuttle.scene_shift(frame, None) is None)
 
 
-print("2. Shuttle - where to point")
+print("\nL-406  The bot test mode's aim: out, back to the start, short landings corrected")
 place = shuttle.Geometry((960, 524), (96, 86, 1824, 810))
 s = shuttle.Shuttle(300)
 check("the first leg goes out", s.aim(place) == (1260, 524))
@@ -129,7 +129,7 @@ s = shuttle.Shuttle(2000)
 check("the aim stays inside the bounds", s.aim(place) == (1824, 524))
 
 
-print("3. run() through a fake game")
+print("\nL-407  The bot test mode's loop, driven through a fake game")
 SCREEN_W, SCREEN_H = 1920, 1080
 CHARACTER = (960, 524)
 SCALE = 0.3
@@ -265,6 +265,5 @@ summary = shuttle.summary(FakeGame().run())
 check(f"summary reads sensibly: {summary.splitlines()[0]!r}", "6 landed" in summary)
 
 
-print()
-print(f"{'all checks passed' if not failures else f'{failures} CHECK(S) FAILED'}")
+print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

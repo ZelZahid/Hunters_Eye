@@ -84,7 +84,7 @@ def reset():
 
 
 def test_detection_contract():
-    print("\nthe Detection contract - box + centre, and it unpacks like every other detector")
+    print("\nV-701  The Detection contract - box + centre, and it unpacks like every other detector")
     hit = md.Detection("defiled_warrior", 0.8, 100, 200, 70, 140)
     check(hit.box == (100, 200, 70, 140), "box is (x, y, w, h)")
     check(hit.centre == (135, 270), "centre is the box centre, integer pixels (got %r)"
@@ -99,7 +99,7 @@ def test_detection_contract():
 
 
 def test_letterbox_geometry():
-    print("\nletterbox: aspect preserved, and the padding is recoverable")
+    print("\nV-702  Letterbox: aspect preserved, and the padding is recoverable")
     frame = np.zeros((1080, 1920, 3), np.uint8)
     canvas, ratio, pad_x, pad_y = md._letterbox(frame, 640)
     check(canvas.shape == (640, 640, 3), "output is square at the model's input size")
@@ -116,7 +116,7 @@ def test_letterbox_geometry():
 
 
 def test_coordinates_map_back():
-    print("\na box decoded from the network lands where it was put")
+    print("\nV-703  A box decoded from the network lands where it was put")
     # One monster, 77x140 frame pixels at frame (1400, 300). Forward-map it into 640-letterbox
     # space by hand, hand THAT to the decoder, and require the original back.
     frame = np.zeros((1080, 1920, 3), np.uint8)
@@ -139,7 +139,7 @@ def test_coordinates_map_back():
 
 
 def test_class_aware_suppression():
-    print("\nsuppression is WITHIN a class - a boss standing in its pack is not deleted")
+    print("\nV-704  Suppression is WITHIN a class - a boss standing in its pack is not deleted")
     frame = np.zeros((1080, 1920, 3), np.uint8)
     _, ratio, pad_x, pad_y = md._letterbox(frame, 640)
 
@@ -168,7 +168,7 @@ def test_class_aware_suppression():
 
 
 def test_thresholds_and_clipping():
-    print("\nper-class thresholds, and boxes clipped to the frame")
+    print("\nV-705  Per-class thresholds, and boxes clipped to the frame")
     frame = np.zeros((1080, 1920, 3), np.uint8)
     _, ratio, pad_x, pad_y = md._letterbox(frame, 640)
 
@@ -199,7 +199,7 @@ def test_thresholds_and_clipping():
 
 
 def test_degrades_without_a_model():
-    print("\nno model and no onnxruntime are normal states, not crashes")
+    print("\nV-706  No model and no onnxruntime are normal states, not crashes")
     reset()
     check(md.available() is False, "available() is False with nothing loaded")
     check(md.detect(np.zeros((100, 100, 3), np.uint8)) == [],
@@ -215,7 +215,7 @@ def test_degrades_without_a_model():
 
 def test_real_model_if_present():
     """The real model, if it has been built. Its ABSENCE is reported, never silently skipped."""
-    print("\nthe real model (a build artifact - absent is a valid checkout, not a pass)")
+    print("\nV-707  The real model (a build artifact - absent is a valid checkout, not a pass)")
     if not md.load():
         print("  NOT RUN: no model built yet. Run tools/label_monsters.py then "
               "tools/train_monster.py.")

@@ -129,8 +129,12 @@ data the tools write or the engine reads.
 One-time setup before `game_state.py` reports anything:
 `python tools/calibrate_meters.py` (re-run after any resolution or UI-scale change).
 
-No linter or CI. Sixteen test files in `tests/`, none needing the game running — run each
-with `python tests/<file>`.
+**Tests are numbered cards** (`V-104`: category, area, card), listed with a one-line title in
+`docs/test_cards.md` — read its header before adding one. `python tests/run_all.py` runs them all;
+`python tests/<file>` runs one. None needs the game. **CI** (GitHub Actions, Windows,
+`.github/workflows/tests.yml`) runs `run_all.py` on every pull request and push to `main`; merge
+only when it is green. A new card goes in the index in the same change — card T-301 fails CI
+otherwise. A committed fixture that is missing fails; it never skips. No linter.
 
 ## Architecture — the rules, compressed
 
@@ -198,7 +202,7 @@ Game-agnostic. `act_until_gone(get_position, act)` separates *what* from *how lo
   cost lands on the **game's** FPS, not ours (EH#38). A skipped repaint must not count as drawn.
 - `TRANSPARENT_COLOR` is `#010203` on purpose; it is coupled to the empty
   `PANEL_TEXT_OUTLINE_OFFSETS`. Keep the stippled panel plate, sized by measured font metrics.
-- **The overlay is in our own captures**: `test_targets.py` 12 asserts no panel string matches
+- **The overlay is in our own captures**: card V-405 asserts no panel string matches
   a target (EH#49) — extend it when wording changes.
 
 ### `core/text_detection.py` — OCR
@@ -315,9 +319,14 @@ tools/                   # run by hand, never by the pipeline
   diagnose_lobby.py      #   "why was the game name misread?" - dumps the crop it OCR'd
   teleport_bot.py        #   bot test mode: unattended teleports for timing tests (--measure)
 
-tests/                   # none of them need the game running
+tests/                   # numbered test cards - none of them need the game running
+  run_all.py             #   runs every file, reports failing cards by ID (what CI runs)
   fixtures/              #   REAL frames the tests measure against - committed, see its README
   test_auto_collect.py   #   teleport decision, item ranking, retry cadences, UI panel filter
+  test_card_index.py     #   docs/test_cards.md lists exactly the cards the tests run
+  test_detector_contract.py # every detector: no crash on junk frames, None = cannot tell,
+                         #   works on a document page (image search, OCR)
+  test_frame_source.py   #   capture: DXGI -> mss fallback, re-served frames, window geometry
   test_game_state.py     #   meter fill measurement + Smoother
   test_image_search.py   #   the reference-image search, held to its pre-shortcut output
   test_label_monsters.py #   the YOLO label file: round trip, empty-vs-missing, stable ids
@@ -350,6 +359,7 @@ assets/                  # data, not code - edit these instead of the source
 docs/
   updates.txt            #   the changelog, and the source of truth for version numbers
   todolist.md            #   what to work on next, ideas, open questions, settled decisions
+  test_cards.md          #   every test card: ID + one-line title, and when tests run
   Error_history.txt      #   bugs that took real effort, with root cause + fix + lesson
   design_notes.md        #   the long-form rationale behind everything in this file
   diagrams/              #   system_map.svg (README-ready) + system_map.html - the whole system on one page
