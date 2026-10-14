@@ -11,8 +11,14 @@ a first pass that a person then fixes, which is the laborious part of section 7.
     python tools/autolabel.py --class pindle --threshold 0.15 --limit 20
 
 Reads every frame in assets/monsters/_dataset/images/ and writes, per frame:
-  labels/frame_0001.txt     YOLO format, one line per box: <class> <cx> <cy> <w> <h>, normalised
-  preview/frame_0001.jpg    the same boxes drawn on, for flipping through by eye
+  labels_draft/frame_0001.txt  YOLO format, one line per box: <class> <cx> <cy> <w> <h>, normalised
+  preview/frame_0001.jpg       the same boxes drawn on, for flipping through by eye
+
+DRAFTS, NOT LABELS. These go in labels_draft/, which the trainer never reads; tools/
+label_monsters.py opens each one for review and saves what you accept into labels/. They used to
+be written straight into labels/, where an unreviewed guess was indistinguishable from a checked
+label and would train as one. Once a model exists, tools/prelabel.py drafts with it instead -
+it knows this game, where OWLv2 is guessing from photographs.
 
 REVIEW THE PREVIEWS. This drafts labels, it does not produce them. Roughly one box in five was
 wrong in the measured run - a torch, the player character, or two boxes on one monster - and a
@@ -43,6 +49,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DATASET_DIR = REPO_ROOT / "assets" / "monsters" / "_dataset"
 IMAGES_DIR = DATASET_DIR / "images"
 LABELS_DIR = DATASET_DIR / "labels"
+DRAFTS_DIR = DATASET_DIR / "labels_draft"
 PREVIEW_DIR = DATASET_DIR / "preview"
 CLASSES_FILE = DATASET_DIR / "classes.txt"
 
@@ -105,8 +112,8 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="only do this many frames")
     ap.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     ap.add_argument("--overwrite", action="store_true",
-                    help="re-label frames that already have a label file (default: skip them, "
-                         "so a human's corrections are never silently thrown away)")
+                    help="re-draft frames that already have an unreviewed draft (frames with a "
+                         "real label are always skipped, so a human's work is never replaced)")
     args = ap.parse_args()
 
     frames = sorted(p for p in IMAGES_DIR.glob("frame_*.*")
@@ -126,7 +133,7 @@ def main():
 
     prompts = args.prompt or default_prompts(args.class_name)
 
-    LABELS_DIR.mkdir(parents=True, exist_ok=True)
+    DRAFTS_DIR.mkdir(parents=True, exist_ok=True)
     PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
 
     #classes.txt is the class-id mapping the labels refer to. Append-only: an existing class must
@@ -145,7 +152,8 @@ def main():
     model = Owlv2ForObjectDetection.from_pretrained(MODEL).to(device)
     model.eval()
 
-    todo = [f for f in frames if args.overwrite or not (LABELS_DIR / (f.stem + ".txt")).exists()]
+    todo = [f for f in frames if not (LABELS_DIR / (f.stem + ".txt")).exists()
+            and (args.overwrite or not (DRAFTS_DIR / (f.stem + ".txt")).exists())]
     if args.limit:
         todo = todo[:args.limit]
     print("%d frames to label (%d already done)\n" % (len(todo), len(frames) - len(todo)))
@@ -199,7 +207,7 @@ def main():
         #The viewport band, so a review can see instantly whether a miss was outside the crop.
         cv.rectangle(preview, (0, top), (w - 1, bottom), (90, 90, 90), 1)
 
-        (LABELS_DIR / (path.stem + ".txt")).write_text(
+        (DRAFTS_DIR / (path.stem + ".txt")).write_text(
             "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
         cv.imwrite(str(PREVIEW_DIR / (path.stem + ".jpg")), preview,
                    [cv.IMWRITE_JPEG_QUALITY, 88])
@@ -209,17 +217,19 @@ def main():
     elapsed = time.perf_counter() - started
     print("\n%d boxes across %d frames in %.1fs (%.2fs/frame)"
           % (total_boxes, len(todo), elapsed, elapsed / max(1, len(todo))))
-    print("labels  -> %s" % LABELS_DIR)
+    print("drafts  -> %s" % DRAFTS_DIR)
     print("preview -> %s" % PREVIEW_DIR)
     print("""
-NOW REVIEW THE PREVIEWS before training on any of this. Flip through them and expect to
-fix roughly one box in five: a torch or the player character boxed as a monster, two boxes
-on one monster, or a monster missed entirely. Delete a wrong line from the .txt, or delete
-the .txt and draw that frame by hand. A wrong label actively teaches the model the wrong
-thing, so it is worse than no label at all.
+NOW REVIEW THEM:  python tools/label_monsters.py --only-unlabelled
+Nothing trains on a draft. Each drafted frame opens with thin "?" boxes; expect to fix
+roughly one box in five: a torch or the player character boxed as a monster, two boxes on
+one monster, or a monster missed entirely. Right-click a wrong box, draw a missed one, then
+move on - moving on saves it as a real label. A wrong label actively teaches the model the
+wrong thing, so it is worse than no label at all.
 
-Frames with an empty .txt are legitimate NEGATIVES - a scene with no monsters is useful
-training data and should be kept, not deleted.
+A drafted frame with no boxes becomes a legitimate NEGATIVE once accepted - a scene with
+no monsters is useful training data. The previews in preview/ are still there for a quick
+flip-through first.
 """)
 
 

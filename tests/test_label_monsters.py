@@ -9,11 +9,13 @@ test_game_state.py exists for the meter measurement: the failure mode is a plaus
 number, not an error. The interactive window is not tested (it needs a display and a hand); every
 pure function behind it is.
 
-The four properties, each guarding a distinct silent failure:
+The properties, each guarding a distinct silent failure:
   - a box survives the pixel -> normalised -> pixel round trip, so what you drew is what trains
   - an EMPTY file and a MISSING file stay different answers, because they are opposite intents
   - class ids are append-only, because a shifted id rewrites the meaning of every existing label
   - a box past the frame edge is clipped to the visible part, not moved
+  - a machine DRAFT never lands in labels/ until a person has opened it, and never replaces a
+    real label - an unreviewed guess in labels/ trains exactly like a checked one
 """
 import sys
 import tempfile
@@ -22,7 +24,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
+import cv2 as cv
+import numpy as np
+
 import label_monsters as lm
+import prelabel
+import train_monster
 
 SHAPE = (1080, 1920, 3)
 checks = 0
@@ -43,6 +50,7 @@ def sandbox(tmp):
     lm.DATASET_DIR = tmp / "monsters" / "_dataset"
     lm.IMAGES_DIR = lm.DATASET_DIR / "images"
     lm.LABELS_DIR = lm.DATASET_DIR / "labels"
+    lm.DRAFTS_DIR = lm.DATASET_DIR / "labels_draft"
     lm.CLASSES_FILE = lm.DATASET_DIR / "classes.txt"
     lm.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     lm.LABELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -138,6 +146,83 @@ def test_import_deduplicates(tmp):
     check(len(set(names)) == len(names), "no imported frame overwrote another")
 
 
+class FakeDetection:
+    """Just the fields prelabel reads off core.monster_detection.Detection."""
+
+    def __init__(self, name, x, y, w, h):
+        self.name, self.x, self.y, self.w, self.h = name, x, y, w, h
+
+
+def real_frame(name):
+    """A decodable image - the Labeller reads frames with cv.imread, unlike the label helpers."""
+    path = lm.IMAGES_DIR / name
+    cv.imwrite(str(path), np.zeros(SHAPE, dtype=np.uint8))
+    return path
+
+
+def test_drafts_stay_out_of_labels():
+    print("\na draft is not a label until a person accepts it")
+    lm.CLASSES_FILE.write_text("defiled_warrior\npindle\n", encoding="utf-8")
+    fresh, labelled, drafted = (real_frame("frame_0101.png"), real_frame("frame_0102.png"),
+                                real_frame("frame_0103.png"))
+    lm.write_labels(labelled, SHAPE, [("pindle", 500, 500, 580, 620)])
+    lm.write_labels(drafted, SHAPE, [], lm.draft_path(drafted))
+
+    frames = [fresh, labelled, drafted]
+    check(prelabel.frames_to_draft(frames) == [fresh],
+          "prelabel drafts only frames with neither a label nor a draft")
+    check(prelabel.frames_to_draft(frames, overwrite=True) == [fresh, drafted],
+          "--overwrite re-drafts an unreviewed draft but NEVER a real label")
+
+    def fake_detect(image, min_confidence):
+        check(min_confidence == 0.2, "the threshold reaches detect()")
+        return [FakeDetection("defiled_warrior", 100, 200, 69, 105)] if image is not None else []
+
+    def read(path):
+        return np.zeros(SHAPE, dtype=np.uint8)
+
+    written, boxes = prelabel.draft_frames([fresh], fake_detect, 0.2, read=read,
+                                           report=lambda *_: None)
+    check((written, boxes) == (1, 1), "one frame, one box drafted (got %r)" % ((written, boxes),))
+    check(lm.draft_path(fresh).exists(), "the box went into labels_draft/")
+    check(not lm.label_path(fresh).exists(), "and NOT into labels/, which the trainer reads")
+
+    # The trainer must count a drafted-only frame as unlabelled, not train on it.
+    train_monster.IMAGES_DIR, train_monster.LABELS_DIR = lm.IMAGES_DIR, lm.LABELS_DIR
+    train_monster.DRAFTS_DIR = lm.DRAFTS_DIR
+    _fatal, warnings, stats = train_monster.check_dataset(lm.load_classes())
+    check(stats.get("boxes") == 1 and stats.get("per_class", {}).get("defiled_warrior") == 0,
+          "the trainer sees only the real label's box, none of the draft's (got %r)" % (stats,))
+    check(any("draft" in w for w in warnings), "and says there are drafts waiting for review")
+
+
+def test_reviewing_a_draft():
+    print("\nopening a draft is the review, moving on accepts it")
+    frame = real_frame("frame_0201.png")
+    guess = [("defiled_warrior", 100, 200, 169, 305)]
+    lm.write_labels(frame, SHAPE, guess, lm.draft_path(frame))
+
+    labeller = lm.Labeller([frame], ["defiled_warrior", "pindle"])
+    labeller.load()
+    check(labeller.from_draft and labeller.boxes == guess,
+          "a frame with only a draft opens showing the draft's boxes")
+    check(labeller.dirty, "and as unsaved, so moving on saves it")
+
+    labeller.boxes.append(("pindle", 800, 400, 880, 520))     # the person adds a missed monster
+    labeller.go(1)
+    check(lm.read_labels(frame, SHAPE, lm.load_classes()) == guess + [("pindle", 800, 400, 880,
+                                                                        520)],
+          "moving on writes what the PERSON left, corrections included, as the real label")
+    check(not lm.draft_path(frame).exists(), "and removes the draft it superseded")
+    check(not labeller.from_draft, "the reloaded frame is a real label now, not a draft")
+
+    # A real label always wins over a stale draft: a person's work is never replaced by a guess.
+    lm.write_labels(frame, SHAPE, [("pindle", 10, 10, 90, 130)], lm.draft_path(frame))
+    labeller.load()
+    check(not labeller.from_draft and len(labeller.boxes) == 2,
+          "a frame with a real label ignores any draft beside it")
+
+
 def main():
     with tempfile.TemporaryDirectory() as raw:
         tmp = Path(raw)
@@ -147,6 +232,8 @@ def main():
         test_ids_are_append_only(image)
         test_edge_clipping(image)
         test_import_deduplicates(tmp)
+        test_drafts_stay_out_of_labels()
+        test_reviewing_a_draft()
 
     print("\n%d checks, %d failed" % (checks, len(failures)))
     for description in failures:
