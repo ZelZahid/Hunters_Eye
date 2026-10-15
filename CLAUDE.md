@@ -349,6 +349,7 @@ docs/
   test_cards.md          #   every test card: ID + one-line title, and when tests run
   Error_history.txt      #   bugs that took real effort, with root cause + fix + lesson
   design_notes.md        #   the long-form rationale behind everything in this file
+  progress/              #   progress screenshot gallery + README index (max ~100 by v1.000)
   diagrams/              #   system_map.svg (README-ready) + system_map.html - the whole system on one page
   monster_detection_plan.txt
 
