@@ -252,6 +252,16 @@ the portal is clicked only after its label is read; arrival is confirmed by look
 say why rather than carry on blind. `Walker.decide()` and `fight()` take their dependencies as
 arguments so tests can drive them. Maps are valid only at their recorded aspect ratio.
 
+### `routes/shuttle.py` + `tools/teleport_bot.py` — bot test mode
+Teleports out and back over one spot with nobody at the keyboard, so `measure_ocr_latency.py`
+has view jumps to time. Same guards as `main.py`'s actions (warmed up before the first press),
+F4/End stop, a health stop and a mana wait, and a hard time limit. **Every teleport is checked by
+how far the scene slid** (phase correlation): a confident zero is a miss and four in a row stop the
+run; a frame pair it cannot compare is "cannot tell", never a miss. Aims correct for short
+landings from the measured position, but a landing within `ON_TARGET_PX` counts as on target —
+adding up every leg's measurement noise is a random walk. Run it **instead of** `main.py`, not
+with it (auto-collect would fight it for the mouse).
+
 ### `core/monster_detection.py`
 **One multi-class model**, never one per monster. CPU by default (`prefer_gpu` opt-in).
 **Full-frame inference** (it was trained that way). Class-aware NMS with score threshold
@@ -295,6 +305,7 @@ core/                    # THE ENGINE. Knows nothing about any particular game.
 
 routes/                  # GAME-SPECIFIC scripted sequences, built on core/. Never imports main.
   pindle.py              #   the Pindle run: new game -> red portal -> temple doorway -> fight
+  shuttle.py             #   bot test mode: teleport out and back, each jump checked by looking
 
 tools/                   # run by hand, never by the pipeline
   build_route_map.py     #   stitch route screenshots into assets/routes/<name>.png/.json
@@ -306,6 +317,7 @@ tools/                   # run by hand, never by the pipeline
   diagnose_ocr.py        #   "why wasn't this item detected?" - what Tesseract actually read
   diagnose_quit.py       #   "why didn't F3 click Save and Exit?" - the guards, live
   diagnose_lobby.py      #   "why was the game name misread?" - dumps the crop it OCR'd
+  teleport_bot.py        #   bot test mode: unattended teleports for timing tests (--measure)
 
 tests/                   # numbered test cards - none of them need the game running
   run_all.py             #   runs every file, reports failing cards by ID (what CI runs)
@@ -326,6 +338,7 @@ tests/                   # numbered test cards - none of them need the game runn
   test_presence.py       #   presence.py + the in-play gate
   test_quit_game.py      #   the quit_game sequence + click_when_seen/wait_until
   test_route.py          #   map localization on held-out frames + the walks' decisions
+  test_shuttle.py        #   bot test mode: scene shift on real frames, the loop in a fake game
   test_slots.py          #   the cell-colour reader: real belts, empty slots, cannot-read
   test_targets.py        #   targets.txt parsing + span ranking
   test_user_config.py    #   user_config.py parsing/validation
