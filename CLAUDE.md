@@ -113,7 +113,7 @@ and can never hold keyboard focus:
 | `F3` | next game: quit → read the lobby's game name → increment → create |
 | `F4` | snooze auto-collect 10s, **and stop a running F7 run outright** |
 | `F5` | toggle the game-state debug panel (display-only; cannot disturb detection) |
-| `F6` | snooze potion drinking 10s |
+| `F6` | snooze potion drinking 10s; each press adds 10s more, capped at 60s |
 | `F7` | the Pindleskin run from a fresh game in Harrogath (`routes/pindle.py`) |
 
 Snoozes re-arm themselves (a plain toggle can be left off for a whole session by
@@ -357,6 +357,7 @@ tests/                   # numbered test cards - none of them need the game runn
   test_presence.py       #   presence.py + the in-play gate
   test_quit_game.py      #   the quit_game sequence + click_when_seen/wait_until
   test_route.py          #   map localization on held-out frames + the walks' decisions
+  test_session.py        #   what a bot session reports when it stops (runtime as 6m 33s)
   test_shuttle.py        #   bot test mode: scene shift on real frames, the loop in a fake game
   test_slots.py          #   the cell-colour reader: real belts, empty slots, cannot-read
   test_targets.py        #   targets.txt parsing + span ranking

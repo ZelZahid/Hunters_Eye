@@ -9,8 +9,8 @@ and rewrites the one file a person hand-edits. Its dangerous failures are quiet 
   - a bot that freezes because the panel stopped reading its output.
 Each section below is one of those.
 
-T-401 and C-119 need nothing. T-402 and T-403 need tkinter (gui.py imports it); T-403 also needs a
-display. Either one skipping is a FAILURE under CI (the CI environment variable), where both are
+T-401 and C-119 need nothing. T-402 to T-405 need tkinter (gui.py imports it); T-403 and T-405 also
+need a display. Any of them skipping is a FAILURE under CI (the CI environment variable), where both are
 expected to run - a check that quietly skips on the machine meant to run it looks like a pass.
 """
 import sys
@@ -231,6 +231,36 @@ if gui is not None:
     killed.kill_now()
     check("closing the window ends the bot before it returns", not killed.running())
 
+    print("\nT-404  Each button shows the hotkey main.py really binds, in F-key order")
+    #Read from main.py's SOURCE rather than by importing it: importing main grabs the screen and
+    #loads Tesseract, none of which this needs. What it checks is the wiring as written.
+    import re
+    main_source = (REPO_ROOT / "main.py").read_text(encoding="utf-8")
+    hotkey_of = {func: key.upper() for key, func in
+                 re.findall(r"keyboard\.add_hotkey\(['\"](f\d+)['\"],\s*(\w+)\)", main_source)}
+
+    def bound_function(name):
+        """The hotkey-bound function a command handler ends up calling, following one wrapper
+        (the panel's "stop" is _control_stop, which calls F4's _snooze_and_stop)."""
+        if name in hotkey_of:
+            return name
+        body = re.search(rf"def {name}\(.*?\n(?=\S)", main_source, re.S)
+        called = [f for f in hotkey_of if body and re.search(rf"\b{f}\(", body.group(0))]
+        return called[0] if len(called) == 1 else None
+
+    table = re.search(r"command_channel\.listen\(\{(.*?)\}", main_source, re.S)
+    wiring = {}
+    for command, handler in re.findall(r'"(\w+)":\s*([^\n]+?),?\n', table.group(1) if table else ""):
+        names = re.findall(r"\b(_?[a-z]\w*)\b(?!\()", handler.replace("lambda:", ""))
+        target = next((bound_function(n) for n in reversed(names) if bound_function(n)), None)
+        wiring[command] = target
+    for label, command, hotkey, _ in gui.ACTIONS:
+        func = wiring.get(command)
+        check(f"'{label}' says {hotkey}: main.py binds {hotkey_of.get(func, '?')} to {func}",
+              func is not None and hotkey_of.get(func) == hotkey)
+    order = [int(hotkey[1:]) for _, _, hotkey, _ in gui.ACTIONS]
+    check(f"buttons run left to right in F-key order ({order})", order == sorted(order))
+
     print("\nT-403  The control panel window: settings form, Save, buttons, status")
     check("help text: the file's hard wraps are joined back into paragraphs",
           gui.reflow("one\ntwo\n\nthree") == "one two\n\nthree")
@@ -246,6 +276,11 @@ if gui is not None:
             check("T-403 needs a display, which CI's Windows runner has - it is missing", False)
 
     if root is not None:
+        from tkinter import ttk
+
+        def ttk_style(widget):
+            return ttk.Style(widget)
+
         root.withdraw()
         config_copy = os.path.join(tempfile.mkdtemp(), "user_config.txt")
         Path(config_copy).write_text(real, encoding="utf-8")
@@ -280,11 +315,43 @@ if gui is not None:
         check("a button's command reaches the bot and its reply reaches the log",
               wait_for(lambda: (panel._tick() or True) and "got pindle" in panel.log.get("1.0", "end")))
         check("the FPS line is picked out of the log", panel.last_fps == 42.5)
+
         panel.stop_bot()
         check("Stop ends the bot",
               wait_for(lambda: (panel._tick() or True) and not quiet_bot.running()))
         root.update()
         check("...and the header says so", panel.state_label.cget("text") == "Stopped")
+
+        print("\nT-405  The potion snooze counts down in red on its button; the log is readable")
+        panel.start_bot()
+        wait_for(lambda: (panel._tick() or True) and quiet_bot.running())
+        button, normal = panel.buttons["snooze_potions"]
+        check("no countdown before any snooze", button.cget("text") == normal)
+        quiet_bot.output.put_nowait("Potion drinking snoozed for 10s")
+        quiet_bot.output.put_nowait("Potion drinking snoozed for 20s")  #a second press adds to it
+        panel._tick()
+        check(f"the button shows the TOTAL left, from the bot's own line ({button.cget('text')!r})",
+              button.cget("text") in (f"{normal}   20s", f"{normal}   19s"))
+        check("...in red", str(button.cget("style")) == "Snoozed.TButton"
+              and ttk_style(root).lookup("Snoozed.TButton", "foreground") == gui.SNOOZED_COLOR)
+        check("other buttons are untouched",
+              all(str(b.cget("style")) in ("", "TButton") for b in panel.action_buttons if b is not button))
+        panel.potion_snooze_until = time.monotonic() - 0.1  #as if the 20s ran out
+        panel._tick()
+        check("when the snooze runs out the button goes back to normal",
+              button.cget("text") == normal and str(button.cget("style")) == "TButton")
+        family = panel.log.cget("font")
+        expected = gui._log_font()[0]
+        check(f"the log uses the platform's coding font, not Courier ({family!r})",
+              expected.replace(" ", "") in str(family).replace(" ", "").replace("{", "").replace("}", "")
+              and "Courier" not in str(family))
+        quiet_bot.output.put_nowait("Potion drinking snoozed for 30s")
+        panel._tick()
+        panel.stop_bot()
+        wait_for(lambda: (panel._tick() or True) and not quiet_bot.running())
+        root.update()
+        check("stopping the bot clears a countdown that was still running",
+              button.cget("text") == normal and panel.potion_snooze_until == 0.0)
         root.destroy()
 
 

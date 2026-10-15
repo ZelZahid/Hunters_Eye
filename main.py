@@ -1424,13 +1424,27 @@ POTION_DRINKING_ENABLED = potion_config.enabled
 #_match_needle for why a person would want it off.
 IMAGE_SEARCH_ENABLED = potion_config.image_search
 
+#Each press ADDS another POTION_SNOOZE_SECONDS rather than restarting the clock (owner's request,
+#2026-10-15: three quick presses = 30s), so a longer quiet spell needs no new setting. CAPPED,
+#because this is the one switch that stops the bot drinking: a stuck key or a few absent-minded
+#presses must not leave a character without potions for minutes. It still re-arms by itself.
+POTION_SNOOZE_MAX_SECONDS = max(60.0, POTION_SNOOZE_SECONDS)
 potion_snooze_until = 0.0
+
+
+def _stacked_snooze(until, now, step, cap):
+    """The snooze deadline after one more press: whatever is left, plus `step`, never more than
+    `cap` from now. Pure, so the stacking can be tested without a clock or a keyboard."""
+    return now + min(max(until - now, 0.0) + step, cap)
 
 
 def _snooze_potions():
     global potion_snooze_until
-    potion_snooze_until = time.time() + POTION_SNOOZE_SECONDS
-    print(f"Potion drinking snoozed for {POTION_SNOOZE_SECONDS:.0f}s")
+    now = time.time()
+    potion_snooze_until = _stacked_snooze(potion_snooze_until, now, POTION_SNOOZE_SECONDS,
+                                          POTION_SNOOZE_MAX_SECONDS)
+    #The control panel reads this exact line to show the countdown on its button (gui.py).
+    print(f"Potion drinking snoozed for {potion_snooze_until - now:.0f}s")
 
 
 #--- The potion belt: what is actually in each slot ------------------------------------------------
@@ -1579,7 +1593,8 @@ def run_potion_drinking():
     rules = ", ".join(f"{r.label} <={r.at_or_below:.0%} -> {'/'.join(r.keys)}" for r in POTION_RULES)
     source = "user_config.txt" if potion_config.loaded else "built-in defaults (no user_config.txt)"
     print(f"Potion drinking running from {source}:")
-    print(f"  {rules}   - press 'F6' to snooze it for {POTION_SNOOZE_SECONDS:.0f}s.")
+    print(f"  {rules}   - press 'F6' to snooze it for {POTION_SNOOZE_SECONDS:.0f}s "
+          f"(each press adds {POTION_SNOOZE_SECONDS:.0f}s, up to {POTION_SNOOZE_MAX_SECONDS:.0f}s).")
 
     last_fired = {}       #rule label -> when it last fired, so each rule cools down on its own
     next_key = {}         #rule label -> index into rule.keys, for alternating columns
@@ -2390,6 +2405,20 @@ def run_pindle():
 quit_requested = threading.Event()
 
 WINDOW_NAME = "Hunters Eye"
+
+
+def format_duration(seconds):
+    """393.4 -> "6m 33s"; 42 -> "42s"; 3725 -> "1h 2m 5s". For people reading a log, not for
+    parsing - nothing reads these back."""
+    total = max(0, int(round(seconds)))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
 FPS_PRINT_INTERVAL_SECONDS = 5.0 #how often to print the FPS line - printing every single frame just floods the console
 
 def run_debug_window():
@@ -2438,7 +2467,7 @@ def run_debug_window():
     total_elapsed = t_final - t0
     average_FPS = n_frames / total_elapsed
     print("total # of frames:", n_frames)
-    print(f"Total Runtime: {total_elapsed:.2f}")
+    print(f"Total Runtime: {format_duration(total_elapsed)}")
     print(f"Average FPS: {average_FPS:.2f}")
 
 
@@ -2608,7 +2637,7 @@ def run_overlay():
     total_elapsed = time.time() - t0
     average_FPS = n_frames / total_elapsed if total_elapsed > 0 else 0.0
     print("total # of frames:", n_frames)
-    print(f"Total Runtime: {total_elapsed:.2f}")
+    print(f"Total Runtime: {format_duration(total_elapsed)}")
     print(f"Average FPS: {average_FPS:.2f}")
 
 

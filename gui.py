@@ -23,6 +23,7 @@ once at start (CLAUDE.md, "Running"), so Save says so and offers Restart.
 Plain tkinter only, so there is nothing extra to install. On Windows run it with `pythonw gui.py`
 for no console window at all.
 '''
+import math
 import os
 import queue
 import re
@@ -229,13 +230,32 @@ def _known_meters():
 
 
 #Each button sends one word down main.py's --control channel. (label, command, hotkey, what it does)
+#In hotkey order, left to right, so the row reads like the keyboard. The hotkey shown on each is the
+#one main.py registers for that same function - card T-404 checks it against main.py's source, so a
+#rebind there cannot leave a wrong label here.
 ACTIONS = (
     ("Next game", "next_game", "F3", "Leave this game and create the next one."),
-    ("Pindle run", "pindle", "F7", "The Pindleskin run, from a fresh game in Harrogath."),
     ("Stop run", "stop", "F4", "Stop a run, and snooze auto-collect for a few seconds."),
-    ("Snooze potions", "snooze_potions", "F6", "No potion drinking for a few seconds."),
     ("Debug panel", "panel", "F5", "Show or hide the game-state panel over the game."),
+    ("Snooze potions", "snooze_potions", "F6", "No potion drinking for 10s. Each press adds 10s more."),
+    ("Pindle run", "pindle", "F7", "The Pindleskin run, from a fresh game in Harrogath."),
 )
+
+#main.py prints this on every potion snooze, from the button or from F6 alike, with the TOTAL time
+#left - so the countdown on the button follows the hotkey too, not just clicks.
+POTION_SNOOZE_LINE = re.compile(r"^Potion drinking snoozed for (\d+)s")
+SNOOZED_COLOR = "#c0001a"
+
+
+def _log_font():
+    """A monospace font that is easy to read on each OS. Courier, the old choice, is thin and pale
+    on Windows; these are each platform's own coding font. Tk quietly substitutes a default for a
+    family that is not installed, so a wrong guess costs looks, never a crash."""
+    if sys.platform == "win32":
+        return ("Consolas", 10)
+    if sys.platform == "darwin":
+        return ("Menlo", 12)
+    return ("DejaVu Sans Mono", 10)
 
 
 class ControlPanel:
@@ -245,6 +265,7 @@ class ControlPanel:
         self.known_meters = _known_meters()
         self.last_fps = None
         self.last_activity = ""
+        self.potion_snooze_until = 0.0  #time.monotonic() deadline read from the bot's own log line
         self.restart_pending = False
         self.config_text = ""          #the file as last loaded/saved, to spot edits made elsewhere
         self.fields = {}               #(section, key) -> (tk variable, original value)
@@ -288,6 +309,8 @@ class ControlPanel:
         actions = ttk.LabelFrame(tab, text="Actions", padding=8)
         actions.pack(fill="x")
         self.action_buttons = []
+        self.buttons = {}  #command -> (button, its normal text)
+        ttk.Style(self.root).configure("Snoozed.TButton", foreground=SNOOZED_COLOR)
         for column, (label, command, hotkey, tip) in enumerate(ACTIONS):
             cell = ttk.Frame(actions)
             cell.grid(row=0, column=column, sticky="nsew", padx=4)
@@ -297,6 +320,7 @@ class ControlPanel:
             button.pack(fill="x")
             ttk.Label(cell, text=tip, wraplength=160, foreground="gray40").pack(fill="x", pady=(2, 0))
             self.action_buttons.append(button)
+            self.buttons[command] = (button, f"{label}  ({hotkey})")
         ttk.Label(actions, foreground="gray25", wraplength=880, text=(
             "Next game and Pindle run start once you click back into the game: the bot never acts "
             "while another window is in front. The hotkeys keep working as usual."),
@@ -308,7 +332,7 @@ class ControlPanel:
         log_frame = ttk.LabelFrame(tab, text="Log", padding=4)
         log_frame.pack(fill="both", expand=True)
         self.log = ScrolledText(log_frame, height=10, wrap="none", state="disabled",
-                                font=("Courier", 9))
+                                font=_log_font())
         self.log.pack(fill="both", expand=True)
         self.log.tag_configure("problem", foreground="#b00020")
         self.log.tag_configure("panel", foreground="#1a5fb4")
@@ -556,6 +580,9 @@ class ControlPanel:
                 self.last_fps = float(fps.group(1))
             if ACTIVITY_LINE.match(line):
                 self.last_activity = line
+            snooze = POTION_SNOOZE_LINE.match(line)
+            if snooze:
+                self.potion_snooze_until = time.monotonic() + int(snooze.group(1))
             self._append(line, "problem" if PROBLEM_LINE.search(line) else None)
         if self.bot.dropped:
             self._append(f"control panel: {self.bot.dropped} log lines were dropped because this "
@@ -605,6 +632,18 @@ class ControlPanel:
         self.stop_button.configure(state="normal" if running and not self.bot.stopping() else "disabled")
         for button in self.action_buttons:
             button.configure(state="normal" if running and not self.bot.stopping() else "disabled")
+        self._show_snooze(running)
+
+    def _show_snooze(self, running):
+        """The seconds of potion snooze left, in red on its button, while there are any."""
+        button, normal = self.buttons["snooze_potions"]
+        if not running:
+            self.potion_snooze_until = 0.0  #a restarted bot starts unsnoozed
+        left = self.potion_snooze_until - time.monotonic()
+        if left > 0:
+            button.configure(text=f"{normal}   {math.ceil(left)}s", style="Snoozed.TButton")
+        else:
+            button.configure(text=normal, style="TButton")
 
     def on_close(self):
         if self.bot.running():
