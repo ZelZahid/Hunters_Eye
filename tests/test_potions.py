@@ -269,5 +269,42 @@ check("the emergency tier is the most urgent of the three",
 check("rules are ordered most-urgent first",
       [r.label for r in real][:3] == ["rejuvenation", "health", "health_backup"])
 
+print("\nL-118  Snoozing potions again ADDS time, up to a cap")
+#Owner's request, 2026-10-15: each press of F6 (or the control panel's button) adds another snooze.
+step, cap = 10.0, 60.0
+t = 1000.0
+until = main._stacked_snooze(0.0, t, step, cap)
+check("the first press snoozes for one step", until - t == 10.0)
+until = main._stacked_snooze(until, t, step, cap)
+until = main._stacked_snooze(until, t, step, cap)
+check("three quick presses snooze for three steps", until - t == 30.0)
+check("a press later on adds to whatever is left, not to the original length",
+      main._stacked_snooze(t + 4.0, t, step, cap) - t == 14.0)
+check("a snooze that already ran out starts again from one step",
+      main._stacked_snooze(t - 50.0, t, step, cap) - t == 10.0)
+for _ in range(20):
+    until = main._stacked_snooze(until, t, step, cap)
+check("however many presses, never more than the cap - the bot must not stop drinking for minutes",
+      until - t == cap)
+check("the cap is at least one full step, whatever snooze is set to",
+      main.POTION_SNOOZE_MAX_SECONDS >= main.POTION_SNOOZE_SECONDS)
+
+#The real function, end to end: what it prints is what the control panel parses for its countdown.
+import contextlib
+import io
+saved = main.potion_snooze_until
+try:
+    main.potion_snooze_until = 0.0
+    printed = io.StringIO()
+    with contextlib.redirect_stdout(printed):
+        for _ in range(3):
+            main._snooze_potions()
+    lines = printed.getvalue().splitlines()
+    n = main.POTION_SNOOZE_SECONDS
+    check(f"the log counts up with each press ({lines})",
+          lines == [f"Potion drinking snoozed for {n * k:.0f}s" for k in (1, 2, 3)])
+finally:
+    main.potion_snooze_until = saved
+
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

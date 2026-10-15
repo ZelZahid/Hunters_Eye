@@ -226,6 +226,7 @@ Code under test: main.py
 | L-115 | A belt that cannot be read falls back to the configured keys | test_potions.py | potions §16 |
 | L-116 | The shipped rules express the owner's policy | test_potions.py | potions §17 |
 | L-117 | The in-play gate actually stops the potion layer in a lobby | test_presence.py | presence §7 |
+| L-118 | Snoozing potions again ADDS time, up to a cap | test_potions.py | **new** |
 
 ### L-2xx  Auto-collect
 
@@ -277,6 +278,14 @@ Code under test: routes/pindle.py, routes/shuttle.py
 | L-406 | The bot test mode's aim: out, back to the start, short landings corrected | test_shuttle.py | **new** |
 | L-407 | The bot test mode's loop, driven through a fake game | test_shuttle.py | **new** |
 
+### L-5xx  A bot session (start, stop, what it reports)
+
+Code under test: main.py
+
+| Card | What it checks | File | Was |
+|---|---|---|---|
+| L-501 | Total Runtime reads as minutes and seconds | test_session.py | **new** |
+
 ## A — Actions
 
 _Mouse and keyboard._
@@ -321,6 +330,7 @@ Code under test: core/user_config.py
 | C-116 | The SHIPPED user_config.txt is sane (not: has particular values) | test_potions.py | potions §10 |
 | C-117 | The password / game-name settings load from user_config.txt | test_next_game.py | next_game §8 |
 | C-118 | The shipped user_config.txt says whether the search runs | test_image_search.py | image_search §3 |
+| C-119 | Editing user_config.txt keeps everything it was not asked to change | test_control_panel.py | **new** |
 
 ### C-2xx  assets/targets.txt
 
@@ -373,3 +383,15 @@ Code under test: tests/
 | Card | What it checks | File | Was |
 |---|---|---|---|
 | T-301 | The test card index lists exactly the cards the tests run | test_card_index.py | **new** |
+
+### T-4xx  The control panel
+
+Code under test: gui.py, core/command_channel.py
+
+| Card | What it checks | File | Was |
+|---|---|---|---|
+| T-401 | The command channel: one word per line, unknown words ignored, errors survived | test_control_panel.py | **new** |
+| T-402 | Starting, commanding, reading and stopping the bot - against a stand-in | test_control_panel.py | **new** |
+| T-403 | The control panel window: settings form, Save, buttons, status | test_control_panel.py | **new** |
+| T-404 | Each button shows the hotkey main.py really binds, in F-key order | test_control_panel.py | **new** |
+| T-405 | The potion snooze counts down in red on its button; the log is readable | test_control_panel.py | **new** |

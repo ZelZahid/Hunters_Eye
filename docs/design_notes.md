@@ -966,6 +966,66 @@ it untestable and useless to a caller with one still image.
 boxes you drew. **That number is measured on the frames it trained on**, so a poor score is a
 *data* problem, not a capacity one — a floor, not a measure of live performance.
 
+### `gui.py` + `core/command_channel.py` — the control panel
+
+`python gui.py` is a window for running the bot without a console: Start / Stop / Restart, the
+hotkey actions as buttons, `user_config.txt` as a form with each setting's own comment shown
+beside it, and the console output as a live log. Added 2026-10-14 as the first step toward the
+GUI product; it drives the existing bot rather than replacing anything.
+
+- **The bot is a child process (`main.py --control`), not a thread of the panel.** Three
+  reasons, in order. *Stability*: a crash in either leaves the other up — and a bot that died
+  with a traceback is exactly when you want a window still showing the log. *Tk*: the overlay
+  is a Tk window that must own its process's main thread (`run_overlay()`), and two Tk event
+  loops in one process is a fight; two processes each own one. *Nothing had to be
+  restructured*: `main.py` already prints everything worth knowing, and its module-level
+  globals (todolist "Later") would have made an in-process start/stop/restart unreliable.
+- **Commands are one word per line on the child's stdin** (`next_game`, `pindle`, `stop`,
+  `snooze_potions`, `panel`, `quit`). Each calls *exactly* what its hotkey calls, so a button
+  and a key cannot drift apart. The replies are the console output the panel already reads —
+  no second protocol to keep in step. `core/command_channel.py` knows no command names; `main.py`
+  hands it the table, the same split as `routes/` getting callables handed in.
+- **A button that acts on the game waits for the game to be in front.** Clicking a button puts
+  the panel in front, and every action refuses a window that is not (`actions_allowed()`);
+  `quit_game()` gives up immediately rather than waiting, so a plain "call `run_next_game()`"
+  would always fail from a button. So `next_game` and `pindle` wait until `anchor_focused()` is
+  not `False`, for at most `CONTROL_FOCUS_WAIT_SECONDS` (30), then are **dropped, not run
+  late** — an action firing minutes after the click that asked for it is a surprise. `None`
+  (no pywin32 / no anchor) runs at once, as the hotkey would. Stop cancels a waiting command.
+- **End of stdin quits the bot.** On Windows the child is started with `CREATE_NO_WINDOW`, so
+  it has no console and no window of its own; if the panel crashed or was killed, a bot that
+  kept running would be invisible and still pressing keys. `End` would still work, but nothing
+  on screen would say so. EOF is the one signal that arrives however the panel died.
+- **Stop escalates:** `quit` + close stdin, then `terminate()` after 5s, then `kill()` after 2s
+  more. Needed because the threads are daemons with no shutdown signal of their own (todolist
+  "Clean shutdown"): a run inside a long wait may not reach a quit check soon.
+- **The output reader never blocks.** If the panel stopped reading, the OS pipe buffer (a few
+  KB) would fill and the bot's next `print()` would block — freezing detection, potions and a
+  fight because a window was slow. Lines go into a bounded queue with `put_nowait`; when full
+  they are dropped and counted, and the log says how many. The log widget keeps the last 5000
+  lines so an all-day session does not grow memory.
+- **Settings are edited as text, never through `configparser.write()`,** which discards every
+  comment — and the comments *are* the documentation a person edits by. `user_config.py`'s
+  `parse_sections()` / `apply_values()` replace only what follows the `=` on the lines that
+  changed, keeping line endings; `save_text()` writes a sibling file and renames it over, so a
+  crash mid-save leaves the old file. Help text comes from the comment directly above a key,
+  else from a definition list in the comments (`#   meter    - which meter...`, how the rule
+  keys are documented), else from the key just above (`click_settle` / `aim_settle` share one).
+- **Validation is `load()` itself** (`user_config.check()` captures its warnings), so the form
+  cannot accept a value the bot would then silently replace with a default. Saving with
+  warnings asks first. A file changed on disk since the form loaded it also asks first, since
+  last write wins.
+- **Potion snoozes stack, and the panel shows the total.** Each press (F6 or the button) adds
+  `snooze` seconds to whatever is left, capped at `max(60, snooze)` - the owner asked for
+  stacking (2026-10-15), the cap is because this is the one switch that stops the bot drinking.
+  The button's red countdown is driven by main.py's own "Potion drinking snoozed for Ns" line,
+  so it follows the hotkey as well as clicks, with no second channel to keep in step.
+- **Button labels are checked against main.py's bindings** (card T-404, by reading main.py's
+  source), so a rebind cannot leave a wrong key on a button. The owner once remembered the
+  potion snooze as F4; it is F6, and the panel shows the truth.
+- **It cannot change a running bot's settings**, by design: `main.py` reads the file once at
+  import. Save says so and Restart is one click.
+
 ### `tools/calibrate_meters.py` — one-time setup + live validation
 
 `python tools/calibrate_meters.py` — countdown so you can switch to the game, screenshot, drag

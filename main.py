@@ -16,6 +16,7 @@ import json
 import threading
 import traceback
 import re
+import sys
 import keyboard
 from collections import Counter, namedtuple
 from pathlib import Path
@@ -29,6 +30,7 @@ from core import presence
 from core import slots
 from core import user_config
 from core import frame_source
+from core import command_channel
 from core.overlay import Overlay
 from routes import pindle
 
@@ -1422,13 +1424,27 @@ POTION_DRINKING_ENABLED = potion_config.enabled
 #_match_needle for why a person would want it off.
 IMAGE_SEARCH_ENABLED = potion_config.image_search
 
+#Each press ADDS another POTION_SNOOZE_SECONDS rather than restarting the clock (owner's request,
+#2026-10-15: three quick presses = 30s), so a longer quiet spell needs no new setting. CAPPED,
+#because this is the one switch that stops the bot drinking: a stuck key or a few absent-minded
+#presses must not leave a character without potions for minutes. It still re-arms by itself.
+POTION_SNOOZE_MAX_SECONDS = max(60.0, POTION_SNOOZE_SECONDS)
 potion_snooze_until = 0.0
+
+
+def _stacked_snooze(until, now, step, cap):
+    """The snooze deadline after one more press: whatever is left, plus `step`, never more than
+    `cap` from now. Pure, so the stacking can be tested without a clock or a keyboard."""
+    return now + min(max(until - now, 0.0) + step, cap)
 
 
 def _snooze_potions():
     global potion_snooze_until
-    potion_snooze_until = time.time() + POTION_SNOOZE_SECONDS
-    print(f"Potion drinking snoozed for {POTION_SNOOZE_SECONDS:.0f}s")
+    now = time.time()
+    potion_snooze_until = _stacked_snooze(potion_snooze_until, now, POTION_SNOOZE_SECONDS,
+                                          POTION_SNOOZE_MAX_SECONDS)
+    #The control panel reads this exact line to show the countdown on its button (gui.py).
+    print(f"Potion drinking snoozed for {potion_snooze_until - now:.0f}s")
 
 
 #--- The potion belt: what is actually in each slot ------------------------------------------------
@@ -1577,7 +1593,8 @@ def run_potion_drinking():
     rules = ", ".join(f"{r.label} <={r.at_or_below:.0%} -> {'/'.join(r.keys)}" for r in POTION_RULES)
     source = "user_config.txt" if potion_config.loaded else "built-in defaults (no user_config.txt)"
     print(f"Potion drinking running from {source}:")
-    print(f"  {rules}   - press 'F6' to snooze it for {POTION_SNOOZE_SECONDS:.0f}s.")
+    print(f"  {rules}   - press 'F6' to snooze it for {POTION_SNOOZE_SECONDS:.0f}s "
+          f"(each press adds {POTION_SNOOZE_SECONDS:.0f}s, up to {POTION_SNOOZE_MAX_SECONDS:.0f}s).")
 
     last_fired = {}       #rule label -> when it last fired, so each rule cools down on its own
     next_key = {}         #rule label -> index into rule.keys, for alternating columns
@@ -2383,7 +2400,25 @@ def run_pindle():
     _run_sequence("pindle", pindle_run)
 
 
+#Set by 'End', by the control panel's Stop (see main's --control), or by the window closing. Module
+#level rather than local to run_overlay() so every way of quitting reaches the same flag.
+quit_requested = threading.Event()
+
 WINDOW_NAME = "Hunters Eye"
+
+
+def format_duration(seconds):
+    """393.4 -> "6m 33s"; 42 -> "42s"; 3725 -> "1h 2m 5s". For people reading a log, not for
+    parsing - nothing reads these back."""
+    total = max(0, int(round(seconds)))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
 FPS_PRINT_INTERVAL_SECONDS = 5.0 #how often to print the FPS line - printing every single frame just floods the console
 
 def run_debug_window():
@@ -2399,8 +2434,12 @@ def run_debug_window():
     #size we set below, instead of being locked to the (tiny, downscaled) captured frame's own pixel size
     cv.namedWindow(WINDOW_NAME, cv.WINDOW_NORMAL)
 
-    while True:
-        screenshot, rectangles = detection_queue.get()
+    while not quit_requested.is_set():
+        try:
+            screenshot, rectangles = detection_queue.get(timeout=0.1)
+        except Empty:
+            cv.waitKey(1)
+            continue
         for (x, y, w, h, color) in rectangles:
             cv.rectangle(screenshot, (x, y), (x + w, y + h), color[::-1], 2) #color is (r,g,b) - cv uses BGR
 
@@ -2428,7 +2467,7 @@ def run_debug_window():
     total_elapsed = t_final - t0
     average_FPS = n_frames / total_elapsed
     print("total # of frames:", n_frames)
-    print(f"Total Runtime: {total_elapsed:.2f}")
+    print(f"Total Runtime: {format_duration(total_elapsed)}")
     print(f"Average FPS: {average_FPS:.2f}")
 
 
@@ -2541,7 +2580,6 @@ def run_overlay():
     overlay = Overlay(screen_size.width, screen_size.height)
     displayed_size = screen_size
 
-    quit_requested = threading.Event()
     #the overlay is click-through and can never take keyboard focus, so quitting needs a
     #global hotkey (same pattern legacy/pindle.py already uses) instead of a window keypress
     keyboard.add_hotkey("end", quit_requested.set)
@@ -2599,12 +2637,94 @@ def run_overlay():
     total_elapsed = time.time() - t0
     average_FPS = n_frames / total_elapsed if total_elapsed > 0 else 0.0
     print("total # of frames:", n_frames)
-    print(f"Total Runtime: {total_elapsed:.2f}")
+    print(f"Total Runtime: {format_duration(total_elapsed)}")
     print(f"Average FPS: {average_FPS:.2f}")
+
+
+#--- Commands from the control panel (gui.py) ----------------------------------------------------
+#`python main.py --control` also takes commands as lines on stdin - see core/command_channel.py.
+#Each one calls exactly what its hotkey calls, so a button and a key can never behave differently.
+#The hotkeys stay registered either way.
+#
+#WHY A BUTTON WAITS FOR THE GAME. Pressing a button puts the control panel in front, and every
+#action here refuses to act on a window that is not in front (actions_allowed) - quit_game() gives
+#up at once rather than wait. So a command that acts on the game is held until the game is in
+#front again, i.e. until the user clicks back into it, for at most CONTROL_FOCUS_WAIT_SECONDS. A
+#command that is still waiting when that runs out is dropped, not run late: by then the user has
+#moved on, and an action firing minutes after the click that asked for it is a surprise.
+CONTROL_FOCUS_WAIT_SECONDS = 30.0
+_control_lock = threading.Lock()
+_control_generation = 0 #bumped by every new waiting command and by "stop" - a waiter that sees it
+                        #change has been replaced or cancelled, and gives up quietly
+
+
+def _cancel_waiting_command():
+    global _control_generation
+    with _control_lock:
+        _control_generation += 1
+
+
+def _when_game_in_front(label, start):
+    """Runs start() once the game window is in front, or drops it after the wait above.
+
+    "In front" is anchor_focused() not saying False - None (no pywin32, no anchor) runs at once,
+    exactly as the hotkey would, which is the same three-valued rule every guard here follows.
+    """
+    global _control_generation
+    if anchor_focused() is not False:
+        start()
+        return
+    with _control_lock:
+        _control_generation += 1
+        generation = _control_generation
+    print(f"{label}: waiting for the game - click into the game window to start "
+          f"(Stop cancels).")
+
+    def waiter():
+        deadline = time.time() + CONTROL_FOCUS_WAIT_SECONDS
+        while time.time() < deadline:
+            with _control_lock:
+                if _control_generation != generation:
+                    print(f"{label}: cancelled before it started.")
+                    return
+            if anchor_focused() is not False:
+                start()
+                return
+            time.sleep(0.1)
+        print(f"{label}: the game was not clicked within {CONTROL_FOCUS_WAIT_SECONDS:.0f}s - "
+              f"not started.")
+
+    threading.Thread(target=waiter, daemon=True).start()
+
+
+def _control_stop():
+    """The panel's Stop run: exactly 'F4', plus dropping a command still waiting for the game."""
+    _cancel_waiting_command()
+    _snooze_and_stop()
+
+
+def _start_command_channel():
+    def closed():
+        #The panel that started this process is gone (closed, or crashed). Nobody is watching
+        #any more, and this process has no console of its own to stop it from - so stop.
+        print("control: the control panel went away - quitting.")
+        quit_requested.set()
+
+    command_channel.listen({
+        "next_game": lambda: _when_game_in_front("next_game", run_next_game),
+        "pindle": lambda: _when_game_in_front("pindle", run_pindle),
+        "stop": _control_stop,
+        "snooze_potions": _snooze_potions,
+        "panel": _toggle_debug_panel,
+        "quit": quit_requested.set,
+    }, on_close=closed)
+    print("control: taking commands from the control panel.")
 
 
 def main():
     print("Starting Hunter's Eye...")
+    if "--control" in sys.argv[1:]:
+        _start_command_channel()
 
     t1 = threading.Thread(target=get_screenshot, daemon=True)
     t2 = threading.Thread(target=detect_objects, daemon=True)
