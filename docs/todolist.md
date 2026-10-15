@@ -28,12 +28,6 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 
 *In order — each depends on the one above it.*
 
-- [ ] **Try the control panel (`python gui.py`) in a real session.** (Added 2026-10-14, owner asked for a GUI.) Built and tested in the cloud against a stand-in bot and against `main.py --control` on Linux, where the overlay falls back to the debug window and the keyboard hooks are unavailable. Never yet run on Windows next to the game. What to look for:
-  - **Start** shows the bot's console output in the Log, and the FPS in the header. Is anything different from `python main.py` (overlay, hotkeys, FPS)?
-  - **Next game / Pindle run** buttons: the log says "waiting for the game", and the action starts when you click back into the game. If it never starts, the focus check is not seeing the game come to the front.
-  - **Stop bot** ends it within a few seconds, and closing the window stops it too (Task Manager should show no leftover `python.exe`).
-  - **Settings**: change one value, Save, then open `user_config.txt` and check only that line changed.
-
 - [ ] **Confirm the cursor hold fixed the first-attempt misses.** (Added 2026-09-14, resolved-in-principle the same day.) Owner reported telekinesis and teleport-then-click missing the first attempt, then diagnosed it themselves: *"it works when I am not doing anything... it only fails first attempt if I'm using my left click and moving around or teleporting"*. That is the answer — every settle was "move the cursor, then sleep", and the player's own mouse drags it off target during the sleep. **A longer settle made it worse, which is why raising `aim_settle` did nothing.** `core/actions.hold_cursor()` now re-asserts the position every 10ms for the length of the settle.
   - the console says which attempt each pickup landed on — "1st try" while moving is the thing to look for
   - if it still misses while moving, the next suspect is the player's held LEFT BUTTON rather than the cursor: a click of ours inside their hold is ambiguous to the game. `BlockInput` would settle it but needs privileges and can strand a machine with no input, so it is a last resort, not a next step.
@@ -171,6 +165,8 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 ---
 
 ## Done
+
+- [x] **2026-10-15 — v0.022, the control panel (`python gui.py`).** Start/stop, the hotkeys as buttons in F-key order, `user_config.txt` as a form, a live log; the bot runs as its own process underneath (`main.py --control`). The owner tried it and asked for: buttons in F-key order, a red countdown of the potion snooze on its button, snoozes that stack (10s per press, capped at 60s), a more readable log font, and Total Runtime as "6m 33s" - all in v0.022. The owner remembered potion snooze as F4; it is **F6** (F4 stops a run and snoozes auto-collect), and the panel keeps the true keys - card T-404 checks every label against main.py's bindings.
 
 - [x] **2026-10-15 — v0.021, bot test mode, confirmed live by the owner.** `tools/teleport_bot.py` teleports out and back over items on its own so a timing test needs nobody at the keyboard (owner's request, 2026-10-14). First live run: 20 of 20 teleports landed, scene seen moving 0.15-0.23s after the key; each landing measured 346px against 324px aimed, a steady overshoot the next leg absorbs. Still open: pairing it with `measure_ocr_latency.py` (`--measure`) once the `ocr-latency` branch merges, and whether `--distance` 0.3 keeps the items on screen in every area.
 

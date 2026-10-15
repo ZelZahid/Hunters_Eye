@@ -1015,6 +1015,14 @@ GUI product; it drives the existing bot rather than replacing anything.
   cannot accept a value the bot would then silently replace with a default. Saving with
   warnings asks first. A file changed on disk since the form loaded it also asks first, since
   last write wins.
+- **Potion snoozes stack, and the panel shows the total.** Each press (F6 or the button) adds
+  `snooze` seconds to whatever is left, capped at `max(60, snooze)` - the owner asked for
+  stacking (2026-10-15), the cap is because this is the one switch that stops the bot drinking.
+  The button's red countdown is driven by main.py's own "Potion drinking snoozed for Ns" line,
+  so it follows the hotkey as well as clicks, with no second channel to keep in step.
+- **Button labels are checked against main.py's bindings** (card T-404, by reading main.py's
+  source), so a rebind cannot leave a wrong key on a button. The owner once remembered the
+  potion snooze as F4; it is F6, and the panel shows the truth.
 - **It cannot change a running bot's settings**, by design: `main.py` reads the file once at
   import. Save says so and Restart is one click.
 

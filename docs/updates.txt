@@ -11,6 +11,11 @@ that tag rather than guessing from commit history - that's what these are for.
 ------------------------------------------------------------------------------
 AT A GLANCE - newest first. Full entries are below, oldest first.
 ------------------------------------------------------------------------------
+0.022  A CONTROL PANEL (python gui.py): start/stop the bot, the hotkeys as
+       buttons, user_config.txt as a form with each setting's own help, and a
+       live log. The bot runs as its own process underneath; every hotkey
+       still works. Potion snoozes now stack (10s per press, up to 60s) and
+       Total Runtime reads "6m 33s".
 0.021  Bot test mode (tools/teleport_bot.py): teleports out and back over items
        on its own so timing tests run with nobody at the keyboard. Every
        teleport is checked by how far the scene slid. First live run: 20 of 20
@@ -1506,3 +1511,39 @@ screen: the player's own walking showed as "landed", standing still as
 
 New: routes/shuttle.py, tools/teleport_bot.py, tests/test_shuttle.py (cards
 V-609, L-406, L-407). No new dependencies.
+
+0.022 - 2026-10-15
+------------------------------------------------------------------------------
+A CONTROL PANEL. `python gui.py` (or `pythonw gui.py` on Windows, no console)
+opens a window with Start / Stop / Restart, the bot's state and FPS, a button
+for each hotkey in F-key order (F3 next game, F4 stop run, F5 debug panel,
+F6 snooze potions, F7 Pindle run), user_config.txt as a form with each
+setting's own comment shown as help, and the console output as a live log.
+`python main.py` and every hotkey are unchanged; don't run both at once.
+
+THE BOT RUNS AS ITS OWN PROCESS (`main.py --control`), never inside the window:
+a crash in either leaves the other up, and the overlay's Tk keeps its own main
+thread. Buttons send one word down the bot's stdin (core/command_channel.py),
+each calling exactly what its hotkey calls; card T-404 checks every button's
+label against the key main.py actually binds. Next game / Pindle run wait for
+the game to be in front again, since quit_game() gives up at once otherwise.
+End of stdin quits the bot, so a panel that dies cannot leave an invisible bot
+pressing keys. The panel's reader never blocks, so a slow window cannot freeze
+the bot on a print(). Stop escalates to terminate after 5s, kill after 2s more.
+
+SETTINGS ARE SAVED AS TEXT, changed lines only, so every comment survives
+(configparser.write() drops them all), and are checked by user_config.load()
+itself before saving - the form cannot accept a value the bot would silently
+replace with a default. A file edited by hand since the form loaded it asks
+before being overwritten. A running bot needs Restart to pick them up.
+
+THE OWNER'S FIRST-LOOK CHANGES: potion snoozes STACK - each press of F6 or the
+button adds 10s (three presses = 30s), capped at 60s because this is the one
+switch that stops the bot drinking; the log says the total and the button
+counts it down in red. The log uses Consolas (Menlo on macOS) instead of
+Courier. Total Runtime prints as "6m 33s" instead of "393.40".
+
+New: gui.py, core/command_channel.py, tests/test_control_panel.py (cards
+T-401..T-405, C-119), tests/test_session.py (L-501); test_potions.py L-118.
+No new pip dependencies (tkinter is standard library; some Linux distributions
+ship it as python3-tk).
