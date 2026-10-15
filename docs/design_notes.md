@@ -388,6 +388,27 @@ to that list if the wording changes. (This paragraph used to make that check in 
 prose is what failed: a cutoff change in another file falsified it and nothing re-ran it.)
 The plate also occludes what is behind it (`PANEL_TOP_FRACTION` moves it).
 
+**Wording alone stopped being enough the day the panel showed an item's name** (2026-10-15).
+The ITEMS section shows what auto-collect is going after, and an item's name matches its own
+target by definition, so a list of fixed strings cannot cover it; nor can it cover a route's
+log line. So OCR now also ignores anything centred inside the panel's own rectangle, the same
+positional filter as the inventory and stash: `draw_panel` records `panel_rect`,
+`run_overlay()` publishes it as `debug_panel_screen_rect` (the union of the last two plates,
+because a shrinking plate's old text can still be in a capture taken a moment before the
+compositor caught up), and `_outside_open_panels()` drops matches inside it, silently. V-405
+still lists every fixed word: belt and braces, and it is what protects the panel while F5 is
+off and back on between scans. Cards T-508/T-509.
+
+**The panel is a list of sections** (`PANEL_SECTIONS` in `main.py`): GAME STATE first (its
+title is the panel's title), then BOT (auto-collect / potions on, snoozed or paused; the last
+scripted run and its state; the run's last log line, wrapped onto two rows) and ITEMS (the
+current target, how many to-collect items are seen, what the last scan ignored on an open
+panel). A section is one function returning rows; a new value is one more function in the
+list. **The rule each one keeps: a row changes only when something happens** - whole seconds,
+state words, no FPS or timers - because the panel redraws only on change and every redraw is
+paid by the game (EH#38). A section that raises shows one red row instead of taking the
+overlay loop down.
+
 Because the overlay is click-through it can never hold keyboard focus, so quitting uses a
 **global hotkey** (`keyboard`, bound to `'End'` — not a letter key, which gets pressed
 constantly during real gameplay).

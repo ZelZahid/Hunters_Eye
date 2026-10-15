@@ -395,3 +395,19 @@ Code under test: gui.py, core/command_channel.py
 | T-403 | The control panel window: settings form, Save, buttons, status | test_control_panel.py | **new** |
 | T-404 | Each button shows the hotkey main.py really binds, in F-key order | test_control_panel.py | **new** |
 | T-405 | The potion snooze counts down in red on its button; the log is readable | test_control_panel.py | **new** |
+
+### T-5xx  The F5 panel's contents
+
+Code under test: main.py
+
+| Card | What it checks | File | Was |
+|---|---|---|---|
+| T-501 | Every section draws rows the overlay can draw, in every state | test_debug_panel.py | **new** |
+| T-502 | A row only changes when something happens - never on its own | test_debug_panel.py | **new** |
+| T-503 | A snooze counts down in whole seconds and re-arms by itself | test_debug_panel.py | **new** |
+| T-504 | A run's last step outlives the run; the next run starts clean | test_debug_panel.py | **new** |
+| T-505 | A long step wraps onto two rows instead of stretching the panel across the game | test_debug_panel.py | **new** |
+| T-506 | A section that crashes costs one row, not the panel | test_debug_panel.py | **new** |
+| T-507 | Adding a value to the panel is one function in PANEL_SECTIONS | test_debug_panel.py | **new** |
+| T-508 | OCR never reads the debug panel as items | test_debug_panel.py | **new** |
+| T-509 | A shrinking panel stays masked where its old text may still be on screen | test_debug_panel.py | **new** |

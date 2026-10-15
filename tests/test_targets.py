@@ -384,6 +384,14 @@ PANEL_TEXT = [
     "GAME STATE  NOT CALIBRATED", "GAME STATE  STALE 4s",
     "RECALIBRATE", "was 1280x800", "now 1920x1080", "readings not trustworthy",
     "run calibrate_meters.py", "0%", "58%", "100%",
+    #The BOT and ITEMS sections (main.py, _bot_section / _items_section). The item NAME the ITEMS
+    #section shows and a route's log line cannot be listed - those are masked positionally, card
+    #T-508 - so only the fixed words are here.
+    "BOT", "collect", "potions", "on", "off", "snoozed 7s", "snoozed 30s",
+    "run", "idle", "pindle running", "pindle done", "pindle failed", "pindle stopped",
+    "pindle error", "next game running", "quit done", "step", "walk", "fight",
+    "ITEMS", "target", "none", "to collect", "3 seen", "on a panel",
+    "2 ignored (inventory)", "1 ignored (inventory, stash)", "error: KeyError",
 ]
 
 
