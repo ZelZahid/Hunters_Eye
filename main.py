@@ -12,6 +12,7 @@ import mss
 import numpy as np
 import time
 import math
+import textwrap
 import json
 import threading
 import traceback
@@ -277,20 +278,57 @@ def _panel_keep_out_px(panel, frame_shape):
     return int(fx * w), int(fy * h), int((fx + fw) * w), int((fy + fh) * h)
 
 
+#Where the F5 debug panel was last drawn, (x0, y0, x1, y1) in SCREEN pixels, or None while it is
+#hidden. Set by run_overlay() on the main thread, read by the OCR thread - a single tuple
+#assignment, so a reader always sees a whole rectangle. See _outside_open_panels() for why.
+debug_panel_screen_rect = None
+#What the last OCR scan dropped for being on an open UI panel: (count, panel names). Written by
+#the OCR thread, read by the debug panel's ITEMS section. Same single-assignment pattern.
+last_panel_filter = (0, ())
+
+
+def _screen_rect_to_frame_px(rect, frame_shape):
+    """(x0, y0, x1, y1) screen pixels -> the same rectangle in this frame's own pixels."""
+    scale = frame_shape[1] / CAPTURE_RECT[2]
+    x0, y0, x1, y1 = rect
+    return ((x0 - CAPTURE_RECT[0]) * scale, (y0 - CAPTURE_RECT[1]) * scale,
+            (x1 - CAPTURE_RECT[0]) * scale, (y1 - CAPTURE_RECT[1]) * scale)
+
+
 def _outside_open_panels(matches, frame_gray):
     """`matches` with anything drawn inside a currently-OPEN UI panel removed.
 
     A match is judged by its CENTRE, which is what auto-collect would click. A tooltip that
     straddles a panel's edge is therefore kept or dropped by where the bulk of it is, which is the
     right answer for both - and in the measured cases the tooltip sits well inside.
+
+    OUR OWN DEBUG PANEL IS ONE OF THESE PANELS. The overlay is composited into every capture, so
+    whatever it draws is read by OCR like any label on the ground (EH#49). That used to be policed
+    by wording alone - card V-405 lists every fixed string the panel can show - but the ITEMS
+    section shows the NAME of the item being collected, and an item's name matches its own target
+    by definition. So the panel's area is masked positionally, exactly like the inventory: while
+    it is drawn, nothing inside it is an item. Silently, unlike the game's panels - it would
+    otherwise announce itself on every scan for as long as the panel is up.
     """
+    global last_panel_filter
+    if not matches:
+        last_panel_filter = (0, ())
+        return matches
+    debug_rect = debug_panel_screen_rect
+    if debug_rect is not None:
+        x0, y0, x1, y1 = _screen_rect_to_frame_px(debug_rect, frame_gray.shape)
+        matches = [m for m in matches
+                   if not (x0 <= m[0] + m[2] // 2 <= x1 and y0 <= m[1] + m[3] // 2 <= y1)]
     if not matches or not ui_panels:
+        last_panel_filter = (0, ())
         return matches
     boxes = [(panel.name, _panel_keep_out_px(panel, frame_gray.shape))
              for panel in ui_panels if _panel_open(panel, frame_gray) is True]
     if not boxes:
+        last_panel_filter = (0, ())
         return matches
     kept = []
+    dropped_on = []
     for match in matches:
         mx, my, mw, mh = match[:4]
         cx, cy = mx + mw // 2, my + mh // 2
@@ -298,8 +336,11 @@ def _outside_open_panels(matches, frame_gray):
                       if x0 <= cx <= x1 and y0 <= cy <= y1), None)
         if where is not None:
             print(f"Ignoring '{match[4]}' - it is in the open {where}, not on the ground")
+            if where not in dropped_on:
+                dropped_on.append(where)
             continue
         kept.append(match)
+    last_panel_filter = (len(matches) - len(kept), tuple(dropped_on))
     return kept
 
 
@@ -885,6 +926,9 @@ SNOOZE_SECONDS = 10.0 #'F4' suppresses auto-collect for this long, then it re-ar
 ITEM_POSITION_MATCH_RADIUS = 200
 
 snooze_until = 0.0 #module-level; set by the 'F4' hotkey callback, read by run_auto_collect()
+#The item auto-collect is going after right now, or None between attempts. Display only - the F5
+#panel's ITEMS section reads it. Written by run_auto_collect(), one assignment at a time.
+collect_target = None
 
 
 def _snooze_auto_collect():
@@ -1226,7 +1270,7 @@ def run_auto_collect():
     keyboard.add_hotkey('f4', _snooze_and_stop)
     print(f"Auto-collect running - press 'F4' anytime to snooze it for {SNOOZE_SECONDS:.0f}s "
           f"and stop a running route.")
-    global collect_actions, default_collect_act
+    global collect_actions, default_collect_act, collect_target
     #Rebound here, not at import, because user_config.txt is loaded further down this file. Every
     #timing a PERSON is expected to tune lives in that file; the constants in core/actions.py are
     #only the fallback for when it is missing.
@@ -1250,6 +1294,7 @@ def run_auto_collect():
     was_blocked = False  #so the console says it once per transition, not once per poll tick
 
     while True:
+        collect_target = None
         #Do not drive the mouse at screen coordinates when the game is not the window those
         #coordinates now belong to - the clicks would land in whatever is in front of it. This is
         #a hard stop rather than a warning: unlike a wrong meter reading, a stray click is already
@@ -1288,6 +1333,7 @@ def run_auto_collect():
 
         cursor_x, cursor_y = pyautogui.position()
         target_name, tx, ty, tw, th = _pick_target(candidates, cursor_x, cursor_y)
+        collect_target = target_name
         last_known = {"x": tx + tw // 2, "y": ty + th // 2}
         collect_act, collect_label = _collect_action(target_name)
         print(f"Auto-collect: attempting '{target_name}' at "
@@ -1668,6 +1714,37 @@ _sequence_lock = threading.Lock()
 #deliberately do NOT watch it: those are chains of steps that each assume the one before happened,
 #so stopping halfway (Esc pressed, menu open, nothing clicked) leaves a worse state than finishing.
 sequence_cancel = threading.Event()
+#WHAT THE SEQUENCES ARE DOING, for the F5 panel's BOT section. Display only: nothing decides
+#anything from these. run_status is (label, state) - state one of "running", "done", "failed",
+#"stopped" (F4) or "error" - or None before the first sequence. run_step is the last line the
+#sequence logged. Both deliberately OUTLIVE the run: a run that stopped is exactly when the reason
+#it stopped is worth reading, and it is gone from the console by the time anyone looks.
+run_status = None
+run_step = None
+
+
+def _run_started(label):
+    global run_status, run_step
+    run_step = None
+    run_status = (label, "running")
+
+
+def _run_ended(label, result, error=False, cancelled=False):
+    global run_status
+    if error:
+        state = "error"
+    elif cancelled:
+        state = "stopped"
+    else:
+        state = "done" if result is True else "failed"
+    run_status = (label, state)
+
+
+def _run_log(message):
+    """A route's log line: printed exactly as before, and kept as the panel's current step."""
+    global run_step
+    print(message)
+    run_step = message
 
 
 #Characters a game name may contain. Anything else OCR produced is a misread, not a name - and a
@@ -2293,14 +2370,16 @@ def run_next_game():
         return
 
     def worker():
+        _run_started("next game")
         try:
-            next_game()
+            _run_ended("next game", next_game())
         except Exception:
             #A scripted sequence dying quietly is the worst outcome: the hotkey appears to do
             #nothing and there is nothing to go on. Print it and carry on - the rest of the
             #pipeline is unaffected by this thread failing.
             traceback.print_exc()
             print("next_game: stopped by the error above.")
+            _run_ended("next game", None, error=True)
         finally:
             _sequence_lock.release()
 
@@ -2319,11 +2398,13 @@ def run_quit_game():
         return
 
     def worker():
+        _run_started("quit")
         try:
-            quit_game()
+            _run_ended("quit", quit_game())
         except Exception:
             traceback.print_exc()
             print("quit_game: stopped by the error above.")
+            _run_ended("quit", None, error=True)
         finally:
             _sequence_lock.release()
 
@@ -2368,7 +2449,7 @@ def pindle_run():
     with mss.mss() as sct:
         return pindle.run(grab=lambda: _grab_client(sct), can_act=actions_allowed,
                           in_play=in_play, health=_current_health, bail=quit_game,
-                          cancelled=sequence_cancel.is_set)
+                          log=_run_log, cancelled=sequence_cancel.is_set)
 
 
 def _run_sequence(label, sequence):
@@ -2384,11 +2465,14 @@ def _run_sequence(label, sequence):
     sequence_cancel.clear()
 
     def worker():
+        _run_started(label)
         try:
-            sequence()
+            result = sequence()
+            _run_ended(label, result, cancelled=sequence_cancel.is_set())
         except Exception:
             traceback.print_exc()
             print(f"{label}: stopped by the error above.")
+            _run_ended(label, None, error=True)
         finally:
             _sequence_lock.release()
 
@@ -2504,13 +2588,11 @@ def _value_color(value):
     return (60, 230, 90)
 
 
-def _debug_panel():
-    """Returns (title, rows) for Overlay.draw_panel(), or (None, None) when the panel is off.
+def _game_state_panel():
+    """(title, rows) for the GAME STATE part of the panel: the meters, or why they cannot be read.
 
     Builds one row per meter actually present in meters.json rather than hardcoding health and
     mana, so calibrating a third meter later makes it show up here with no code change."""
-    if not debug_panel_visible:
-        return None, None
     if not meters:
         return "GAME STATE", [("no meters", "run calibrate_meters.py", None, DEBUG_PANEL_BAD_COLOR)]
     if meter_anchor and anchor_rect() is None:
@@ -2572,6 +2654,163 @@ def _debug_panel():
     return title, rows
 
 
+#--- The panel's other sections -------------------------------------------------------------------
+#ONE FUNCTION PER SECTION, AND A LIST OF THEM. Each takes `now` and returns its rows - the same
+#(label, value_text, fraction_or_None, (r, g, b)) shape Overlay.draw_panel() draws - or [] when it
+#has nothing to say. Adding a value to the panel later is writing one function and adding it to
+#PANEL_SECTIONS; nothing else, and nothing in core/overlay.py, changes.
+#
+#THE COST RULE EVERY SECTION MUST KEEP. The panel is rebuilt on every overlay loop but only
+#REDRAWN when its rows change (at most PANEL_REDRAW_HZ, 10/s), and a redraw lands on the GAME's
+#frame time, not ours (EH#38). So a row may only change when something actually happens: whole
+#seconds, never fractions; a state word, never a timer that ticks on its own; no FPS. Building the
+#rows is a few attribute reads - nothing here captures, locks for long, or allocates per frame
+#beyond the row tuples themselves.
+#
+#AND EVERYTHING DRAWN IS READ BY OCR (EH#49). A fixed word goes in card V-405's list. Text that
+#cannot be listed - an item's name, a route's log line - is safe only because OCR ignores anything
+#inside the panel's own rectangle (see _outside_open_panels()).
+PANEL_HEADER_COLOR = (170, 170, 170)  #same grey as the overlay's title
+PANEL_ON_COLOR = (60, 230, 90)
+PANEL_WAIT_COLOR = (255, 200, 0)
+PANEL_IDLE_COLOR = (150, 150, 150)
+PANEL_LABEL_TEXT_COLOR = (220, 220, 220)  #plain text with no state to colour it by
+#A route's log line can be a whole sentence, and the plate grows to fit whatever it is given, so
+#one long line would stretch it across the game. Wrapped onto at most this many rows of this many
+#characters instead - the useful part ("best match 0.41") is usually at the END, so cutting it
+#short would keep the part that does not matter.
+PANEL_STEP_LINE_CHARS = 30
+PANEL_STEP_MAX_LINES = 2
+
+
+def _panel_header(name):
+    return (name, "", None, PANEL_HEADER_COLOR)
+
+
+def _snooze_text(until, now):
+    """("snoozed 7s", amber) while a snooze runs, else None. Whole seconds, rounded UP, so the
+    row changes once a second and never reads "snoozed 0s" while still snoozed."""
+    left = until - now
+    if left <= 0:
+        return None
+    return f"snoozed {math.ceil(left)}s", PANEL_WAIT_COLOR
+
+
+def _clip(text, limit=PANEL_STEP_LINE_CHARS):
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+def _step_rows(step):
+    """A sequence's last log line as panel rows. "walk: arrived." becomes ("walk", "arrived.") -
+    the routes all prefix their lines with what is speaking, which makes a natural label."""
+    label, sep, text = step.partition(": ")
+    if not sep or not label or " " in label or len(label) > 8:
+        label, text = "step", step
+    lines = textwrap.wrap(text, PANEL_STEP_LINE_CHARS) or [""]
+    if len(lines) > PANEL_STEP_MAX_LINES:
+        lines = lines[:PANEL_STEP_MAX_LINES]
+        lines[-1] = _clip(lines[-1] + " ...", PANEL_STEP_LINE_CHARS)
+    return [(label if i == 0 else "", line, None, PANEL_LABEL_TEXT_COLOR)
+            for i, line in enumerate(lines)]
+
+
+_RUN_STATE_COLORS = {"running": PANEL_ON_COLOR, "done": PANEL_ON_COLOR,
+                     "failed": DEBUG_PANEL_BAD_COLOR, "error": DEBUG_PANEL_BAD_COLOR,
+                     "stopped": PANEL_WAIT_COLOR}
+
+
+def _bot_section(now):
+    """Is each part of the bot on, snoozed, paused - and what is the scripted run doing."""
+    allowed = actions_allowed()
+
+    def switch(snooze_until_, enabled=True):
+        if not enabled:
+            return "off", PANEL_IDLE_COLOR
+        if not allowed:
+            #The guards say no (not focused, not in play). GAME STATE already says which.
+            return "paused", DEBUG_PANEL_BAD_COLOR
+        return _snooze_text(snooze_until_, now) or ("on", PANEL_ON_COLOR)
+
+    collect_text, collect_color = switch(snooze_until)
+    potion_text, potion_color = switch(potion_snooze_until, POTION_DRINKING_ENABLED)
+    rows = [_panel_header("BOT"),
+            ("collect", collect_text, None, collect_color),
+            ("potions", potion_text, None, potion_color)]
+    status = run_status
+    if status is None:
+        rows.append(("run", "idle", None, PANEL_IDLE_COLOR))
+    else:
+        label, state = status
+        rows.append(("run", f"{label} {state}", None, _RUN_STATE_COLORS.get(state, PANEL_IDLE_COLOR)))
+    step = run_step
+    if step:
+        rows.extend(_step_rows(step))
+    return rows
+
+
+def _items_section(now):
+    """What auto-collect can see and what it is going after."""
+    with text_tracks_lock:
+        seen = sum(1 for track in shared_text_tracks if track[5])
+    target = collect_target
+    dropped, where = last_panel_filter
+    rows = [_panel_header("ITEMS"),
+            ("target", _clip(target) if target else "none",
+             None, PANEL_ON_COLOR if target else PANEL_IDLE_COLOR),
+            ("to collect", f"{seen} seen", None, PANEL_ON_COLOR if seen else PANEL_IDLE_COLOR)]
+    if dropped:
+        rows.append(("on a panel", f"{dropped} ignored ({', '.join(where)})", None, PANEL_WAIT_COLOR))
+    else:
+        rows.append(("on a panel", "none", None, PANEL_IDLE_COLOR))
+    return rows
+
+
+PANEL_SECTIONS = [_bot_section, _items_section]
+
+
+def _debug_panel(now=None):
+    """Returns (title, rows) for Overlay.draw_panel(), or (None, None) when the panel is off.
+
+    GAME STATE first - its title is the panel's title, because "not focused" or "stale" is the
+    first thing to know - then every section in PANEL_SECTIONS, in order. A section that raises is
+    skipped rather than taking the whole panel (and the overlay loop) down with it: this is a
+    display, and nothing on it is worth a crash."""
+    if not debug_panel_visible:
+        return None, None
+    now = time.time() if now is None else now
+    title, rows = _game_state_panel()
+    rows = list(rows)
+    for section in PANEL_SECTIONS:
+        try:
+            rows.extend(section(now))
+        except Exception as exc:                      # noqa: BLE001 - display only, see above
+            rows.append((getattr(section, "__name__", "section").strip("_")[:12],
+                         f"error: {type(exc).__name__}", None, DEBUG_PANEL_BAD_COLOR))
+    return title, rows
+
+
+_panel_rects = (None, None) #(latest, the one before) - see _publish_panel_rect()
+
+
+def _publish_panel_rect(rect):
+    """Tells the OCR thread where the debug panel is, so it never reads the panel as items.
+
+    THE UNION OF THE LAST TWO PLATES, not just the latest. A capture can be taken a moment before
+    the compositor shows the new plate, and when the plate SHRINKS (a long step line replaced by a
+    short one) the old, wider text is still on screen outside the new rectangle for that moment.
+    Hidden is still hidden at once: F5 off means nothing is drawn, so there is nothing to mask."""
+    global _panel_rects, debug_panel_screen_rect
+    if rect == _panel_rects[0]:
+        return
+    _panel_rects = (rect, _panel_rects[0])
+    if rect is None:
+        debug_panel_screen_rect = None
+        return
+    rects = [r for r in _panel_rects if r is not None]
+    debug_panel_screen_rect = (min(r[0] for r in rects), min(r[1] for r in rects),
+                               max(r[2] for r in rects), max(r[3] for r in rects))
+
+
 def run_overlay():
     """Draws detection boxes as a transparent, click-through layer directly on top of the
     game - no mirrored window. Runs on the main thread: Tk's event loop must own whichever
@@ -2611,6 +2850,7 @@ def run_overlay():
         if rect is not None:
             panel_origin = (rect[0] + PANEL_INSET_X, rect[1] + int(rect[3] * PANEL_INSET_Y_FRACTION))
         overlay.draw_panel(*_debug_panel(), origin=panel_origin)
+        _publish_panel_rect(overlay.panel_rect)
 
         try:
             _, rectangles = detection_queue.get(timeout=0.1)

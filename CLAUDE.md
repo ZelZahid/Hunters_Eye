@@ -112,7 +112,7 @@ and can never hold keyboard focus:
 | `End` | quit (`q` in the fallback debug window); prints final average FPS |
 | `F3` | next game: quit → read the lobby's game name → increment → create |
 | `F4` | snooze auto-collect 10s, **and stop a running F7 run outright** |
-| `F5` | toggle the game-state debug panel (display-only; cannot disturb detection) |
+| `F5` | toggle the debug panel: meters, what the bot is doing, what it is collecting (display-only) |
 | `F6` | snooze potion drinking 10s; each press adds 10s more, capped at 60s |
 | `F7` | the Pindleskin run from a fresh game in Harrogath (`routes/pindle.py`) |
 
@@ -207,7 +207,11 @@ Game-agnostic. `act_until_gone(get_position, act)` separates *what* from *how lo
 - `TRANSPARENT_COLOR` is `#010203` on purpose; it is coupled to the empty
   `PANEL_TEXT_OUTLINE_OFFSETS`. Keep the stippled panel plate, sized by measured font metrics.
 - **The overlay is in our own captures**: card V-405 asserts no panel string matches
-  a target (EH#49) — extend it when wording changes.
+  a target (EH#49) — extend it when wording changes — and OCR ignores the panel's own
+  rectangle (`debug_panel_screen_rect`), which is what makes item names and route steps safe
+  to show.
+- Panel content is a list of sections (`PANEL_SECTIONS` in `main.py`): one function each.
+  **A row may only change when something happens** — whole seconds, state words, no FPS.
 
 ### `core/text_detection.py` — OCR
 - OCR beats templates above ~15-20 names (constant vs linear cost). **One OCR call per frame.**
@@ -343,6 +347,7 @@ tests/                   # numbered test cards - none of them need the game runn
   test_auto_collect.py   #   teleport decision, item ranking, retry cadences, UI panel filter
   test_card_index.py     #   docs/test_cards.md lists exactly the cards the tests run
   test_control_panel.py  #   gui.py, its command channel, and editing user_config.txt
+  test_debug_panel.py    #   the F5 panel's BOT/ITEMS sections, and OCR ignoring the panel
   test_detector_contract.py # every detector: no crash on junk frames, None = cannot tell,
                          #   works on a document page (image search, OCR)
   test_frame_source.py   #   capture: DXGI -> mss fallback, re-served frames, window geometry

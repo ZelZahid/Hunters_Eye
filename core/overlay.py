@@ -182,6 +182,10 @@ class Overlay:
         #different costs.
         self._last_box_draw = 0.0
         self._last_panel_draw = 0.0
+        #(x0, y0, x1, y1) in screen pixels of the plate as last drawn, or None while hidden. The
+        #overlay is composited into every screen capture, so a caller that reads text off the
+        #screen needs to know where its own panel is - see draw_panel().
+        self.panel_rect = None
         self._fonts = {}  #font spec -> tkfont.Font, for measuring text (see _text_width)
 
         #WS_EX_TRANSPARENT makes the ENTIRE window click-through, not just the
@@ -295,6 +299,7 @@ class Overlay:
         self._last_panel = (title, rows, origin)
         self.canvas.delete("panel")
         if title is None:
+            self.panel_rect = None
             return
 
         if origin is None:
@@ -317,6 +322,7 @@ class Overlay:
             width = max(width,
                         self._text_width(label, PANEL_FONT),
                         PANEL_VALUE_OFFSET + self._text_width(value_text, PANEL_FONT))
+        self.panel_rect = (x - PANEL_PAD, top - PANEL_PAD, x + width + PANEL_PAD, top + height + PANEL_PAD)
         self.canvas.create_rectangle(x - PANEL_PAD, top - PANEL_PAD,
                                       x + width + PANEL_PAD, top + height + PANEL_PAD,
                                       fill=_hex(PANEL_BG_COLOR), outline=_hex(PANEL_BORDER_COLOR),
