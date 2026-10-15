@@ -258,12 +258,10 @@ def main():
             print(f"teleporting with {key or '(no key set)'}, {settings.distance:.0f}px out and "
                   f"back, every {settings.interval}s, for up to {settings.seconds:.0f}s"
                   f"{f' or {settings.count} teleports' if settings.count else ''}.")
-            #In a dry run nothing moves, so every teleport reads as "nothing moved" - which must
-            #not stop the run after four, since exercising the guards is the point of a dry run.
             outcome = shuttle.run(sensors.look, geometry, pipeline.actions_allowed, sensors.health,
                                   sensors.mana, teleport, settings, on_leg=on_leg,
                                   cancelled=stop.is_set,
-                                  max_misses=None if args.dry_run else shuttle.MAX_MISSES_IN_A_ROW)
+                                  dry_run=args.dry_run)
     except KeyboardInterrupt:
         print("\nStopped (Ctrl+C).")
     finally:

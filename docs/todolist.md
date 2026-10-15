@@ -28,11 +28,6 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 
 *In order — each depends on the one above it.*
 
-- [ ] **Try the bot test mode in the game.** (Added 2026-10-14, owner's request: teleport back and forth over items by itself so timing tests run with nobody at the keyboard.) `python tools/teleport_bot.py --dry-run` first (points nowhere, presses nothing, shows the guards), then for real next to some items out of town. Tested only against real frames and a fake game - what is NOT yet seen live:
-  - does the scene-shift check see real teleports land? The console prints `landed` / `nothing moved` / `could not tell` per teleport; lots of `could not tell` means `MIN_SHIFT_RESPONSE` (0.2) is too strict for live frames
-  - `--distance` 0.3 of the window height is a guess; too far and the items leave the screen, which leaves the latency tool nothing to time
-  - `--measure` needs `tools/measure_ocr_latency.py`, which is on the `ocr-latency` branch until that merges
-
 - [ ] **Confirm the cursor hold fixed the first-attempt misses.** (Added 2026-09-14, resolved-in-principle the same day.) Owner reported telekinesis and teleport-then-click missing the first attempt, then diagnosed it themselves: *"it works when I am not doing anything... it only fails first attempt if I'm using my left click and moving around or teleporting"*. That is the answer — every settle was "move the cursor, then sleep", and the player's own mouse drags it off target during the sleep. **A longer settle made it worse, which is why raising `aim_settle` did nothing.** `core/actions.hold_cursor()` now re-asserts the position every 10ms for the length of the settle.
   - the console says which attempt each pickup landed on — "1st try" while moving is the thing to look for
   - if it still misses while moving, the next suspect is the player's held LEFT BUTTON rather than the cursor: a click of ours inside their hold is ambiguous to the game. `BlockInput` would settle it but needs privileges and can strand a machine with no input, so it is a last resort, not a next step.
@@ -170,6 +165,8 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 ---
 
 ## Done
+
+- [x] **2026-10-15 — v0.021, bot test mode, confirmed live by the owner.** `tools/teleport_bot.py` teleports out and back over items on its own so a timing test needs nobody at the keyboard (owner's request, 2026-10-14). First live run: 20 of 20 teleports landed, scene seen moving 0.15-0.23s after the key; each landing measured 346px against 324px aimed, a steady overshoot the next leg absorbs. Still open: pairing it with `measure_ocr_latency.py` (`--measure`) once the `ocr-latency` branch merges, and whether `--distance` 0.3 keeps the items on screen in every area.
 
 - [x] **2026-10-14 — every test is a numbered card, and CI runs them on every pull request.** The owner asked for numbered, categorized test cards with a doc listing them, and asked when tests should run. `docs/test_cards.md` lists all of them (`V-104` = Vision, area 1, card 04; L logic, A actions, C config, T tools); card T-301 fails if the doc and the tests disagree, so the list cannot drift. `python tests/run_all.py` runs every file and reports failures by card ID. **When: on every pull request and every push to `main`**, via GitHub Actions on Windows (`.github/workflows/tests.yml`) with Tesseract installed; a pull request merges only when green. Not on every local commit - a branch commit is a draft. New vision cards for code that had none: `core/frame_source.py` (V-801..V-805: DXGI -> mss fallback, mid-session degradation, the static-screen re-serve, window geometry) and a cross-detector contract (V-901..V-905: no detector crashes on junk frames, `None` is "cannot tell" everywhere, image search and OCR work on a plain document page). A missing committed fixture now fails instead of skipping (`test_next_game.py`, `test_presence.py`, `test_quit_game.py` had three quiet skips left). Two findings parked rather than fixed: image-search phantom matches on a tiny frame, and the belt reader on noise.
 

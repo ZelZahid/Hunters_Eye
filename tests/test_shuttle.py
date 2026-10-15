@@ -186,12 +186,12 @@ class FakeGame:
     def run(self, **overrides):
         values = dict(distance=300, interval=2.5, seconds=60, count=6, stop_below=0.35,
                       mana_floor=0.10, scale=SCALE)
-        max_misses = overrides.pop("max_misses", shuttle.MAX_MISSES_IN_A_ROW)
+        dry_run = overrides.pop("dry_run", False)
         values.update(overrides)
         self.log = []
         return shuttle.run(self.look, self.geometry, lambda: self.allowed,
                            lambda: self.health_value, lambda: self.mana_value, self.teleport,
-                           shuttle.Settings(**values), log=self.log.append, max_misses=max_misses,
+                           shuttle.Settings(**values), log=self.log.append, dry_run=dry_run,
                            clock=self.clock, sleep=self.sleep, cancelled=lambda: self.stop)
 
 
@@ -224,9 +224,12 @@ check(f"a key that does nothing stops the run after {shuttle.MAX_MISSES_IN_A_ROW
 check("...and the misses are what it says stopped it",
       any("did nothing" in line for line in game.log))
 game = FakeGame(lands=0.0)
-outcome = game.run(max_misses=None)
-check("with misses not counted (a dry run) it carries on to the count",
-      outcome.reason == "count" and len(outcome.legs) == 6)
+outcome = game.run(dry_run=True)
+check(f"a dry run judges nothing - it carries on to the count, every leg 'dry run' "
+      f"({outcome.reason}, {sorted(set(leg.outcome for leg in outcome.legs))})",
+      outcome.reason == "count" and [leg.outcome for leg in outcome.legs] == ["dry run"] * 6)
+check(f"...and still alternates out and back, as a real run would: {[x for _, x, _ in game.presses]}",
+      [x for _, x, _ in game.presses] == [1260, 660] * 3)
 
 game = FakeGame(dark=True)
 outcome = game.run()

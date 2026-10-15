@@ -227,7 +227,7 @@ def _watch_landing(look, before, aimed_px, scale, clock, sleep):
 
 
 def run(look, geometry, can_act, health, mana, teleport, settings, *, log=print, on_leg=None,
-        max_misses=MAX_MISSES_IN_A_ROW, clock=time.monotonic, sleep=time.sleep, cancelled=_never):
+        dry_run=False, clock=time.monotonic, sleep=time.sleep, cancelled=_never):
     """Teleports out and back until the time or the count runs out, or something says stop.
 
     look() -> a greyscale frame of the game's client area at settings.scale, or None. It is ALSO
@@ -236,11 +236,14 @@ def run(look, geometry, can_act, health, mana, teleport, settings, *, log=print,
     geometry() -> Geometry or None (the game window cannot be found)
     can_act() -> bool;  health() / mana() -> 0-1 or None;  teleport(x, y) points there and presses
     on_leg(Leg) is told about every teleport, for a log file.
-    max_misses: confident misses in a row before stopping; None never stops for that (a dry run,
-        where nothing is pressed and so nothing can move).
+    dry_run: nothing is pressed, so nothing is watched either - each leg is logged as 'dry run'
+        and taken to have arrived where it aimed. Watching anyway was tried live and misled: the
+        player's own walking read as "landed" and standing still as "nothing moved", which looks
+        like a failing teleport when no teleport was ever sent.
     `clock`, `sleep` and `cancelled` exist so tests can drive this without a game or real time.
 
     Returns Outcome(reason, legs): reason is 'time', 'count', 'cancelled', 'health' or 'misses'.
+    A leg's outcome is 'landed', 'missed', 'unknown', or 'dry run'.
     """
     shuttle = Shuttle(settings.distance)
     started = clock()
@@ -302,7 +305,10 @@ def run(look, geometry, can_act, health, mana, teleport, settings, *, log=print,
         teleport(aim_x, aim_y)
         pressed_at = clock()
         next_press = pressed_at + settings.interval
-        outcome, moved, took = _watch_landing(look, before, aimed_px, settings.scale, clock, sleep)
+        if dry_run:
+            outcome, moved, took = "dry run", None, None
+        else:
+            outcome, moved, took = _watch_landing(look, before, aimed_px, settings.scale, clock, sleep)
 
         if outcome == "missed":
             shuttle.missed()
@@ -319,9 +325,11 @@ def run(look, geometry, can_act, health, mana, teleport, settings, *, log=print,
             on_leg(leg)
         detail = (f"moved {leg.moved_px:.0f}px, first seen moving {took:.2f}s after the key"
                   if outcome == "landed"
-                  else "nothing moved" if outcome == "missed" else "could not tell whether it moved")
+                  else "nothing moved" if outcome == "missed"
+                  else "nothing pressed, nothing watched" if outcome == "dry run"
+                  else "could not tell whether it moved")
         log(f"shuttle: teleport {leg.number} ({direction} {aimed_px:.0f}px) - {outcome}: {detail}")
-        if max_misses is not None and misses >= max_misses:
+        if misses >= MAX_MISSES_IN_A_ROW:
             log(f"shuttle: {misses} teleports in a row did nothing - stopping. Check the key is bound "
                 f"to Teleport, there is mana, and you are not standing in town.")
             return Outcome("misses", legs)
@@ -333,8 +341,10 @@ def summary(outcome):
     landed = [leg for leg in legs if leg.outcome == "landed"]
     lines = [f"{len(legs)} teleports: {len(landed)} landed, "
              f"{sum(leg.outcome == 'missed' for leg in legs)} did nothing, "
-             f"{sum(leg.outcome == 'unknown' for leg in legs)} could not be measured. "
-             f"Ended by: {outcome.reason}."]
+             f"{sum(leg.outcome == 'unknown' for leg in legs)} could not be measured"
+             + (f", {sum(leg.outcome == 'dry run' for leg in legs)} dry run (nothing pressed)"
+                if any(leg.outcome == 'dry run' for leg in legs) else "")
+             + f". Ended by: {outcome.reason}."]
     if landed:
         times = sorted(leg.land_seconds for leg in landed)
         lines.append(f"key -> scene moved: median {times[len(times) // 2]:.2f}s "

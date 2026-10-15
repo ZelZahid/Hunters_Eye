@@ -11,6 +11,10 @@ that tag rather than guessing from commit history - that's what these are for.
 ------------------------------------------------------------------------------
 AT A GLANCE - newest first. Full entries are below, oldest first.
 ------------------------------------------------------------------------------
+0.021  Bot test mode (tools/teleport_bot.py): teleports out and back over items
+       on its own so timing tests run with nobody at the keyboard. Every
+       teleport is checked by how far the scene slid. First live run: 20 of 20
+       landed, the scene seen moving ~0.22s after the key.
 0.020  The demo image search (a browser tab, ~3 of 4.5ms per detection frame)
        can be switched off in user_config.txt and ships off. When on, frames
        with no match skip a full scan of the score map.
@@ -1464,3 +1468,41 @@ item is tracked and holds about a core for as long as one is on the ground.
 
 New: tests/test_image_search.py; tests/test_user_config.py section 14. Fifteen
 test files. No new dependencies.
+
+0.021 - 2026-10-15
+------------------------------------------------------------------------------
+BOT TEST MODE: THE TELEPORTING FOR A TIMING TEST, WITH NOBODY AT THE KEYBOARD.
+Measuring how long item labels take to come back after the view jumps
+(tools/measure_ocr_latency.py, on the ocr-latency branch) needs the view to
+jump over and over next to items, which meant teleporting by hand for minutes.
+tools/teleport_bot.py points a short way to one side, presses teleport_key,
+waits, points back at the start, and repeats for --seconds or --count.
+--measure starts the latency tool alongside once it is merged; --log writes a
+CSV row per teleport with both clocks; --dry-run presses nothing.
+
+EVERY TELEPORT IS CHECKED BY LOOKING. The camera is locked to the character, so
+how far the scene slid between a frame from before the key and frames after it
+says whether the teleport happened, and how far. Phase correlation
+(routes/shuttle.py scene_shift) measured the committed route frames to 0.2px of
+their ground truth; frames of two different places stay under its "cannot tell"
+line. A confident "nothing moved" four times in a row stops the run; a frame
+pair it cannot compare is "cannot tell", never a miss. A short landing is
+corrected on the next leg, but a landing within ON_TARGET_PX counts as on
+target - adding up every leg's measurement noise drifted a fake game 15px in
+six teleports.
+
+Guarded like main.py's own actions: focus + in-play (warmed up before the
+first press, since a fresh in-play check says "cannot tell" until a miss has
+lasted 0.3s), F4/End, a health stop, a mana wait, and a hard time limit that
+counts pauses. Run it instead of main.py - auto-collect would fight it for the
+mouse.
+
+FIRST LIVE RUN, BY THE OWNER: 20 teleports, 20 landed, the scene first seen
+moving 0.15-0.23s after the key. Each landing measured 346px against 324px
+aimed - a consistent overshoot the next leg absorbs, so the character stayed
+over the items. The dry run was read as a failure because it still watched the
+screen: the player's own walking showed as "landed", standing still as
+"nothing moved". A dry run now judges nothing and says so.
+
+New: routes/shuttle.py, tools/teleport_bot.py, tests/test_shuttle.py (cards
+V-609, L-406, L-407). No new dependencies.
