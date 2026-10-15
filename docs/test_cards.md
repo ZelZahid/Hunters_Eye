@@ -144,7 +144,7 @@ Code under test: main.py `_match_needle`
 
 ### V-6xx  Map localization
 
-Code under test: core/localize.py
+Code under test: core/localize.py, routes/shuttle.py (scene_shift)
 
 | Card | What it checks | File | Was |
 |---|---|---|---|
@@ -156,6 +156,7 @@ Code under test: core/localize.py
 | V-606 | The temple's arrival point: the red portal places it, independently of the map | test_route.py | route §6 |
 | V-607 | Where the route says the portal is, is where the portal is - in a screenshot it never saw | test_route.py | route §7 |
 | V-608 | Cost of one live locate (full-size frame, including its resize) - informational | test_route.py | route §11 |
+| V-609 | How far the view slid, measured on real frames - and 'cannot tell' between different places | test_shuttle.py | **new** |
 
 ### V-7xx  Monster detection
 
@@ -264,7 +265,7 @@ Code under test: main.py
 
 ### L-4xx  Routes and the fight (F7)
 
-Code under test: routes/pindle.py
+Code under test: routes/pindle.py, routes/shuttle.py
 
 | Card | What it checks | File | Was |
 |---|---|---|---|
@@ -273,6 +274,8 @@ Code under test: routes/pindle.py
 | L-403 | The portal is only clicked once its label is READ | test_route.py | route §10 |
 | L-404 | The fight, driven through a fake game | test_pindle_fight.py | pindle_fight §3 |
 | L-405 | 'F4' stops the fight outright - it does not resume like the auto-collect snooze | test_pindle_fight.py | pindle_fight §4 |
+| L-406 | The bot test mode's aim: out, back to the start, short landings corrected | test_shuttle.py | **new** |
+| L-407 | The bot test mode's loop, driven through a fake game | test_shuttle.py | **new** |
 
 ## A — Actions
 
