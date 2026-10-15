@@ -113,7 +113,7 @@ and can never hold keyboard focus:
 | `F3` | next game: quit → read the lobby's game name → increment → create |
 | `F4` | snooze auto-collect 10s, **and stop a running F7 run outright** |
 | `F5` | toggle the game-state debug panel (display-only; cannot disturb detection) |
-| `F6` | snooze potion drinking 10s |
+| `F6` | snooze potion drinking 10s; each press adds 10s more, capped at 60s |
 | `F7` | the Pindleskin run from a fresh game in Harrogath (`routes/pindle.py`) |
 
 Snoozes re-arm themselves (a plain toggle can be left off for a whole session by
@@ -125,6 +125,10 @@ thresholds and which supply each rule drinks, cooldowns, teleport key/distance, 
 aim/click settles, game name/password. Read once at import — edit and restart. It is at
 the root because it is the one file a person is expected to hand-edit; `assets/` holds
 data the tools write or the engine reads.
+
+**Control panel:** `python gui.py` (or `pythonw gui.py` on Windows, no console) runs the
+same bot as a child process (`main.py --control`) with start/stop, the hotkey actions as
+buttons, `user_config.txt` as a form, and a live log. The hotkeys keep working under it.
 
 One-time setup before `game_state.py` reports anything:
 `python tools/calibrate_meters.py` (re-run after any resolution or UI-scale change).
@@ -272,6 +276,18 @@ threading are the caller's job. Full record: `docs/monster_detection_plan.txt`.
 Windows must be created topmost or they never appear. The live preview is the point. Capture
 `main.py`'s `monitor_area` by import (EH#27).
 
+### `gui.py` + `core/command_channel.py` — the control panel
+- The bot runs as a **child process**, never inside the panel: crash isolation both ways, and
+  the overlay's Tk must own its own process's main thread.
+- Buttons send one word per line on the child's stdin; each calls **exactly what its hotkey
+  calls**. A game-acting command waits (≤30s) until the game is in front again, because
+  `quit_game()` gives up at once when it is not. **End of stdin quits the bot** — the child has
+  no console, so a vanished panel would otherwise leave an invisible bot pressing keys.
+- The output reader **never blocks** (bounded queue, `put_nowait`, drop and count): a blocked
+  pipe would freeze the bot on its next `print()`.
+- Settings are edited as **text, never via `configparser.write()`** (it drops the comments,
+  which are the help) and validated by **`user_config.load()` itself** before saving.
+
 ### `legacy/` — reference only, not runnable.
 
 ## Performance facts that steer decisions
@@ -288,10 +304,12 @@ Directional, measured on dev hardware.
 
 ```
 main.py                  # the one entry point - the pipeline, and the Diablo II integration
+gui.py                   # the control panel: runs main.py --control, buttons, settings, log
 user_config.txt          # USER-EDITABLE: potion thresholds, teleport key, settles, game name
 
 core/                    # THE ENGINE. Knows nothing about any particular game.
   actions.py             #   mouse + keyboard: click, click-when-seen, type, press, wait-until
+  command_channel.py     #   one-word commands on a text stream -> handlers (main --control)
   frame_source.py        #   where pixels come from - DXGI or mss, with graceful fallback
   game_state.py          #   HUD meter reading - health/mana as a 0.0-1.0 number
   localize.py            #   "where on this map is the camera looking?"
@@ -300,7 +318,7 @@ core/                    # THE ENGINE. Knows nothing about any particular game.
   presence.py            #   "is this reference art on screen?" - the in-play check
   slots.py               #   what is in each of a row of fixed cells - the potion belt
   text_detection.py      #   OCR: find listed names, or read a line of text as-is
-  user_config.py         #   loader/validator for user_config.txt
+  user_config.py         #   loader/validator for user_config.txt, + comment-keeping edits
   window_region.py       #   locating a window's client area, so regions can anchor to it
 
 routes/                  # GAME-SPECIFIC scripted sequences, built on core/. Never imports main.
@@ -324,6 +342,7 @@ tests/                   # numbered test cards - none of them need the game runn
   fixtures/              #   REAL frames the tests measure against - committed, see its README
   test_auto_collect.py   #   teleport decision, item ranking, retry cadences, UI panel filter
   test_card_index.py     #   docs/test_cards.md lists exactly the cards the tests run
+  test_control_panel.py  #   gui.py, its command channel, and editing user_config.txt
   test_detector_contract.py # every detector: no crash on junk frames, None = cannot tell,
                          #   works on a document page (image search, OCR)
   test_frame_source.py   #   capture: DXGI -> mss fallback, re-served frames, window geometry
@@ -338,6 +357,7 @@ tests/                   # numbered test cards - none of them need the game runn
   test_presence.py       #   presence.py + the in-play gate
   test_quit_game.py      #   the quit_game sequence + click_when_seen/wait_until
   test_route.py          #   map localization on held-out frames + the walks' decisions
+  test_session.py        #   what a bot session reports when it stops (runtime as 6m 33s)
   test_shuttle.py        #   bot test mode: scene shift on real frames, the loop in a fake game
   test_slots.py          #   the cell-colour reader: real belts, empty slots, cannot-read
   test_targets.py        #   targets.txt parsing + span ranking

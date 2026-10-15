@@ -12,6 +12,11 @@ numpy>=1.26
 mss>=9.0
 pyautogui>=0.9.54
 
+# --- Control panel (gui.py) ---
+# Plain tkinter, part of Python's standard library: nothing to install on
+# Windows or macOS. Some Linux distributions ship it separately
+# (Debian/Ubuntu: sudo apt install python3-tk).
+
 # --- OCR (text_detection.py) ---
 # pytesseract is just a Python wrapper - it needs the actual Tesseract OCR
 # engine installed separately (it's not a pip package):

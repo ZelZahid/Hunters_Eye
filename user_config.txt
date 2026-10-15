@@ -26,9 +26,11 @@ enabled = yes
 # emptying the whole belt in a second. Tune the per-rule "cooldown" instead.
 min_gap = 0.6
 
-# How long the F6 hotkey suppresses drinking, in seconds. It re-arms itself
-# afterwards on purpose: a snooze you forget about costs you 10 seconds, whereas
-# an on/off toggle you forget to switch back on costs you the rest of the session.
+# How long the F6 hotkey suppresses drinking, in seconds. Each extra press adds
+# this much again (three quick presses = 30s), up to 60 seconds in total. It
+# re-arms itself afterwards on purpose: a snooze you forget about costs you a few
+# seconds, whereas an on/off toggle you forget to switch back on costs you the
+# rest of the session.
 snooze = 10
 
 # Readings below this fraction are treated as "cannot read" rather than as a real

@@ -21,6 +21,11 @@ dropped rather than pointed at some other meter.
 from __future__ import annotations
 
 import configparser
+import contextlib
+import io
+import os
+import re
+import tempfile
 from collections import namedtuple
 
 #One rule: when `meter` reads at or below `at_or_below`, press one of `keys`, then leave THIS
@@ -265,3 +270,176 @@ def load(path, known_meters=None, default_rules=()):
         rules = list(default_rules)
 
     return Config(*[settings[k] for k in _FIELDS], tuple(rules), str(path))
+
+
+#--- Editing the file from a program (gui.py's Settings tab) ---------------------------------------
+#WHY NOT configparser.write(): it throws away every comment, and the comments ARE this file - they
+#are where a person learns what each number does. So editing is done on the text itself: find the
+#"key = value" line inside its [section], replace only what follows the "=", and leave every other
+#character of the file as it was. Only plain one-line "key = value" lines starting at column 0 are
+#edited, which is every line this file has; anything else is left alone, never rewritten.
+Entry = namedtuple("Entry", "section key value help line")
+#section, key - where it lives;  value - the raw text after "=" (so "20%" stays "20%")
+#help - the comment block directly above it, '#' stripped, for showing beside the field
+#line - its 0-based line number in the text
+
+Section = namedtuple("Section", "name help entries")
+
+_SECTION_LINE = re.compile(r"^\[([^\]]+)\]\s*$")
+_VALUE_LINE = re.compile(r"^([A-Za-z0-9_]+)(\s*[=:]\s*)(.*?)\s*$")
+
+
+def _comment_text(line):
+    stripped = line.strip()
+    if stripped.startswith(("#", ";")):
+        text = stripped[1:]
+        return text[1:] if text.startswith(" ") else text
+    return None
+
+
+def parse_sections(text):
+    """The file's [sections] and their settings, in file order, each with its help text.
+
+    Help is the run of comment lines directly above a key (or a section header), stopping at a
+    blank line or a rule of dashes - the shape this file is written in.
+    """
+    glossary = _glossary(text)
+    sections = []
+    pending = []  #comment lines seen since the last blank or setting line
+    previous = None  #the entry on the line just above, for keys documented as a pair
+    for number, line in enumerate(text.splitlines()):
+        comment = _comment_text(line)
+        if comment is not None:
+            if set(comment.strip()) <= set("-=") and comment.strip():
+                pending = []  #a "# -----" rule separates blocks; it is not help
+            else:
+                pending.append(comment)
+            previous = None
+            continue
+        if not line.strip():
+            pending = []
+            previous = None
+            continue
+        header = _SECTION_LINE.match(line)
+        if header:
+            sections.append(Section(header.group(1).strip(), "\n".join(pending).strip(), []))
+            pending = []
+            previous = None
+            continue
+        match = _VALUE_LINE.match(line)
+        if match and sections:
+            key = match.group(1)
+            help_text = "\n".join(pending).strip()
+            if not help_text:
+                help_text = glossary.get(key.lower(), "")
+            if not help_text and previous is not None:
+                help_text = previous.help  #"click_settle = ..." then "aim_settle = ..." under one comment
+            previous = Entry(sections[-1].name, key, match.group(3), help_text, number)
+            sections[-1].entries.append(previous)
+        else:
+            previous = None
+        pending = []
+    return sections
+
+
+_GLOSSARY_ITEM = re.compile(r"^(\s*)([A-Za-z_][A-Za-z0-9_]*)\s+-\s+(\S.*)$")
+
+
+def _glossary(text):
+    """{key: text} from definition lists written in comments, like the potion rules' block:
+
+        #   meter    - which meter to watch. Must be a name from
+        #              assets/meters.json ...
+        #   below    - drink when ...
+
+    Keys that appear in many sections (every rule has a "meter") are documented once like this
+    rather than above every line, so this is where their help is. A later definition of the same
+    word does not replace an earlier one.
+    """
+    found = {}
+    key, parts, indent = None, [], 0
+    for line in text.splitlines():
+        comment = _comment_text(line)
+        item = _GLOSSARY_ITEM.match(comment) if comment is not None else None
+        if item:
+            if key and key not in found:
+                found[key] = " ".join(parts)
+            key, parts, indent = item.group(2).lower(), [item.group(3).strip()], len(item.group(1))
+            continue
+        continues = (key is not None and comment is not None and comment.strip()
+                     and len(comment) - len(comment.lstrip()) > indent)
+        if continues:
+            parts.append(comment.strip())
+            continue
+        if key and key not in found:
+            found[key] = " ".join(parts)
+        key, parts = None, []
+    if key and key not in found:
+        found[key] = " ".join(parts)
+    return found
+
+
+def apply_values(text, changes):
+    """`text` with each {(section, key): new_value} written in. Everything else is untouched.
+
+    Raises KeyError naming any (section, key) that is not in the text - a setting the caller
+    thinks exists but does not is a bug to hear about, not something to append silently.
+    Raises ValueError for a value with a line break in it, which would split into a second line.
+    """
+    lines = text.splitlines(keepends=True)
+    remaining = dict(changes)
+    for (section, key), value in changes.items():
+        if "\n" in str(value) or "\r" in str(value):
+            raise ValueError(f"[{section}] {key}: a value cannot contain a line break")
+    for section in parse_sections(text):
+        for entry in section.entries:
+            wanted = (entry.section, entry.key)
+            if wanted not in remaining:
+                continue
+            value = str(remaining.pop(wanted)).strip()
+            original = lines[entry.line]
+            ending = original[len(original.rstrip("\r\n")):]
+            match = _VALUE_LINE.match(original.rstrip("\r\n"))
+            separator = match.group(2).rstrip()
+            lines[entry.line] = (f"{match.group(1)}{separator} {value}{ending}" if value
+                                 else f"{match.group(1)}{separator}{ending}")
+    if remaining:
+        raise KeyError(", ".join(f"[{s}] {k}" for s, k in remaining))
+    return "".join(lines)
+
+
+def check(text, known_meters=None):
+    """The warnings load() would print for this text, as a list of strings. [] means clean.
+
+    Uses load() itself rather than a second copy of its rules, so the Settings tab can never
+    accept something the program would then quietly replace with a default. load() reports by
+    printing, so its output is captured here - which swaps sys.stdout for the duration, so this
+    belongs in a program whose other threads are not printing at the same moment (the control
+    panel, not the pipeline).
+    """
+    handle, path = tempfile.mkstemp(suffix=".txt", text=True)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as f:
+            f.write(text)
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            load(path, known_meters=known_meters)
+    finally:
+        os.remove(path)
+    return [line.strip() for line in captured.getvalue().splitlines() if line.strip()]
+
+
+def save_text(path, text):
+    """Writes `text` to `path` all at once: a crash or a full disk mid-write leaves the old file,
+    never half of each. (Write a sibling file, then rename it over - a rename is atomic.)"""
+    path = os.fspath(path)
+    folder = os.path.dirname(os.path.abspath(path))
+    handle, temp = tempfile.mkstemp(dir=folder, prefix=".user_config.", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        os.replace(temp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(temp)
+        raise
