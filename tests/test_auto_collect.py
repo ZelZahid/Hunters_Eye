@@ -45,7 +45,7 @@ def should(collect_label=CLICK, item=(960, 100), character=CHARACTER,
     return main._should_teleport(collect_label, item, character, min_distance, since)
 
 
-print("\n1. Far-away items are worth teleporting onto")
+print("\nL-201  Far-away items are worth teleporting onto")
 check("straight up the screen", should(item=(960, 524 - 400)))
 check("straight down", should(item=(960, 524 + 400)))
 check("diagonally - distance is radial, not per-axis",
@@ -53,7 +53,7 @@ check("diagonally - distance is radial, not per-axis",
 check("exactly at the threshold counts as far",
       should(item=(960, 524 - MIN_DISTANCE)))
 
-print("\n2. Close items are just clicked - the owner's 'within a few feet' rule")
+print("\nL-202  Close items are just clicked - the owner's 'within a few feet' rule")
 check("at the character's feet", not should(item=CHARACTER))
 check("one pixel inside the threshold", not should(item=(960, 524 - MIN_DISTANCE + 1)))
 check("far on neither axis, but close overall",
@@ -61,7 +61,7 @@ check("far on neither axis, but close overall",
 check("a bigger threshold makes a previously-far item close",
       not should(item=(960, 100), min_distance=1000))
 
-print("\n3. Telekinesis items are never teleported onto")
+print("\nL-203  Telekinesis items are never teleported onto")
 #The whole point of [key:e] is taking the item from across the room. Teleporting first spends mana
 #removing the exact distance that skill exists to cover.
 check("a [key:e] item, however far away", not should(collect_label=KEY, item=(960, 100)))
@@ -70,7 +70,7 @@ check("...even at the far corner of the screen",
 check("an unrecognised label is not treated as a click either",
       not should(collect_label="robot-arm"))
 
-print("\n4. The cooldown stops a failed re-find becoming a teleport loop")
+print("\nL-204  The cooldown stops a failed re-find becoming a teleport loop")
 check("just teleported", not should(since=0.0))
 check("still inside the cooldown", not should(since=main.TELEPORT_COOLDOWN_SECONDS - 0.01))
 check("cooldown elapsed", should(since=main.TELEPORT_COOLDOWN_SECONDS))
@@ -79,20 +79,20 @@ check("cooldown elapsed", should(since=main.TELEPORT_COOLDOWN_SECONDS))
 check("the cooldown outlasts a full failed re-find",
       main.TELEPORT_COOLDOWN_SECONDS > main.TELEPORT_SETTLE_SECONDS + main.TELEPORT_REACQUIRE_SECONDS)
 
-print("\n5. An unknown character position means walking, not guessing")
+print("\nL-205  An unknown character position means walking, not guessing")
 #Same rule as everywhere else in this project: None is "cannot tell", and cannot tell must behave
 #the way the program did before the check existed.
 check("no character position, far item", not should(character=None, item=(0, 0)))
 check("no character position, close item", not should(character=None, item=CHARACTER))
 
-print("\n6. The re-find window can actually outlast one OCR cycle")
+print("\nL-206  The re-find window can actually outlast one OCR cycle")
 #Teleporting moves the camera further than the tracker's search margin, so the track is usually
 #lost and a full OCR scan is what finds the item again. A re-find shorter than that scan interval
 #would give up before the only thing that can answer has run.
 check("re-find outlasts one OCR interval",
       main.TELEPORT_REACQUIRE_SECONDS > main.OCR_INTERVAL_SECONDS)
 
-print("\n7. After a teleport, a position is only believed once it has MOVED")
+print("\nL-207  After a teleport, a position is only believed once it has MOVED")
 #Seen live: the click fired the instant the teleport was issued and missed the item completely.
 #shared_text_tracks still held the pre-teleport coordinates - published milliseconds earlier by
 #detect_text - so "is there a track for this item?" was true, and answered with the stale
@@ -130,7 +130,7 @@ check("the re-find window outlasts a full OCR cycle",
 check("the required shift leaves slack for a short landing",
       0.0 < main.TELEPORT_MOVED_FRACTION < 1.0)
 
-print("\n8. Which item to go for when several are on the ground")
+print("\nL-208  Which item to go for when several are on the ground")
 #Priority is the order of targets.txt, further down winning, and nearest-to-cursor only breaks
 #ties. Nearest-to-cursor ALONE was the old rule, and it is exactly the thing being fixed: a
 #rejuvenation potion at your feet would be taken before a Ber rune across the room, and the rune
@@ -159,7 +159,7 @@ check("a tie is broken by nearest to the cursor",
 check("an item with no entry at all ranks below everything listed",
       main._pick_target([track("NOT A LISTED ITEM", 500, 500), FAR_AWAY], 500, 500)[0] == HIGH)
 
-print("\n9. Every collectable item has a distinct rank")
+print("\nL-209  Every collectable item has a distinct rank")
 #Two items sharing a rank would silently fall back to nearest-to-cursor between them, which is
 #the behaviour this replaced. They cannot share one while rank is the line number, so this is
 #really a check that nothing has started handing out ranks some other way.
@@ -174,7 +174,7 @@ check("every rejuvenation potion ranks below every other collected item",
       potions and others and
       max(main._collect_priority(n) for n in potions) < min(main._collect_priority(n) for n in others))
 
-print("\n10. A key-collected item retries on its own clock, not the click's")
+print("\nL-210  A key-collected item retries on its own clock, not the click's")
 #0.8s between clicks exists because a click means "walk there"; a cast is over the instant it
 #lands. Sharing one number made every failed telekinesis grab wait out a walk that never happened.
 check("the key retry is a real number", isinstance(main.potion_config.key_collect_retry, float))
@@ -185,7 +185,7 @@ check("it is faster than re-clicking", main.potion_config.key_collect_retry < ma
 check("it is not shorter than one attempt's own settle",
       main.potion_config.key_collect_retry >= actions.AIM_SETTLE_SECONDS)
 
-print("\n11. The shipped user_config.txt is usable")
+print("\nC-115  The shipped user_config.txt is usable")
 #Not asserting the owner's chosen values - those exist to be retuned - only that whatever is in
 #the file could not break the feature.
 cfg = main.potion_config
@@ -200,7 +200,7 @@ if cfg.teleport_key:
         recognised = False
     check(f"teleport_key {cfg.teleport_key!r} is a key this system recognises", recognised)
 
-print("\n12. An item already on an open UI panel is not chased")
+print("\nL-211  An item already on an open UI panel is not chased")
 #The bug this guards was not a detection failure, which is what makes it worth real frames: an
 #item in the bag or the stash draws a hover TOOLTIP, which is genuine on-screen text reading
 #exactly "Full Rejuvenation Potion". OCR read it correctly and the matcher matched it correctly -
@@ -289,7 +289,7 @@ try:
 finally:
     main.ui_panels = _saved
 
-print("\n13. An action that measurably did nothing is retried early")
+print("\nL-212  An action that measurably did nothing is retried early")
 #The owner's report: the first click or cast often misses, and the pickup then lands on the 2nd or
 #3rd attempt - each a full click_interval apart, which is 0.8s of dead time per miss while someone
 #else walks off with the item. click_interval is long for one reason: a click means "walk over
@@ -348,7 +348,7 @@ aimed, ok = run(gone)
 check("a target that disappears reports success", ok is True)
 check("...and is not acted on again afterwards", len(aimed) <= 2)
 
-print("\n14. The settle before acting comes from user_config.txt")
+print("\nL-213  The settle before acting comes from user_config.txt")
 #Raised because the owner reported first-attempt misses on BOTH paths. What a game needs between
 #the cursor arriving and the action firing depends on the game and the machine, so it has to be
 #tunable while playing rather than compiled in.

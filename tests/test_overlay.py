@@ -85,14 +85,14 @@ STATES = {
     "no meters": ("GAME STATE", [("no meters", "run calibrate_meters.py", None, BAD)]),
 }
 
-print("1. Nothing renders outside the backing plate, in any panel state")
+print("\nT-101  Nothing renders outside the backing plate, in any panel state")
 for name, (title, rows) in STATES.items():
     width = plate_width(title, rows)
     spills = overflows(title, rows, width)
     check(f"{name:18} plate {width:4}px, no overflow" + (f"  SPILLS: {spills}" if spills else ""),
           not spills)
 
-print("\n2. The plate grows only when it has to")
+print("\nT-102  The plate grows only when it has to")
 #A plate that resized on every reading would visibly jitter as "9%" became "100%", which is why
 #PANEL_WIDTH is a minimum rather than just being removed.
 normal = plate_width(*STATES["normal"])
@@ -102,14 +102,14 @@ check(f"...and so does a stale one ({stale}px), so the plate does not jitter", s
 check("a long status message grows the plate",
       plate_width(*STATES["NOT IN GAME"]) > ov.PANEL_WIDTH)
 
-print("\n3. The reported bug specifically")
+print("\nT-103  The reported bug specifically")
 title, rows = STATES["NOT IN GAME"]
 needed = ov.PANEL_VALUE_OFFSET + o._text_width("not on screen (0.30)", ov.PANEL_FONT)
 check(f"'not on screen (0.30)' needs {needed}px, more than the old fixed {ov.PANEL_WIDTH}px",
       needed > ov.PANEL_WIDTH)
 check("the plate is now at least that wide", plate_width(title, rows) >= needed)
 
-print("\n4. Measuring is robust to junk input")
+print("\nT-104  Measuring is robust to junk input")
 check("empty string measures 0", o._text_width("", ov.PANEL_FONT) == 0)
 check("None measures 0 rather than raising", o._text_width(None, ov.PANEL_FONT) == 0)
 check("a very long string measures large",

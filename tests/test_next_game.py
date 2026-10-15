@@ -36,34 +36,34 @@ def check(label, condition):
     failures += not condition
 
 
-print("1. The number on the end goes up by one")
+print("\nL-301  The number on the end goes up by one")
 for before, after in [("z25pin35", "z25pin36"), ("run1", "run2"), ("a0", "a1")]:
     check(f"{before!r} -> {after!r}", main.next_game_name(before) == after)
 
-print("\n2. A name with no number gets a '0'")
+print("\nL-302  A name with no number gets a '0'")
 #Stated by the project owner as the rule, and it has to be a rule rather than an error: the
 #sequence must be able to start from whatever name is already in the box.
 for before, after in [("mygame", "mygame0"), ("z25pin", "z25pin0")]:
     check(f"{before!r} -> {after!r}", main.next_game_name(before) == after)
 
-print("\n3. Only a number at the very END counts")
+print("\nL-303  Only a number at the very END counts")
 #'z25pin' must not become 'z26pin'. The digits in the middle are part of the name the user chose.
 check("'z25pin' -> 'z25pin0', not 'z26pin'", main.next_game_name("z25pin") == "z25pin0")
 check("'a1b' -> 'a1b0'", main.next_game_name("a1b") == "a1b0")
 
-print("\n4. Zero padding is kept at its width, and grows when it has to")
+print("\nL-304  Zero padding is kept at its width, and grows when it has to")
 check("'z25pin09' -> 'z25pin10' (width kept)", main.next_game_name("z25pin09") == "z25pin10")
 check("'z25pin9'  -> 'z25pin10' (no padding invented)", main.next_game_name("z25pin9") == "z25pin10")
 check("'z25pin99' -> 'z25pin100' (width grows)", main.next_game_name("z25pin99") == "z25pin100")
 check("'run007'   -> 'run008'", main.next_game_name("run007") == "run008")
 check("'run099'   -> 'run100'", main.next_game_name("run099") == "run100")
 
-print("\n5. Junk in, nothing out - it never invents a name")
+print("\nL-305  Junk in, nothing out - it never invents a name")
 check("empty -> empty", main.next_game_name("") == "")
 check("None -> empty", main.next_game_name(None) == "")
 check("surrounding spaces are trimmed", main.next_game_name("  z25pin35  ") == "z25pin36")
 
-print("\n6. A name that does not look like a name is REJECTED, not cleaned up")
+print("\nL-306  A name that does not look like a name is REJECTED, not cleaned up")
 #The important half. A misread that gets 'fixed' into something plausible is typed in, created,
 #and then incremented from there forever - so anything doubtful is refused instead.
 check("a good name passes", main.clean_game_name("z25pin35") == "z25pin35")
@@ -78,13 +78,13 @@ check(f"longer than Diablo II allows ({main.MAX_GAME_NAME_LENGTH}) is rejected",
 check("exactly at the limit is accepted",
       main.clean_game_name("x" * main.MAX_GAME_NAME_LENGTH) is not None)
 
-print("\n7. Increment and validation compose the way the sequence uses them")
+print("\nL-307  Increment and validation compose the way the sequence uses them")
 read = "z25pin35|"          # what OCR actually returned, cursor artifact and all
 name = main.clean_game_name(read)
 check(f"{read!r} -> clean {name!r} -> next {main.next_game_name(name)!r}",
       main.next_game_name(name) == "z25pin36")
 
-print("\n8. The password / game-name settings load from user_config.txt")
+print("\nC-117  The password / game-name settings load from user_config.txt")
 cfg = user_config.load(os.path.join(REPO_ROOT, "user_config.txt"),
                        known_meters={"health", "mana"})
 check("the file loads", cfg.loaded)
@@ -108,10 +108,11 @@ check("a nonsense use_password falls back to the default, not a crash",
       c3.use_password == user_config.DEFAULTS["use_password"])
 
 shots = glob.glob(os.path.join(FIXTURES, "lobby_form_crop.png"))
+print("\nV-407  Reading the name off a real lobby field")
 if not shots:
-    print("\n9. Reading the name off a real lobby - FIXTURES MISSING, this should not happen")
+    #A committed fixture that is missing is a FAILURE, never a skip - a skip looks like passing.
+    check("tests/fixtures/lobby_form_crop.png is present", False)
 else:
-    print("\n9. Reading the name off a real lobby field")
     #The measurement this whole approach rests on. The same string in Diablo II's map overlay
     #could not be read exactly by ANY combination of threshold, scale and segmentation mode
     #tried - the lobby's own text box can, which is why the name is read there.
@@ -120,13 +121,13 @@ else:
     #CHARACTERS are the contract here; CASE is not, and asserting it was this test being wrong
     #rather than the code. 'z' and 'Z' are the same glyph at different sizes and a text box gives
     #no x-height to judge against - measured, no threshold and no crop geometry produces the
-    #lowercase reliably. Section 13 covers where the case actually comes from.
+    #lowercase reliably. Card V-411 covers where the case actually comes from.
     check(f"OCR reads the characters exactly: {raw!r}", raw.lower() == "z25pin35")
     name = main.clean_game_name(raw)
     check("it survives validation", name is not None and name.lower() == "z25pin35")
     check("and increments correctly", main.next_game_name(name).lower() == "z25pin36")
 
-    print("\n10. read_line does not disturb the shared OCR engine")
+    print("\nV-408  Read_line does not disturb the shared OCR engine")
     #It switches the shared API's segmentation mode for the call. If it failed to put it back,
     #every item-label scan afterwards would silently get worse.
     before = len(td.read_lines(img))
@@ -135,11 +136,11 @@ else:
     check(f"item-label scanning still works afterwards ({before} lines, then {after})",
           after > 0 and abs(after - before) <= 1)
 
-print("\n11. Locating the Create Game form on a real lobby")
+print("\nV-409  Locating the Create Game form on a real lobby")
 lobbies = sorted(glob.glob(os.path.join(FIXTURES, "lobby.png")))
 dialogs = sorted(glob.glob(os.path.join(FIXTURES, "lobby_name_clash.png")))
 if not lobbies:
-    print("  FIXTURES MISSING - this should not happen")
+    check("tests/fixtures/lobby.png is present", False)
 else:
     lobby = cv.cvtColor(cv.imread(lobbies[0]), cv.COLOR_BGR2BGRA)
     H, W = lobby.shape[:2]
@@ -160,7 +161,7 @@ else:
         check("the password row is exactly one row below the name row",
               abs((py - ny) - form["row_spacing"]) < 2)
 
-    print("\n12. Reading the name Diablo II pre-filled, and incrementing it")
+    print("\nV-410  Reading the name Diablo II pre-filled, and incrementing it")
     read = main._read_lobby_game_name(lobby, form)
     check(f"a name is read: {read!r}", read is not None)
     check("it is the right name, ignoring case", (read or "").lower() == "z25pin38")
@@ -168,7 +169,7 @@ else:
     check(f"and increments to {main.next_game_name(read)!r}",
           main.next_game_name(read).lower() == "z25pin39")
 
-    print("\n13. Case comes from memory, because OCR cannot supply it")
+    print("\nV-411  Case comes from memory, because OCR cannot supply it")
     #'z' and 'Z' are the same glyph at different sizes and a text box gives no x-height to judge
     #against; every threshold from 120 to 150 read this field as 'Z25pin38'. So the reading picks
     #WHICH name, and the remembered spelling supplies the case.
@@ -185,7 +186,7 @@ else:
     finally:
         main._last_created_name = saved
 
-print("\n14. The name-clash dialog is detected, and only when it is there")
+print("\nV-412  The name-clash dialog is detected, and only when it is there")
 if not lobbies or not dialogs:
     print("  SKIPPED (needs the screenshots)")
 else:
@@ -199,7 +200,7 @@ else:
     check("not detected on a blank frame",
           main._name_clash_showing(np.zeros((1080, 1920, 4), np.uint8)) is False)
 
-print("\n15. next_game refuses to start if it cannot leave the current game")
+print("\nL-308  Next_game refuses to start if it cannot leave the current game")
 #The failure that compounds: a next_game that believes it quit types a game name into a live game.
 saved_quit = main.quit_game
 try:
@@ -208,7 +209,7 @@ try:
 finally:
     main.quit_game = saved_quit
 
-print("\n16. A name no single threshold reads correctly is still resolved, per character")
+print("\nV-413  A name no single threshold reads correctly is still resolved, per character")
 #Regression, 2026-09-03. Live failure: the lobby held 'zze9' and next_game refused to read it.
 #The four thresholds gave zzeQ / zze9 / zze9 / zz09 - '9' misreads as 'Q' at one end of the
 #range and 'e' as '0' at the other - so no WHOLE string ever reached the 3-of-4 bar, even though
@@ -227,7 +228,7 @@ else:
         check("'zze9' read despite no single threshold winning outright",
               main._read_lobby_game_name(_frame, _form) == "zze9")
 
-print("\n17. A name with an unreadable character is resolved from what we already typed")
+print("\nV-414  A name with an unreadable character is resolved from what we already typed")
 #Regression, 2026-09-12. Live failure: the box held 'zelgt0' and next_game refused to read it.
 #The four thresholds gave zelgtO / zelgt0 / zelgiO / zolgiO, so the per-character vote of section
 #16 tied at the 't' and refused. This one is NOT a voting problem: '0' and 'O' are the same shape
@@ -251,7 +252,7 @@ else:
         check("and it increments to 'zelgt1'",
               main.next_game_name(
                   main._read_lobby_game_name(_f, _fm, known=("zelgt0",))) == "zelgt1")
-        #The known name supplies the case as well, for the same reason section 13 exists.
+        #The known name supplies the case as well, for the same reason card V-411 exists.
         check("a configured spelling wins over OCR's case",
               main._read_lobby_game_name(_f, _fm, known=("Zelgt0",)) == "Zelgt0")
         #SELF-CORRECTING: renaming the game by hand has to take effect immediately, so a known
@@ -270,7 +271,7 @@ else:
               (main._read_lobby_game_name(_lob, main._lobby_form(_lob),
                                           known=("z25pin12",)) or "").lower() == "z25pin38")
 
-print("\n18. The Game Name box's arrow marker is not read as part of the name")
+print("\nV-415  The Game Name box's arrow marker is not read as part of the name")
 #The box has a small gold arrow at each end; clipping one into the crop reads as a dash, and
 #'- zelgt0' passes every other check in clean_game_name - it is a valid name, so it would be
 #typed in and incremented from forever after.

@@ -49,13 +49,13 @@ needle = main.needle_gray
 nh, nw = needle.shape[:2]
 names = ["pindle_pack.png", "in_game_tooltip.png", "lobby.png", "inventory_open.png", "in_game_dim.png"]
 
-print("1. No needle on screen: nothing found, same as before")
+print("\nV-501  No needle on screen: nothing found, same as before")
 for name in names:
     gray = frame(name)
     check(f"{name}: no matches, and the old version agrees",
           main._match_needle(gray, needle) == [] == old_match(gray, needle))
 
-print("\n2. Needle pasted in: identical boxes to the old version")
+print("\nV-502  Needle pasted in: identical boxes to the old version")
 for name in names:
     gray = frame(name)
     one = gray.copy()
@@ -70,7 +70,7 @@ for name in names:
     check(f"{name}: three copies, two overlapping - same output as before",
           main._match_needle(two, needle) == old_match(two, needle))
 
-print("\n3. The shipped user_config.txt says whether the search runs")
+print("\nC-118  The shipped user_config.txt says whether the search runs")
 check("image_search is a yes/no the pipeline reads", isinstance(main.IMAGE_SEARCH_ENABLED, bool))
 
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")

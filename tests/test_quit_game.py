@@ -6,8 +6,8 @@ five share identical frame art and differ only in their words. A whole-button te
 0.900 on the right one and 0.888 on a wrong one, a margin of 0.013, and nothing about that looks
 wrong from outside: the sequence reports success and the game carries on running.
 
-Frames come from tests/fixtures/, which is committed - including esc_menu.png, so sections 3-5 do
-run. They are still guarded: if that file ever goes missing they SAY SO loudly rather than skipping
+Frames come from tests/fixtures/, which is committed - including esc_menu.png, so cards V-311 to V-313 do
+run. They are still guarded: if that file ever goes missing they FAIL loudly rather than skipping
 quietly, because a test that skips is indistinguishable from a test that passes. They had already
 been off long enough for a refactor to break them unnoticed.
 """
@@ -39,7 +39,7 @@ def check(label, condition):
     failures += not condition
 
 
-print("1. The button config loads and is shaped as expected")
+print("\nV-309  The button config loads and is shaped as expected")
 b = main.save_and_exit_button
 check("assets/save_and_exit.json loads", b is not None)
 if b is None:
@@ -52,7 +52,7 @@ check("threshold is set", 0.0 < ref.threshold < 1.0)
 check("the search region is a menu-sized slice, not the whole frame",
       0 < ref.search_region[2] < 1.0 and 0 < ref.search_region[3] < 1.0)
 
-print("\n2. Nothing on screen -> no position, and never a crash")
+print("\nV-310  Nothing on screen -> no position, and never a crash")
 check("a None frame -> None", main._find_save_and_exit(None) is None)
 check("flat black -> None", main._find_save_and_exit(np.zeros((1080, 1920, 4), np.uint8)) is None)
 rng = np.random.default_rng(11)
@@ -63,12 +63,13 @@ check("a 3-channel frame also works (BGR, not just BGRA)",
 
 menus = glob.glob(os.path.join(REPO_ROOT, "tests", "fixtures", "esc_menu.png"))
 if not menus:
-    print("\n3-5. Real Esc-menu checks - NO FIXTURE, so the button tests are NOT running.")
+    print("\nV-311..V-313  Real Esc-menu checks - NO FIXTURE, so the button tests are NOT running.")
     print("     These cover the trap that a whole-button template scores 0.900 on the right")
-    print("     button and 0.888 on a wrong one. Drop a full-screen Esc-menu screenshot at")
-    print("     tests/fixtures/esc_menu.png to turn them back on.")
+    print("     button and 0.888 on a wrong one. The fixture is committed, so its absence is a")
+    print("     FAILURE, not a skip - restore tests/fixtures/esc_menu.png.")
+    check("tests/fixtures/esc_menu.png is present", False)
 else:
-    print("\n3. On a real Esc menu it finds the RIGHT button")
+    print("\nV-311  On a real Esc menu it finds the RIGHT button")
     img = cv.imread(menus[0])
     h, w = img.shape[:2]
     pos = main._find_save_and_exit(img)
@@ -84,7 +85,7 @@ else:
                               ("Loot Filter", 0.580), ("Chronicle", 0.645)):
             check(f"it is NOT {name} (y={other_y})", abs(fy - other_y) > 0.03)
 
-    print("\n4. The threshold sits between the right button and the best wrong one")
+    print("\nV-312  The threshold sits between the right button and the best wrong one")
     #The number that makes this safe. If a change narrows this, the sequence starts clicking
     #whatever else is in the menu, and reports success while doing it.
     gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
@@ -102,7 +103,7 @@ else:
           wrong < ref.threshold < best)
     check(f"margin {best - wrong:.3f} is comfortable (>0.2)", best - wrong > 0.2)
 
-    print("\n5. Matching at the fast path's 0.3x would NOT be safe - why it takes its own capture")
+    print("\nV-313  Matching at the fast path's 0.3x would NOT be safe - why it takes its own capture")
     small = cv.cvtColor(cv.resize(img, (0, 0), fx=0.3, fy=0.3), cv.COLOR_BGR2GRAY)
     tpl_s = ref.template_at(small.shape[1] / ref.source_width)
     Hs, Ws = small.shape
@@ -115,7 +116,7 @@ else:
     check(f"at 0.3x the margin is only {best_s - wrong_s:.3f}, vs {best - wrong:.3f} at full res",
           (best - wrong) > (best_s - wrong_s))
 
-print("\n6. click_when_seen waits for the target, clicks once, and gives up cleanly")
+print("\nA-101  Click_when_seen waits for the target, clicks once, and gives up cleanly")
 #Driven with fake callbacks so nothing touches the real mouse.
 clicks = []
 orig_move, orig_down, orig_up = actions.pyautogui.moveTo, actions.pyautogui.mouseDown, actions.pyautogui.mouseUp
@@ -178,7 +179,7 @@ try:
 finally:
     actions.pyautogui.moveTo, actions.pyautogui.mouseDown, actions.pyautogui.mouseUp = orig_move, orig_down, orig_up
 
-print("\n7. wait_until sequences on a condition, not a clock")
+print("\nA-102  Wait_until sequences on a condition, not a clock")
 state = {"n": 0}
 
 
@@ -191,7 +192,7 @@ check("returns True once the condition holds", actions.wait_until(true_on_fourth
 check("returns False on timeout", actions.wait_until(lambda: False, timeout=0.15, poll_interval=0.05) is False)
 check("an already-true condition returns immediately", actions.wait_until(lambda: True, timeout=5.0))
 
-print("\n8. quit_game refuses to act when the guards say no")
+print("\nL-309  Quit_game refuses to act when the guards say no")
 #It must not press Esc into another program, or into a lobby with a text field focused.
 saved = main.actions_allowed
 try:
@@ -207,7 +208,7 @@ try:
 finally:
     main.actions_allowed = saved
 
-print("\n9. What is done to a target is separate from how long to keep doing it")
+print("\nA-103  What is done to a target is separate from how long to keep doing it")
 #Added 2026-09-12 with targets.txt's "[key:e]" tag. A sorceress collects a potion by pointing at
 #it and pressing her Telekinesis key rather than clicking and walking over, so the ACTION varies
 #per item while the retry/give-up/pause logic around it must not.
