@@ -131,15 +131,11 @@ pump(game, seconds=0.5)
 
 print("\nV-807  Focus is three-valued: True or False for a real window, None when it cannot tell")
 check("no handle -> None (cannot tell), never False", wr.is_foreground(None) is None)
-#Windows refuses SetForegroundWindow to a process that did not receive the last input; a
-#synthetic Alt press is the standard way to be allowed.
-try:
-    import win32api
-    win32api.keybd_event(win32con.VK_MENU, 0, 0, 0)
-    win32api.keybd_event(win32con.VK_MENU, 0, win32con.KEYEVENTF_KEYUP, 0)
-    win32gui.SetForegroundWindow(game_hwnd)
-except Exception as e:                       # noqa: BLE001
-    print(f"  note: could not bring the test window to the front ({e})")
+#Whichever window Windows says is in front - one of ours or not - is the real "True" case.
+#Forcing ours to the front is NOT attempted: the usual trick (a synthetic Alt press so Windows
+#allows SetForegroundWindow) also opens the system-menu loop on a Tk window, and that loop holds
+#the test inside update() forever - it hung the first CI run of this file.
+game.focus_force()
 pump(game, seconds=0.4)
 in_front = win32gui.GetForegroundWindow()
 answer_game, answer_browser = wr.is_foreground(game_hwnd), wr.is_foreground(browser_hwnd)
@@ -147,12 +143,13 @@ check(f"real windows get a real answer: {answer_game!r} / {answer_browser!r}",
       isinstance(answer_game, bool) and isinstance(answer_browser, bool))
 check("the answers agree with what Windows says is in front",
       answer_game == (in_front == game_hwnd) and answer_browser == (in_front == browser_hwnd))
-if in_front == game_hwnd:
-    check("the window in front reads True, the other False", answer_game and not answer_browser)
-elif UNDER_CI:
-    check("the test window could be brought to the front on CI", False)
+if in_front:
+    check("the window Windows says is in front reads True", wr.is_foreground(in_front) is True)
+    ours_behind = browser_hwnd if in_front == game_hwnd else game_hwnd
+    check("a window behind it reads False, not None", wr.is_foreground(ours_behind) is False)
 else:
-    print("  note: another window kept the focus, so True could not be checked here")
+    #No foreground window at all happens on a locked or disconnected desktop.
+    check("Windows reports some window in front (none: a locked desktop?)", not UNDER_CI)
 
 browser.destroy()
 game.destroy()
