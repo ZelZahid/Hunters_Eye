@@ -11,6 +11,11 @@ that tag rather than guessing from commit history - that's what these are for.
 ------------------------------------------------------------------------------
 AT A GLANCE - newest first. Full entries are below, oldest first.
 ------------------------------------------------------------------------------
+0.023  A TESTING SYSTEM so only what needs a person is checked by hand
+       (docs/testing.md). tools/live_check.py walks you through six game
+       states with F9 and prints PASS/FAIL on everything that reads the game.
+       CI now runs the pipeline end to end on a real screen and checks the
+       overlay's see-through and click-through with a real click.
 0.022  A CONTROL PANEL (python gui.py): start/stop the bot, the hotkeys as
        buttons, user_config.txt as a form with each setting's own help, and a
        live log. The bot runs as its own process underneath; every hotkey
@@ -1547,3 +1552,54 @@ New: gui.py, core/command_channel.py, tests/test_control_panel.py (cards
 T-401..T-405, C-119), tests/test_session.py (L-501); test_potions.py L-118.
 No new pip dependencies (tkinter is standard library; some Linux distributions
 ship it as python3-tk).
+
+0.023 - 2026-10-16
+------------------------------------------------------------------------------
+A TESTING SYSTEM, from the owner's request: "I only want to manually test
+things that are absolutely necessary." docs/testing.md is the map - three
+layers, and a rule that a check moves down them whenever a machine can do it:
+
+  1. CI cards on every pull request (now 180, all green on Windows).
+  2. tools/live_check.py, run by the owner with the game open.
+  3. A short by-hand list: changes that ACT in the game (potions in a real
+     fight, a real pickup, F3, F7), how the game feels, and policy choices.
+
+THE LIVE CHECK. `python tools/live_check.py`, about two minutes, main.py
+closed. Six steps - town, inventory, stash, menu, away (console in front),
+lobby - each set up by you and confirmed with F9 (F10 skips, End stops; the
+game can stay in front). Every check is judged by the pipeline's own readers
+and printed as PASS / FAIL / WARN with what was expected: window found and
+calibrated, in play, orbs full in town, belt read, no false panel or menu
+match, actions allowed or refused, Save and Exit found, the dimmed menu never
+reading a believable low orb, the lobby form found and the name read, and
+what one OCR scan costs on your machine against OCR_INTERVAL_SECONDS. It
+never moves the mouse or presses a key. Each run is saved to recordings/
+(gitignored): a screenshot per step, report.txt, report.json. --replay
+re-judges a saved run with today's code, so a fix can be checked against the
+owner's screen without the game. Cards T-302..T-304 hold its verdicts to the
+committed fixtures: real states pass, wrong states fail and say why.
+
+THREE KNOWN GAPS CLOSED IN CI:
+  - L-601..603: capture -> detect -> OCR started the way main() starts them,
+    against a real window holding the needle image and an item name. Boxes
+    land within a few pixels of the things, the pipeline holds TARGET_FPS
+    without exceeding it, every stage is alive afterwards, and a box goes
+    when its thing goes. The two threads that act are not started.
+  - T-105/T-106: the real Overlay over a green stand-in window. Captured
+    pixels show the window through every undrawn spot and half the stippled
+    panel, the box itself is visible, and a real click on the box and on the
+    panel is counted by the window underneath. This was the by-hand
+    click-counting check CLAUDE.md asked for after every overlay change.
+  - V-806/V-807: find_window / is_foreground against real windows: the
+    client area, exact title over a bigger window, hidden windows not found,
+    focus True/False/None.
+
+tests/run_all.py: a test killed for running too long can no longer hang the
+run (output goes to a file, not a pipe, and the process tree is killed), and
+each file's line prints as it finishes. Found the hard way: the first CI run
+of V-807 hung - a synthetic Alt press opened the system-menu loop on a Tk
+window - and the pipe wait hid which file it was.
+
+New: tools/live_check.py, docs/testing.md, tests/test_pipeline.py,
+tests/test_overlay_window.py, tests/test_window_lookup.py,
+tests/test_live_check.py. No new dependencies.
