@@ -21,11 +21,13 @@ run them whenever you like; nothing forces it on a commit.
 - **V-707** needs the trained monster model, which is gitignored (`assets/monsters/`). Without it
   the card prints `NOT RUN` and passes; the run's summary lists it under "Not run here", so the
   gap is visible every time. Run it on your own machine after training a model.
-- Nothing needs the game. Live behaviour (does F7 actually reach Pindleskin, does the potion
-  fire in time) is still checked by you in game before a live-behaviour change merges.
+- Nothing needs the game. What does - and how little of it still needs a person - is in
+  [`testing.md`](testing.md): `tools/live_check.py` checks the live reading side with the game
+  open and prints PASS/FAIL, and a short list covers what only a person can judge.
 
-**Skips are failures under CI.** V-801 (a real screen capture) and V-903/V-904 (real OCR) skip
-politely on a machine without a screen or without Tesseract, but fail when the `CI` environment
+**Skips are failures under CI.** V-801 (a real screen capture), V-903/V-904 (real OCR), L-6xx (the
+pipeline on a real screen), T-105/T-106 (the overlay window) and V-806/V-807 (window lookup) skip
+politely on a machine without a screen, Tesseract or Windows, but fail when the `CI` environment
 variable is set, because a check that quietly skips on the machine meant to run it looks exactly
 like a pass. A committed fixture that is missing is always a failure, never a skip.
 
@@ -47,12 +49,11 @@ The **Was** column is the card's old per-file section number. Older notes (`Erro
 ## Known gaps
 
 Critical code with no card yet, so nobody assumes it is covered:
-- **The pipeline threads in `main.py`** (capture -> detect -> act, the queues between them). Each
-  stage's logic has cards; the threads wired together do not.
-- **The overlay's see-through and click-through** (Win32 window state). Checked by hand, as
-  CLAUDE.md describes; the panel layout (T-1xx) is carded.
-- **`window_region`'s live window lookup** (`find_client_rect`, `is_foreground`). Win32 calls
-  against a real window; the geometry it feeds (V-805) is carded.
+- **The two pipeline threads that act** (auto-collect, potions) wired in with the rest. Their
+  decisions are carded (L-1xx, L-2xx) and capture -> detect -> OCR runs end to end (L-6xx), but
+  nothing starts the acting threads against a screen, because on a test machine they would act.
+- **Anything that needs the real game.** What is left, and the script that checks most of it
+  without you watching, is in [`testing.md`](testing.md).
 
 ## V — Vision
 
@@ -185,6 +186,8 @@ Code under test: core/frame_source.py, core/window_region.py
 | V-803 | A backend that dies mid-session degrades to mss, and the frame still arrives | test_frame_source.py | **new** |
 | V-804 | DXGI's 'no new frame' re-serves the last frame - a static screen is not an error | test_frame_source.py | **new** |
 | V-805 | A region given as fractions of a WINDOW lands on the right pixels of the capture | test_frame_source.py | **new** |
+| V-806 | Finding a real window: its CLIENT area, and an exact title beats a bigger window | test_window_lookup.py | **new** |
+| V-807 | Focus is three-valued: True or False for a real window, None when it cannot tell | test_window_lookup.py | **new** |
 
 ### V-9xx  The contract every detector shares
 
@@ -286,6 +289,16 @@ Code under test: main.py
 |---|---|---|---|
 | L-501 | Total Runtime reads as minutes and seconds | test_session.py | **new** |
 
+### L-6xx  The pipeline (main.py's threads wired together)
+
+Code under test: main.py `get_screenshot`, `detect_objects`, `detect_text`
+
+| Card | What it checks | File | Was |
+|---|---|---|---|
+| L-601 | Capture -> detect -> OCR, wired together on a real screen | test_pipeline.py | **new** |
+| L-602 | The pipeline paces itself, and every stage is still alive after running | test_pipeline.py | **new** |
+| L-603 | Something taken off screen stops being reported | test_pipeline.py | **new** |
+
 ## A — Actions
 
 _Mouse and keyboard._
@@ -361,6 +374,8 @@ Code under test: core/overlay.py
 | T-102 | The plate grows only when it has to | test_overlay.py | overlay §2 |
 | T-103 | The reported bug specifically | test_overlay.py | overlay §3 |
 | T-104 | Measuring is robust to junk input | test_overlay.py | overlay §4 |
+| T-105 | The overlay is see-through: what is under it shows wherever it draws nothing | test_overlay_window.py | **new** |
+| T-106 | The overlay is click-through: a click on a drawn box lands on the window underneath | test_overlay_window.py | **new** |
 
 ### T-2xx  Monster labelling tool
 
