@@ -37,3 +37,8 @@ zeroshot_scene.png
 # a cache, not a source file.
 yolo11n.pt
 yolov8n.pt
+
+# tools/live_check.py runs: a full screenshot per step plus the report, one folder per run.
+# Gitignored for the zelScreenshots reason above; a frame worth keeping is copied into
+# tests/fixtures/ (masked, with a README entry) and carded, not committed from here.
+recordings/

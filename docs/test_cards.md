@@ -393,11 +393,14 @@ Code under test: tools/label_monsters.py
 
 ### T-3xx  The test suite
 
-Code under test: tests/
+Code under test: tests/, tools/live_check.py
 
 | Card | What it checks | File | Was |
 |---|---|---|---|
 | T-301 | The test card index lists exactly the cards the tests run | test_card_index.py | **new** |
+| T-302 | The live check passes real screenshots of the states it asks for | test_live_check.py | **new** |
+| T-303 | A screen in the wrong state FAILS, and the line says what was expected | test_live_check.py | **new** |
+| T-304 | --replay re-judges a saved run from the command line | test_live_check.py | **new** |
 
 ### T-4xx  The control panel
 
