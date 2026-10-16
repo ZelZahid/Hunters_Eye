@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -32,19 +33,40 @@ TALLY = re.compile(r"^(\d+) checks, (\d+) failed$")
 
 
 def run(path):
-    """(exit code, output, seconds). Exit code None means it was killed for running too long."""
+    """(exit code, output, seconds). Exit code None means it was killed for running too long.
+
+    Output goes to a temporary FILE, not a pipe. A pipe is only finished when every process
+    holding its write end has exited - and a test that started a helper (a Tesseract
+    subprocess, a window) can leave one behind holding it, so reading a pipe after killing the
+    test could itself wait forever: the hang this timeout exists to stop, moved one level up.
+    A file is read whenever we like.
+    """
     start = time.perf_counter()
+    #UTF-8 both ways: on Windows a child writing to a pipe otherwise uses the ANSI code page,
+    #and one non-Latin character in a check label would crash the test instead of the check.
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    with tempfile.TemporaryFile() as out:
+        child = subprocess.Popen([sys.executable, str(path)], cwd=TESTS.parent, stdout=out,
+                                 stderr=subprocess.STDOUT, env=env)
+        try:
+            code = child.wait(timeout=TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            kill_tree(child)
+            code = None
+        out.seek(0)
+        output = out.read().decode("utf-8", "replace")
+    return code, output, time.perf_counter() - start
+
+
+def kill_tree(child):
+    """Kills a test that ran too long, and anything it started."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(child.pid)], capture_output=True)
+    child.kill()
     try:
-        #UTF-8 both ways: on Windows a child writing to a pipe otherwise uses the ANSI code page,
-        #and one non-Latin character in a check label would crash the test instead of the check.
-        env = dict(os.environ, PYTHONIOENCODING="utf-8")
-        done = subprocess.run([sys.executable, str(path)], cwd=TESTS.parent, capture_output=True,
-                              text=True, encoding="utf-8", errors="replace", env=env,
-                              timeout=TIMEOUT_SECONDS)
-        return done.returncode, done.stdout + done.stderr, time.perf_counter() - start
-    except subprocess.TimeoutExpired as e:
-        partial = (e.stdout or "") if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace")
-        return None, partial, time.perf_counter() - start
+        child.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def summarise(output):
@@ -70,8 +92,10 @@ def summarise(output):
 
 def main():
     verbose = "-v" in sys.argv[1:]
-    #A console that cannot show a character gets a '?' instead of a crash in the summary.
-    sys.stdout.reconfigure(errors="replace")
+    #A console that cannot show a character gets a '?' instead of a crash in the summary. Line
+    #buffered so each file's line appears as it finishes: under CI stdout is a pipe, and a block
+    #buffer would show nothing at all from a run that is later killed - not even where it stopped.
+    sys.stdout.reconfigure(errors="replace", line_buffering=True)
     files = sorted(TESTS.glob("test_*.py"))
     broken, all_cards, all_skips = [], 0, []
     total_start = time.perf_counter()
