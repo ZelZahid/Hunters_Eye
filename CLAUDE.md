@@ -139,6 +139,10 @@ One-time setup before `game_state.py` reports anything:
 `.github/workflows/tests.yml`) runs `run_all.py` on every pull request and push to `main`; merge
 only when it is green. A new card goes in the index in the same change — card T-301 fails CI
 otherwise. A committed fixture that is missing fails; it never skips. No linter.
+**`docs/testing.md` says who tests what**: CI cards, then `tools/live_check.py` (the owner runs it
+with the game open; it only looks, and prints PASS/FAIL), then a short by-hand list for changes that
+*act* in the game. Move a check down that list whenever a machine can do it; never add to the
+by-hand list without saying why no script can.
 
 ## Architecture — the rules, compressed
 
@@ -201,7 +205,8 @@ Game-agnostic. `act_until_gone(get_position, act)` separates *what* from *how lo
 ### `core/overlay.py` (Windows-only; macOS falls back to `run_debug_window()`)
 - **Re-verify see-through AND click-through** after any change — different Win32 state
   (re-assert `SetLayeredWindowAttributes`; walk to the outer frame via `GetParent()`;
-  `SWP_FRAMECHANGED`). Test click-through with a click-counting button.
+  `SWP_FRAMECHANGED`). Cards T-105/T-106 (`tests/test_overlay_window.py`) do this on Windows CI
+  with real pixels and a real click; keep them passing rather than re-checking by hand.
 - Repaints are capped (`BOX_REDRAW_HZ` 30, `PANEL_REDRAW_HZ` 10) and deadbanded (4px) — the
   cost lands on the **game's** FPS, not ours (EH#38). A skipped repaint must not count as drawn.
 - `TRANSPARENT_COLOR` is `#010203` on purpose; it is coupled to the empty
@@ -336,6 +341,7 @@ tools/                   # run by hand, never by the pipeline
   diagnose_quit.py       #   "why didn't F3 click Save and Exit?" - the guards, live
   diagnose_lobby.py      #   "why was the game name misread?" - dumps the crop it OCR'd
   teleport_bot.py        #   bot test mode: unattended teleports for timing tests (--measure)
+  live_check.py          #   with the game open: walks through 6 states, PASS/FAIL, saves a recording
 
 tests/                   # numbered test cards - none of them need the game running
   run_all.py             #   runs every file, reports failing cards by ID (what CI runs)
@@ -349,10 +355,13 @@ tests/                   # numbered test cards - none of them need the game runn
   test_game_state.py     #   meter fill measurement + Smoother
   test_image_search.py   #   the reference-image search, held to its pre-shortcut output
   test_label_monsters.py #   the YOLO label file: round trip, empty-vs-missing, stable ids
+  test_live_check.py     #   tools/live_check.py's verdicts on real screenshots, and --replay
   test_monster_detection.py # letterbox mapping, class-aware NMS, graceful degradation
   test_next_game.py      #   name increment/validation, lobby form location, OCR field read
   test_overlay.py        #   panel layout (needs a display; skips otherwise)
+  test_overlay_window.py #   the overlay is see-through and click-through (real pixels, real click)
   test_pindle_fight.py   #   the monster plate, motion spots, and the fight loop
+  test_pipeline.py       #   capture -> detect -> OCR threads together, on a real screen
   test_potions.py        #   the potion decision, and the belt-driven key resolution
   test_presence.py       #   presence.py + the in-play gate
   test_quit_game.py      #   the quit_game sequence + click_when_seen/wait_until
@@ -362,6 +371,7 @@ tests/                   # numbered test cards - none of them need the game runn
   test_slots.py          #   the cell-colour reader: real belts, empty slots, cannot-read
   test_targets.py        #   targets.txt parsing + span ranking
   test_user_config.py    #   user_config.py parsing/validation
+  test_window_lookup.py  #   finding a real window's client area; three-valued focus
 
 assets/                  # data, not code - edit these instead of the source
   image1.png             #   reference ("needle") image for template matching
@@ -380,6 +390,7 @@ docs/
   updates.txt            #   the changelog, and the source of truth for version numbers
   todolist.md            #   what to work on next, ideas, open questions, settled decisions
   test_cards.md          #   every test card: ID + one-line title, and when tests run
+  testing.md             #   who tests what: CI, the live check script, the short by-hand list
   Error_history.txt      #   bugs that took real effort, with root cause + fix + lesson
   design_notes.md        #   the long-form rationale behind everything in this file
   progress/              #   progress screenshot gallery + README index (max ~100 by v1.000)
@@ -387,6 +398,7 @@ docs/
   monster_detection_plan.txt
 
 legacy/                  # earlier, incompatible prototype - reference only
+recordings/              # GITIGNORED: one folder per tools/live_check.py run (screens + report)
 requirements.txt
 README.md / LICENSE / CLAUDE.md
 ```
