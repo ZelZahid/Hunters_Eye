@@ -50,6 +50,12 @@ keyboard>=0.13.5
 # (see overlay.py) - on other platforms main.py falls back to a plain debug window.
 pywin32>=306 ; sys_platform == "win32"
 
+# --- Audio (core/audio_source.py, used by wow.py) ---
+# Windows-only: hears what the speakers are playing (WASAPI loopback), which is how wow.py hears
+# the fishing splash without a microphone. Not needed by main.py. Without it wow.py says why and
+# exits before pressing anything; core/sound_match.py itself needs only numpy.
+pyaudiowpatch>=0.2.12 ; sys_platform == "win32"
+
 # --- Frame source (frame_source.py) ---
 # Windows-only, and OPTIONAL: bettercam captures via DXGI Desktop Duplication (the GPU
 # already holds the composited desktop) instead of asking GDI to re-blit it. Measured at

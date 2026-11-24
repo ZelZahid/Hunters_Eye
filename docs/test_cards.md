@@ -35,7 +35,7 @@ like a pass. A committed fixture that is missing is always a failure, never a sk
 
 `V-104` = category **V**, area **1**, card **04**.
 
-- The **letter** is the category: **V**ision, **L**ogic, **A**ctions, **C**onfig, **T**ools.
+- The **letter** is the category: **V**ision, **L**ogic, **A**ctions, **C**onfig, **S**ound, **T**ools.
 - The **first digit** is the area inside it (V-1xx meters, V-4xx OCR, ...). Each area owns a
   block of 100, so a new card never forces anything else to be renumbered.
 - **IDs are never reused or renumbered.** A deleted card's ID is retired.
@@ -111,6 +111,16 @@ Code under test: core/presence.py
 | V-311 | On a real Esc menu it finds the RIGHT button | test_quit_game.py | quit_game §3 |
 | V-312 | The threshold sits between the right button and the best wrong one | test_quit_game.py | quit_game §4 |
 | V-313 | Matching at the fast path's 0.3x would NOT be safe - why it takes its own capture | test_quit_game.py | quit_game §5 |
+
+### V-3xx (continued)  wow.py's screen checks
+
+Code under test: wow.py, assets/wow/*.json (through core/presence.py)
+
+| Card | What it checks | File | Was |
+|---|---|---|---|
+| V-314 | The fishing bar is seen on real frames, and not on frames without it | test_wow_fishing.py | **new** |
+| V-315 | 'Your fish got away!' is read off a real frame, and not off one without it | test_wow_fishing.py | **new** |
+| V-316 | The water behind the text does not matter - only the yellow letters are compared | test_wow_fishing.py | **new** |
 
 ### V-4xx  Text and OCR
 
@@ -299,6 +309,21 @@ Code under test: main.py `get_screenshot`, `detect_objects`, `detect_text`
 | L-602 | The pipeline paces itself, and every stage is still alive after running | test_pipeline.py | **new** |
 | L-603 | Something taken off screen stops being reported | test_pipeline.py | **new** |
 
+### L-7xx  WoW fishing (wow.py)
+
+Code under test: routes/fishing.py, wow.py
+
+| Card | What it checks | File | Was |
+|---|---|---|---|
+| L-701 | Splash while fishing: press at once, then recast after a random 1-6 s wait | test_wow_fishing.py | **new** |
+| L-702 | Nothing heard for the timeout: press anyway, then restart | test_wow_fishing.py | **new** |
+| L-703 | 'Your fish got away!' only counts when it APPEARS while fishing | test_wow_fishing.py | **new** |
+| L-704 | A screen it cannot read never makes it press on its own (None is not False) | test_wow_fishing.py | **new** |
+| L-705 | Paused, or WoW not in front: nothing is pressed, and a splash then is dropped | test_wow_fishing.py | **new** |
+| L-706 | A cast that never shows the bar is retried, then the loop stops and says why | test_wow_fishing.py | **new** |
+| L-707 | Key holds stay in 0.2-0.6 s, and are usually short | test_wow_fishing.py | **new** |
+| L-708 | The reference recording, replayed through the ears and the loop, reels in at every splash | test_wow_fishing.py | **new** |
+
 ## A — Actions
 
 _Mouse and keyboard._
@@ -358,6 +383,25 @@ Code under test: core/text_detection.py
 | C-205 | Both potions still resolve correctly now that neither is a look-alike | test_targets.py | targets §5 |
 | C-206 | Look-alikes still do their job for the runes | test_targets.py | targets §6 |
 | C-207 | How to collect an item is a tag, like its colour | test_targets.py | targets §7 |
+
+## S — Sound
+
+_Turning audio into an answer - the engine's ears._
+
+
+### S-1xx  Hearing a reference sound
+
+Code under test: core/sound_match.py, core/audio_source.py, core/wav_io.py
+
+| Card | What it checks | File | Was |
+|---|---|---|---|
+| S-101 | The three splashes in the reference recording are heard, and nothing else is | test_sound_match.py | **new** |
+| S-102 | Each splash is heard from a fingerprint built WITHOUT it (leave one out) | test_sound_match.py | **new** |
+| S-103 | A second splash a few seconds after the first is still heard | test_sound_match.py | **new** |
+| S-104 | Tonal sounds - wow.py's own pause/resume cues, a held tone - are never a splash | test_sound_match.py | **new** |
+| S-105 | Silence and gaps are 'cannot tell', never a match | test_sound_match.py | **new** |
+| S-106 | Reference clips: a bad one is skipped, none at all is None, never a crash | test_sound_match.py | **new** |
+| S-107 | Chunk size does not change what is heard; a WAV source serves the file intact | test_sound_match.py | **new** |
 
 ## T — Tools
 
