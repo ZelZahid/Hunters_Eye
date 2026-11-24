@@ -34,6 +34,9 @@ If a new test needs a real frame, add it here.
 | `route_temple_19/20/21/24/28.png` | Nihlathak's Temple, arrival -> fighting spot, **stored at 0.25x** like the Harrogath ones | `test_route.py`: 21/24/28 are held out of the temple map; 19 is the arrival (found by the portal landmark); 20 is the frame that once matched the *Harrogath* map at 0.630 |
 | `plate_pindleskin.png` / `plate_defiled_warrior.png` / `plate_none.png` | full-size frames masked to the top strip, with Pindleskin, a Defiled Warrior, and nothing hovered | `test_pindle_fight.py`: the red monster plate is the "a monster is under the cursor" signal |
 | `fight_motion_27.png` / `fight_motion_28.png` | two frames from the fighting spot with the same camera, **stored at 0.5x** | `test_pindle_fight.py`: what moves between them points the cursor at the pack |
+| `wow/fishing_session_16k.wav` | the owner's 57 s World of Warcraft fishing recording, audio only, **16 kHz mono** (the video is 48 kHz stereo) - three bobber splashes at about 16.4, 37.0 and 51.6 s | `test_sound_match.py`, L-708: the splash is heard three times and nothing else is. 16 kHz keeps it at 1.8 MB, and scanning it with the 48 kHz reference clips is itself the proof that sample rate does not matter |
+| `wow/bar_full_6s.png` / `bar_draining_36s.png` / `no_bar_39s.png` / `no_bar_nameplates_0s.png` | full-resolution crops of the same video at 1920x1080, each exactly the region `wow.py` captures for the fishing bar (`fishing_bar.json`'s `search_region`) | V-314: bar seen / not seen. The nameplate frame is the one that rejected a template of the bar's end (0.78 on a monster health bar) |
+| `wow/got_away_17s.png` / `no_got_away_10s.png` | the same, for the region searched for "Your fish got away!" | V-315/V-316 |
 
 The `route_harrogath_*` frames are the other exception, in the opposite direction: they are
 **downscaled rather than masked**, to exactly the map's scale (`map_scale` in

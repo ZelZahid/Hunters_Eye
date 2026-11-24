@@ -1,0 +1,16 @@
+{
+  "_comment": "WoW's 'Your fish got away!' message. The template is a YELLOW-TEXT MASK, not a picture: wow.py matches it against the same yellow mask of the screen, so the water behind the text does not matter. Cut from a 1920x1080 screenshot. See docs/wow_fishing.md.",
+  "template": "fish_got_away_mask.png",
+  "source_size": [
+    1920,
+    1080
+  ],
+  "search_region": [
+    0.25,
+    0.05,
+    0.5,
+    0.55
+  ],
+  "threshold": 0.6,
+  "name": "fish got away"
+}

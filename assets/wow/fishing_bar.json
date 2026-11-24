@@ -1,0 +1,20 @@
+{
+  "_comment": "The WoW cast bar while channelling Fishing. The template is the word 'Fishing' under the bar - the one part that never changes (the green fill drains, and other bars such as nameplates share the frame art: a template of the bar's left end scored 0.78 on a monster nameplate). Cut from a lossless 1920x1080 screenshot. search_region is a fraction of the WoW window - widen it if your UI moves the cast bar. See docs/wow_fishing.md.",
+  "references": [
+    {
+      "name": "Fishing label",
+      "template": "fishing_bar_label.png",
+      "source_size": [
+        1920,
+        1080
+      ],
+      "search_region": [
+        0.3,
+        0.55,
+        0.4,
+        0.3
+      ],
+      "threshold": 0.7
+    }
+  ]
+}

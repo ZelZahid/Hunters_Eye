@@ -293,6 +293,20 @@ Windows must be created topmost or they never appear. The live preview is the po
 - Settings are edited as **text, never via `configparser.write()`** (it drops the comments,
   which are the help) and validated by **`user_config.load()` itself** before saving.
 
+### `wow.py` + `core/sound_match.py` + `core/audio_source.py` — the WoW fishing helper
+A separate entry point, not a `main.py` mode; full record in `docs/wow_fishing.md`. **WoW is
+online: automating it is against Blizzard's terms and can get the account banned** — keep that
+warning in the docs and the script header.
+- The splash is heard by **spectrum, not waveform**, and three tests must agree: a sudden rise over
+  the last 2 s, louder than the loud end of the last 15 s, and spectral shape vs the reference
+  clips. The first alone fired on ambient fading in over near-silence. Silent frames are a gap,
+  never background; a **matched** sound is kept out of the history (else the next splash is missed).
+- Loopback is Windows-only and delivers nothing while nothing plays — `read()` → `None`.
+- Bar = the word "Fishing" only (the fill drains; nameplates share the frame art). "Got away" =
+  a **yellow mask** matched against a mask template, so the water behind is irrelevant, and it
+  counts only on its **rising edge** while fishing.
+- `routes/fishing.py` decides, with time and inputs passed in; `wow.py` only wires eyes, ears, hands.
+
 ### `legacy/` — reference only, not runnable.
 
 ## Performance facts that steer decisions
@@ -310,10 +324,12 @@ Directional, measured on dev hardware.
 ```
 main.py                  # the one entry point - the pipeline, and the Diablo II integration
 gui.py                   # the control panel: runs main.py --control, buttons, settings, log
+wow.py                   # WoW fishing helper: sees the cast bar, hears the splash, presses F
 user_config.txt          # USER-EDITABLE: potion thresholds, teleport key, settles, game name
 
 core/                    # THE ENGINE. Knows nothing about any particular game.
   actions.py             #   mouse + keyboard: click, click-when-seen, type, press, wait-until
+  audio_source.py        #   where sound comes from - speakers' loopback (Windows) or a WAV
   command_channel.py     #   one-word commands on a text stream -> handlers (main --control)
   frame_source.py        #   where pixels come from - DXGI or mss, with graceful fallback
   game_state.py          #   HUD meter reading - health/mana as a 0.0-1.0 number
@@ -321,14 +337,17 @@ core/                    # THE ENGINE. Knows nothing about any particular game.
   monster_detection.py   #   neural detector: find the classes a model was trained on
   overlay.py             #   transparent click-through output layer (Windows-only)
   presence.py            #   "is this reference art on screen?" - the in-play check
+  sound_match.py         #   "did THAT sound just play?" - hearing a reference sound in a stream
   slots.py               #   what is in each of a row of fixed cells - the potion belt
   text_detection.py      #   OCR: find listed names, or read a line of text as-is
   user_config.py         #   loader/validator for user_config.txt, + comment-keeping edits
+  wav_io.py              #   16-bit WAV in/out as float arrays (neutral helper for the two above)
   window_region.py       #   locating a window's client area, so regions can anchor to it
 
 routes/                  # GAME-SPECIFIC scripted sequences, built on core/. Never imports main.
   pindle.py              #   the Pindle run: new game -> red portal -> temple doorway -> fight
   shuttle.py             #   bot test mode: teleport out and back, each jump checked by looking
+  fishing.py             #   wow.py's decisions: reel in, wait 1-6 s, recast, restart
 
 tools/                   # run by hand, never by the pipeline
   build_route_map.py     #   stitch route screenshots into assets/routes/<name>.png/.json
@@ -369,9 +388,11 @@ tests/                   # numbered test cards - none of them need the game runn
   test_session.py        #   what a bot session reports when it stops (runtime as 6m 33s)
   test_shuttle.py        #   bot test mode: scene shift on real frames, the loop in a fake game
   test_slots.py          #   the cell-colour reader: real belts, empty slots, cannot-read
+  test_sound_match.py    #   hearing the splash in a real recording; tones, silence, bad clips
   test_targets.py        #   targets.txt parsing + span ranking
   test_user_config.py    #   user_config.py parsing/validation
   test_window_lookup.py  #   finding a real window's client area; three-valued focus
+  test_wow_fishing.py    #   wow.py: the bar and 'got away' on real frames, the fishing loop
 
 assets/                  # data, not code - edit these instead of the source
   image1.png             #   reference ("needle") image for template matching
@@ -383,6 +404,7 @@ assets/                  # data, not code - edit these instead of the source
   stash.json/.png        #   the same for the stash - add a file per panel, no code needed
   save_and_exit.json/.png#   the Esc menu's Save and Exit button
   routes/                #   route maps + paths, written by tools/build_route_map.py
+  wow/                   #   wow.py's references: cast bar, 'got away' mask, splash/*.wav
   zelScreenshots/        #   owner's scratch space for sharing screenshots mid-session.
                          #   GITIGNORED and cleared at will - NEVER point a test at it
 
@@ -396,6 +418,7 @@ docs/
   progress/              #   progress screenshot gallery + README index (max ~100 by v1.000)
   diagrams/              #   system_map.svg (README-ready) + system_map.html - the whole system on one page
   monster_detection_plan.txt
+  wow_fishing.md         #   wow.py: how to run it, the ToS warning, every measurement
 
 legacy/                  # earlier, incompatible prototype - reference only
 recordings/              # GITIGNORED: one folder per tools/live_check.py run (screens + report)

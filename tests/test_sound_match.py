@@ -1,0 +1,174 @@
+"""Tests for core/sound_match.py - hearing a reference sound in a stream - on a REAL recording.
+
+The recording is the owner's own 57 s of World of Warcraft fishing (tests/fixtures/wow/, 16 kHz
+mono), with three bobber splashes at about 0:16.4, 0:37.0 and 0:51.6 by its own clock. The reference
+clips in assets/wow/splash/ were cut from the same video at 48 kHz, so every scan here also proves
+the matcher does not care about sample rate.
+
+What the recording does NOT contain, and so what these cards cannot vouch for: combat, other
+players, music, a city. docs/wow_fishing.md lists those as untested.
+"""
+import sys
+from pathlib import Path
+#Run directly (python tests/test_x.py), so the repo root has to be on the path before any
+#project import - sys.path[0] is this file's own folder, not the root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import tempfile
+
+import numpy as np
+
+from core import audio_source, sound_match, wav_io
+
+ROOT = Path(__file__).resolve().parent.parent
+SPLASH = ROOT / "assets" / "wow" / "splash"
+RECORDING = ROOT / "tests" / "fixtures" / "wow" / "fishing_session_16k.wav"
+#Where the splash sound STARTS, by its own clock, found by eye on the waveform. A hit is
+#expected inside [onset, onset + 0.5 s] - the reel-in window in the video was well under a second.
+ONSETS = (16.42, 37.05, 51.60)
+
+failures = 0
+
+
+def check(label, condition):
+    global failures
+    print(f"  {'ok  ' if condition else 'FAIL'} {label}")
+    failures += not condition
+
+
+def hit_times(hits):
+    return [round(h.time, 2) for h in hits]
+
+
+def matches_onsets(hits, onsets=ONSETS):
+    """Every onset heard exactly once, within half a second, and nothing else heard at all."""
+    times = [h.time for h in hits]
+    return len(times) == len(onsets) and all(0.0 <= t - o <= 0.5 for t, o in zip(times, onsets))
+
+
+#A committed fixture that is missing is a FAILURE, never a skip (docs/test_cards.md).
+for required in [RECORDING] + [SPLASH / f"splash_{i}.wav" for i in (1, 2, 3)]:
+    if not required.exists():
+        print(f"FAIL missing committed fixture {required}")
+        sys.exit(1)
+
+samples, rate = wav_io.read_wav(RECORDING)
+clips = sorted(SPLASH.glob("*.wav"))
+reference = sound_match.load_reference(clips)
+
+
+print("\nS-101  The three splashes in the reference recording are heard, and nothing else is")
+check(f"the shipped reference clips load ({len(clips)} clips)", reference is not None and len(clips) >= 3)
+hits = sound_match.scan(samples, rate, reference)
+check(f"exactly the three splashes, each within 0.5 s of its start (heard at {hit_times(hits)})",
+      matches_onsets(hits))
+check("every hit was well clear of every threshold (not a near miss)",
+      all(h.rise_db > 20 and h.shape > 0.8 for h in hits))
+
+
+print("\nS-102  Each splash is heard from a fingerprint built WITHOUT it (leave one out)")
+#Three clips is a small sample. If the fingerprint only worked on the clips it was made from, it
+#would be memorising them, not describing the sound - so each splash is found using only the
+#other two.
+for left_out in range(len(clips)):
+    others = [c for i, c in enumerate(clips) if i != left_out]
+    found = sound_match.scan(samples, rate, sound_match.load_reference(others))
+    check(f"without {clips[left_out].name}: heard at {hit_times(found)}", matches_onsets(found))
+
+
+print("\nS-103  A second splash a few seconds after the first is still heard")
+#With a 1-6 s recast, a bite 5-10 s after the last splash is ordinary. If the first splash were
+#allowed into the "recent loudness" the second is compared with, the second would read as "not
+#louder than lately" and be missed - which it did, before matched sounds were kept out of it.
+clip, clip_rate = wav_io.read_wav(SPLASH / "splash_2.wav")
+clip = np.interp(np.arange(0, len(clip), clip_rate / rate), np.arange(len(clip)), clip).astype(np.float32)
+clip_onset = 37.05 - 36.5      #splash_2.wav was cut from 36.5 s
+for gap in (3.5, 5.0, 8.0):
+    extra_onset = ONSETS[0] + gap
+    mixed = samples.copy()
+    start = int((extra_onset - clip_onset) * rate)
+    mixed[start:start + len(clip)] += clip
+    found = sound_match.scan(mixed, rate, reference)
+    expected = sorted(ONSETS + (extra_onset,))
+    check(f"extra splash {gap} s after the first: heard at {hit_times(found)}",
+          matches_onsets(found, expected))
+#And a quieter one: the same splash 12 dB down (further away, or a lower effect volume).
+mixed = samples.copy()
+start = int((30.0 - clip_onset) * rate)
+mixed[start:start + len(clip)] += clip * 10 ** (-12 / 20)
+found = sound_match.scan(mixed, rate, reference)
+check(f"a splash 12 dB quieter is still heard (heard at {hit_times(found)})",
+      matches_onsets(found, sorted(ONSETS + (30.0,))))
+
+
+print("\nS-104  Tonal sounds - wow.py's own pause/resume cues, a held tone - are never a splash")
+#wow.py beeps on F5/F6 through the same speakers the matcher listens to, so it must never hear
+#its own cue as a bite. The cues are generated by the SAME function wow.py plays them from.
+import wow
+for name, tone in [("pause cue", wow.cue_samples(False, rate)), ("resume cue", wow.cue_samples(True, rate)),
+                   ("1 kHz tone, 1 s", 0.5 * np.sin(2 * np.pi * 1000 * np.arange(rate) / rate))]:
+    mixed = samples.copy()
+    for at in (10.0, 25.0, 45.0):      #during quiet fishing, where a rise is easiest to get
+        start = int(at * rate)
+        mixed[start:start + len(tone)] += tone.astype(np.float32)
+    found = sound_match.scan(mixed, rate, reference)
+    check(f"{name} played 3 times: only the real splashes heard ({hit_times(found)})", matches_onsets(found))
+
+
+print("\nS-105  Silence and gaps are 'cannot tell', never a match")
+matcher = sound_match.SoundMatcher(reference, rate)
+check("not ready before it has heard anything", matcher.ready is False)
+check("five seconds of digital silence: no hit", matcher.feed(np.zeros(5 * rate, np.float32)) == [])
+check("and still not ready - silence is not a background", matcher.ready is False)
+#Loud noise straight out of silence: there is no background to rise from yet, so no answer.
+rng = np.random.default_rng(1)
+check("loud noise with no history before it: no hit",
+      matcher.feed((0.5 * rng.standard_normal(rate // 2)).astype(np.float32)) == [])
+matcher = sound_match.SoundMatcher(reference, rate)
+matcher.feed(samples[:int(10 * rate)])
+check("ready after ten seconds of real ambience", matcher.ready is True)
+matcher.reset()
+check("reset() forgets the past (not ready again)", matcher.ready is False)
+
+
+print("\nS-106  Reference clips: a bad one is skipped, none at all is None, never a crash")
+with tempfile.TemporaryDirectory() as tmp:
+    tmp = Path(tmp)
+    (tmp / "broken.wav").write_bytes(b"not a wav file")
+    wav_io.write_wav(tmp / "silent.wav", np.zeros(rate, np.float32), rate)
+    check("a broken clip and a silent clip -> None (unavailable, not 'no match')",
+          sound_match.load_reference([tmp / "broken.wav", tmp / "silent.wav"]) is None)
+    good = sound_match.load_reference([tmp / "broken.wav", SPLASH / "splash_1.wav"])
+    check("a broken clip next to a good one: the good one is used", good is not None)
+    check("an empty folder -> None", sound_match.load_reference_folder(tmp / "nothing") is None)
+    try:
+        sound_match.SoundMatcher(None, rate)
+        check("a matcher with no reference refuses to start", False)
+    except ValueError:
+        check("a matcher with no reference refuses to start", True)
+
+
+print("\nS-107  Chunk size does not change what is heard; a WAV source serves the file intact")
+#Live audio arrives in whatever chunks the driver likes. The matcher keeps leftover samples
+#between calls, so 3 ms chunks and 200 ms chunks must give the same answer.
+small = hit_times(sound_match.scan(samples, rate, reference, chunk_seconds=0.003))
+large = hit_times(sound_match.scan(samples, rate, reference, chunk_seconds=0.2))
+check(f"3 ms chunks {small} == 200 ms chunks {large}", small == large and len(small) == 3)
+source = audio_source.WavFileSource(RECORDING, realtime=False)
+pieces = []
+while not source.finished:
+    chunk = source.read()
+    if chunk is not None:
+        pieces.append(chunk)
+check("every sample comes back, in order", np.array_equal(np.concatenate(pieces), samples))
+check("a finished source returns None, not an error", source.read(timeout=0.01) is None)
+if sys.platform != "win32":
+    try:
+        audio_source.LoopbackSource()
+        check("off Windows, the loopback source says why it cannot open", False)
+    except audio_source.AudioSourceError as exc:
+        check(f"off Windows, the loopback source says why it cannot open ({exc})", "Windows" in str(exc))
+
+
+print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
+sys.exit(1 if failures else 0)
