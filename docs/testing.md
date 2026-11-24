@@ -78,11 +78,12 @@ Only these still need you, and each says why no script can do it:
    - **auto-collect** - drop or find an item and see it picked up;
    - **F3** - quit and create the next game;
    - **F7** - the Pindle run reaches the pack and fights.
-   - **`wow.py`** - run `python wow.py --dry-run` while fishing and see `splash heard` print at
-     each splash and nowhere else, then `python wow.py` and see it reel in and recast. No script
-     can do this one: WoW is a different game on a live server, and its sound only exists while it
-     is running. What the recording could check is checked by S-1xx and L-7xx; what it could not
-     is listed in [`wow_fishing.md`](wow_fishing.md#not-tested-and-why).
+   - **`wow.py`** - run `python wow.py --dry-run` while fishing and see `splash heard` and/or
+     `lure bobbed` print at each bite and nowhere else, then `python wow.py` and see it reel in and
+     recast. If nothing is heard, `python wow.py --check-audio` first. No script can do this one:
+     WoW is a different game on a live server, and its sound only exists while it plays. What the
+     recordings could check is checked by S-1xx, V-317/V-318 and L-7xx; what they could not is
+     listed in [`wow_fishing.md`](wow_fishing.md#not-tested-and-why).
 2. **Does the game still feel right?** The pipeline measures its own CPU cost, but "the game feels
    less smooth" or "the boxes flicker annoyingly" is a judgement only the person playing can make.
 3. **Policy, not correctness.** Whether 70% is the right health to drink at is your preference; the

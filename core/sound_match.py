@@ -67,6 +67,11 @@ class SoundHit:
     shape: float            #test 3: spectral-shape correlation with the reference, -1..1
 
 
+#A near miss has the same fields: for a loud sound that was NOT a match, each is the best that sound
+#reached, so a log line can say which test it fell short on, and by how much.
+NearMiss = SoundHit
+
+
 def _frame_size(sample_rate):
     target = FRAME_SECONDS * sample_rate
     return int(2 ** np.ceil(np.log2(max(target, 64))))
@@ -119,24 +124,34 @@ def _shape(levels):
     return centred / norm if norm > 1e-9 else None
 
 
-def fingerprint_from_clip(samples, sample_rate, loud_window_db=6.0):
-    """The reference shape of one clip: the average spectrum of its loudest moments.
+def fingerprint_from_clip(samples, sample_rate, onset_drop_db=12.0, seconds=0.3):
+    """The reference shape of one clip: the average spectrum of the sound's first `seconds`.
 
-    "Loudest moments" = every frame within `loud_window_db` of the clip's peak. This needs no
-    hand-marked onset, so a clip cut roughly around the sound (half a second either side is
-    plenty) gives the same fingerprint as a precisely trimmed one. Returns None for a clip with
-    nothing audible in it.
+    The sound starts at the first frame within `onset_drop_db` of the clip's peak, so no onset has
+    to be marked by hand: a clip cut roughly around the sound (half a second either side) gives the
+    same fingerprint as a trimmed one. Returns None for a clip with nothing audible in it.
+
+    WHY THE START, NOT THE LOUDEST PART: the matcher decides within ~0.15 s of a sound starting,
+    so the fingerprint has to describe that moment. The first version averaged the loudest frames
+    instead, and for one splash variant those come later and sound different: its fingerprint
+    then matched a spell's crackle (0.73) better than its own onset.
     """
     analyser = _BandAnalyser(sample_rate)
     levels, total = analyser.feed(samples)
     if len(total) == 0 or float(total.max()) <= SILENCE_DB:
         return None
-    loud = total >= float(total.max()) - loud_window_db
-    return _shape(levels[loud].mean(axis=0))
+    start = int(np.argmax(total >= float(total.max()) - onset_drop_db))
+    count = max(1, int(round(seconds * analyser.frames_per_second)))
+    return _shape(levels[start:start + count].mean(axis=0))
 
 
 def load_reference(paths):
-    """Averages the fingerprints of several clips into one reference shape, or None.
+    """The fingerprints of several clips as a LIBRARY (one row per clip), or None.
+
+    A library, not an average: splashes come in several distinct variants, and averaging them
+    blurs each one into a shape none of them has. The matcher scores a sound against every row and
+    keeps the best, so adding a clip of a new variant teaches it that variant without making it
+    worse at the others.
 
     Never raises for a bad clip: it is skipped with a warning, because one damaged file should not
     stop the others from working. No usable clip at all returns None, and the caller must treat
@@ -156,7 +171,7 @@ def load_reference(paths):
         shapes.append(shape)
     if not shapes:
         return None
-    return _shape(np.mean(shapes, axis=0))
+    return np.stack(shapes)
 
 
 def load_reference_folder(folder):
@@ -173,11 +188,12 @@ class SoundMatcher:
     """
 
     def __init__(self, reference_shape, sample_rate, min_rise_db=15.0, min_over_recent_db=8.0,
-                 min_shape=0.7, evidence_seconds=0.15, background_seconds=2.0, gap_seconds=0.3,
+                 min_shape=0.78, evidence_seconds=0.15, background_seconds=2.0, gap_seconds=0.3,
                  recent_seconds=15.0, refractory_seconds=3.0):
         if reference_shape is None:
             raise ValueError("SoundMatcher needs a reference shape (load_reference returned None)")
-        self.reference = np.asarray(reference_shape, dtype=np.float64)
+        #One row per reference clip; a single 1-D shape is a library of one.
+        self.reference = np.atleast_2d(np.asarray(reference_shape, dtype=np.float64))
         self.min_rise_db = float(min_rise_db)
         self.min_over_recent_db = float(min_over_recent_db)
         self.min_shape = float(min_shape)
@@ -197,6 +213,10 @@ class SoundMatcher:
         #turning a 1400-row deque into an array on every frame was measured at half the matcher's
         #whole cost, and this is the same data with no conversion.
         self._ring = np.zeros((self._recent_n, len(BAND_EDGES_HZ) - 1), dtype=np.float32)
+        #Which ring rows belong to a sound that MATCHED. They count toward the 2 s background (so a
+        #long sound stops being "sudden" once it has gone on for a while) but not toward the recent
+        #loud level (so one splash does not make the next one look ordinary). See _judge().
+        self._ring_matched = np.zeros(self._recent_n, dtype=bool)
         self._ring_count = 0
         self._ring_pos = 0
         self._background_offsets = np.arange(1, self._background_n + 1)
@@ -209,6 +229,10 @@ class SoundMatcher:
         self._last_hit = None
         self._quiet_until = None  #frames before this time stay out of the history - see _judge()
         self.last_scores = None   #(rise, over_recent, shape) of the latest frame, for debugging
+        #Every sudden loud sound that was NOT a match, one entry per sound - so when a real splash is
+        #missed live, the log says which test it failed instead of leaving nothing to go on.
+        self.near_misses = deque(maxlen=100)
+        self._event = None        #[start, best rise, best over_recent, best shape, last loud time]
 
     @property
     def sample_rate(self):
@@ -225,10 +249,12 @@ class SoundMatcher:
         self._delay.clear()
         self._ring_count = 0
         self._ring_pos = 0
+        self._ring_matched[:] = False
         self._recent_level = None
         self._last_hit = None
         self._quiet_until = None
         self.last_scores = None
+        self._event = None
 
     def feed(self, samples):
         """Processes samples (mono float, -1..1) and returns the list of hits they contained."""
@@ -243,17 +269,20 @@ class SoundMatcher:
 
             #A frame joins the history only after it has aged past the gap, and only if audible.
             matched = self._quiet_until is not None and now < self._quiet_until
-            self._delay.append(None if silent or matched else row)
+            self._delay.append(None if silent else (row, matched))
             if len(self._delay) == self._delay.maxlen:
                 aged = self._delay[0]
                 if aged is not None:
-                    self._ring[self._ring_pos] = aged
+                    self._ring[self._ring_pos] = aged[0]
+                    self._ring_matched[self._ring_pos] = aged[1]
                     self._ring_pos = (self._ring_pos + 1) % self._recent_n
                     self._ring_count = min(self._ring_count + 1, self._recent_n)
             self._frames_since_recent += 1
             if self._frames_since_recent >= self._recent_every and self._ring_count >= fps:
                 self._frames_since_recent = 0
-                self._recent_level = np.percentile(self._ring[:self._ring_count], 90, axis=0)
+                ordinary = ~self._ring_matched[:self._ring_count]
+                if ordinary.sum() >= fps:
+                    self._recent_level = np.percentile(self._ring[:self._ring_count][ordinary], 90, axis=0)
 
             hit = self._judge(now)
             if hit is not None:
@@ -273,22 +302,52 @@ class SoundMatcher:
         rise = float(np.mean(evidence - background))
         over_recent = float(np.mean(evidence - self._recent_level))
         shape_vec = _shape(evidence)
-        shape = float(shape_vec @ self.reference) if shape_vec is not None else -1.0
+        shape = float(np.max(self.reference @ shape_vec)) if shape_vec is not None else -1.0
         self.last_scores = (rise, over_recent, shape)
-        if rise < self.min_rise_db or over_recent < self.min_over_recent_db or shape < self.min_shape:
-            return None
         if self._last_hit is not None and now - self._last_hit < self.refractory_seconds:
             return None
+        if rise < self.min_rise_db or over_recent < self.min_over_recent_db or shape < self.min_shape:
+            self._track_near_miss(now, rise, over_recent, shape)
+            return None
         self._last_hit = now
-        #A sound that MATCHED must not become part of the background it is judged against. Without
-        #this, a second splash a few seconds after the first is compared with the first one's
-        #loud tail, reads as "not louder than recently", and is missed - and with a 1-6 s recast
-        #a bite 5-10 s after the last one is the normal case, not an edge case. The frames still
-        #in the gap buffer are the start of this very sound, so they go too.
+        self._event = None        #it became a match after all: not a near miss
+        #A sound that MATCHED must not raise the recent loud level the next one is judged against.
+        #Without this, a second splash a few seconds after the first is compared with the first
+        #one's loud tail, reads as "not louder than recently", and is missed - and with a 1-6 s
+        #recast a bite 5-10 s after the last one is ordinary. It DOES still count toward the 2 s
+        #background: when it once didn't, a long spell sound that matched once stayed "sudden"
+        #forever and matched again every 3 s (measured, 2026-11-24 recording, 77-84 s). The frames
+        #still in the gap buffer are the start of this very sound, so they are marked too.
         self._quiet_until = now + self.refractory_seconds
-        for i in range(len(self._delay)):
-            self._delay[i] = None
+        for i, entry in enumerate(self._delay):
+            if entry is not None:
+                self._delay[i] = (entry[0], True)
         return SoundHit(now, rise, over_recent, shape)
+
+    def _track_near_miss(self, now, rise, over_recent, shape):
+        """Accumulates one loud non-matching sound; files it once it has been quiet for 0.3 s."""
+        event = self._event
+        if rise >= self.min_rise_db:
+            if event is None:
+                self._event = [now, rise, over_recent, shape, now]
+            else:
+                event[1] = max(event[1], rise)
+                event[2] = max(event[2], over_recent)
+                event[3] = max(event[3], shape)
+                event[4] = now
+        elif event is not None and now - event[4] > 0.3:
+            self.near_misses.append(NearMiss(event[0], event[1], event[2], event[3]))
+            self._event = None
+
+    def failed_tests(self, miss):
+        """Plain words for which tests a near miss fell short on."""
+        failed = []
+        if miss.over_recent_db < self.min_over_recent_db:
+            failed.append(f"only {miss.over_recent_db:+.1f} dB over the recent loud level "
+                          f"(needs {self.min_over_recent_db:+.1f})")
+        if miss.shape < self.min_shape:
+            failed.append(f"shape {miss.shape:.2f} (needs {self.min_shape:.2f})")
+        return failed or ["each test passed, but never all at the same moment"]
 
 
 def scan(samples, sample_rate, reference_shape, chunk_seconds=0.02, **settings):

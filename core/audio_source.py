@@ -44,20 +44,52 @@ def _to_mono(data, channels):
     return data
 
 
-class LoopbackSource:
-    """The default speakers' output, as mono float32 chunks. Windows only."""
+def _import_pyaudio():
+    if sys.platform != "win32":
+        raise AudioSourceError("listening to the speakers (WASAPI loopback) is Windows-only; "
+                               "on macOS it needs a loopback device such as BlackHole (not "
+                               "supported yet)")
+    try:
+        import pyaudiowpatch as pyaudio
+    except ImportError as exc:
+        raise AudioSourceError("pyaudiowpatch is not installed - run: "
+                               "python -m pip install -r requirements.txt") from exc
+    return pyaudio
 
-    def __init__(self, chunk_seconds=0.01, max_queued_chunks=200):
-        if sys.platform != "win32":
-            raise AudioSourceError("listening to the speakers (WASAPI loopback) is Windows-only; "
-                                   "on macOS it needs a loopback device such as BlackHole (not "
-                                   "supported yet)")
+
+def list_loopback_devices():
+    """The names of every output that can be listened to, and which one is the Windows default.
+
+    Returns (names, default_name). For choosing `device=` when the game plays its sound somewhere
+    other than the default speakers (a headset, a second sound card, a monitor's HDMI audio).
+    Raises AudioSourceError where loopback is not available at all.
+    """
+    pyaudio = _import_pyaudio()
+    audio = pyaudio.PyAudio()
+    try:
+        names = [d["name"] for d in audio.get_loopback_device_info_generator()]
         try:
-            import pyaudiowpatch as pyaudio
-        except ImportError as exc:
-            raise AudioSourceError("pyaudiowpatch is not installed - run: "
-                                   "python -m pip install -r requirements.txt") from exc
+            wasapi = audio.get_host_api_info_by_type(pyaudio.paWASAPI)
+            default = audio.get_device_info_by_index(wasapi["defaultOutputDevice"])["name"]
+        except OSError:
+            default = None
+        return names, default
+    finally:
+        audio.terminate()
+
+
+class LoopbackSource:
+    """An output device's sound, as mono float32 chunks. Windows only.
+
+    device: None = the Windows default speakers; otherwise part of the device's name (case
+    ignored), as list_loopback_devices() prints it. A name that matches nothing raises, with the
+    names that do exist - silently falling back to the default would hear the wrong device.
+    """
+
+    def __init__(self, chunk_seconds=0.01, max_queued_chunks=200, device=None):
+        pyaudio = _import_pyaudio()
         self._pyaudio = pyaudio
+        self._wanted = device
         self._queue = queue.Queue(maxsize=max_queued_chunks)
         self.dropped = 0
         self._audio = pyaudio.PyAudio()
@@ -78,6 +110,14 @@ class LoopbackSource:
             raise AudioSourceError(f"could not open the speakers' loopback: {exc}") from exc
 
     def _find_loopback(self, pyaudio):
+        if self._wanted:
+            loopbacks = list(self._audio.get_loopback_device_info_generator())
+            for loopback in loopbacks:
+                if self._wanted.lower() in loopback["name"].lower():
+                    return loopback
+            names = ", ".join(d["name"] for d in loopbacks) or "none"
+            raise AudioSourceError(f"no output device named like '{self._wanted}' - the ones that "
+                                   f"can be listened to: {names}")
         try:
             wasapi = self._audio.get_host_api_info_by_type(pyaudio.paWASAPI)
         except OSError as exc:

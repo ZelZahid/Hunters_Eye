@@ -141,8 +141,8 @@ for i in range(200):
     loop = make_loop()
     loop.rng = random.Random(i)
     loop.start(0.0, bar=True)
-    loop.decide(1.0, bar=True, splash=True)
-    delays.append(loop.cast_at - 1.0)
+    loop.decide(2.0, bar=True, splash=True)
+    delays.append(loop.cast_at - 2.0)
 check(f"200 recasts: every delay in 1-6 s ({min(delays):.2f}-{max(delays):.2f}), and they vary "
       f"({len(set(round(d, 1) for d in delays))} distinct)", 1.0 <= min(delays) and max(delays) <= 6.0
       and len(set(round(d, 1) for d in delays)) > 30)
@@ -151,8 +151,8 @@ for i in range(50):
     loop = make_loop(recast_delay=(2.0, 3.0))
     loop.rng = random.Random(i)
     loop.start(0.0, bar=True)
-    loop.decide(1.0, bar=True, splash=True)
-    narrow.append(loop.cast_at - 1.0)
+    loop.decide(2.0, bar=True, splash=True)
+    narrow.append(loop.cast_at - 2.0)
 check(f"the range is a setting (2-3 s gives {min(narrow):.2f}-{max(narrow):.2f})",
       2.0 <= min(narrow) and max(narrow) <= 3.0)
 
@@ -250,6 +250,113 @@ for start in range(0, len(samples), step):
 reels = [p for p in presses if any(0 <= p - o <= 0.5 for o in (16.42, 37.05, 51.60))]
 check(f"a reel-in press within 0.5 s of each splash ({reels})", len(reels) == 3)
 
+
+#---------------------------------------------------------------------------------------------------
+# The lure. Fixtures are 150x230 crops of the owner's recordings at 1920x1080 holding the cog WoW
+# draws over the lure and the water under it; the strips are 10 frames a second, stacked top to
+# bottom, with the crop's place in the window and the first frame's time as below.
+#---------------------------------------------------------------------------------------------------
+
+LURE_STRIPS = {   #name: (origin in the 1920x1080 window, time of the first frame, bite or None)
+    "lure_bite_v4.png": ((1006, 218), 24.3, 27.2),
+    "lure_bite_choppy_v3.png": ((964, 241), 21.5, 24.4),
+    "lure_pointer_no_bite_v4.png": ((1014, 225), 7.0, None),
+}
+
+
+def strip_frames(name):
+    strip = load(name)
+    return [strip[i:i + 230] for i in range(0, strip.shape[0], 230)]
+
+
+def watch_strip(eye, name):
+    """Feeds a strip to a fresh BobberEye exactly as wow.py's lure thread does; returns
+    [(time, seen, bite)] for every frame."""
+    origin, start, _bite = LURE_STRIPS[name]
+    eye.lose()
+    return [(round(start + i / 10, 1), *eye.look(frame, origin, 1920, start + i / 10))
+            for i, frame in enumerate(strip_frames(name))]
+
+
+eye = wow.load_bobber_eye()
+if eye is None:
+    print("FAIL the shipped assets/wow/bobber.json does not load")
+    sys.exit(1)
+
+
+print("\nV-317  The lure is found by the cog over it - on different water, light and camera - and not where there is none")
+threshold = eye.marker.references[0].threshold
+for name in ("lure_v1_12s.png", "lure_bite_v4.png", "lure_bite_choppy_v3.png"):
+    frame = strip_frames(name)[0]
+    found, score = eye.marker.check(cv.cvtColor(frame, cv.COLOR_BGR2GRAY), 1920, region=(0, 0, 1, 1))
+    check(f"{name}: found (score {score:.2f}, threshold {threshold})", found is True)
+found, score = eye.marker.check(cv.cvtColor(load("no_lure_v4_29s.png"), cv.COLOR_BGR2GRAY), 1920,
+                                region=(0, 0, 1, 1))
+check(f"no_lure_v4_29s.png (the same water once the lure is gone): not found (score {score:.2f})",
+      found is False)
+small = cv.resize(load("lure_v1_12s.png"), None, fx=0.5, fy=0.5, interpolation=cv.INTER_AREA)
+found, score = eye.marker.check(cv.cvtColor(small, cv.COLOR_BGR2GRAY), 960, region=(0, 0, 1, 1))
+check(f"rescaled for a 960-wide window, not assumed 1920 ({score:.2f})", found is True)
+
+
+print("\nV-318  A real bite is seen at the moment it happens, once, and a pointer crossing the lure is not a bite")
+for name, (_origin, _start, bite) in LURE_STRIPS.items():
+    looks = watch_strip(eye, name)
+    bites = [t for t, _seen, b in looks if b]
+    judged = [t for t, _seen, b in looks if b is not None]
+    if bite is not None:
+        check(f"{name}: one bite, at {bite} s ({bites})", bites == [bite])
+    else:
+        check(f"{name}: no bite, though the pointer crosses the lure at 10.0 s ({bites})",
+              bites == [] and 10.0 in judged)
+    first_seen = next(t for t, seen, _b in looks if seen)
+    check(f"  nothing judged in the first second after the lure appears (its own landing splash): "
+          f"seen {first_seen}, first judged {judged[0]}", judged[0] - first_seen >= eye.settle_seconds)
+looks = watch_strip(eye, "lure_bite_v4.png")
+check("a lure that is no longer there is 'not seen', not an error",
+      eye.look(load("no_lure_v4_29s.png"), (1006, 218), 1920, 29.0)[0] is False)
+check("no frame at all is 'cannot tell': (None, None)", eye.look(None, (0, 0), 1920, 30.0) == (None, None))
+#How many looks a second it needs is measured on the full videos, not here (the strips are too
+#short to build up history at a lower rate): all 9 bites at 8, 12 and 20 looks a second, 0 false
+#alarms - see docs/wow_fishing.md.
+
+
+print("\nL-709  A splash right after the bar appears is the lure landing, not a bite: ignored, and said so")
+loop = make_loop()
+loop.start(0.0, bar=False)
+run_until(loop, 0.0, 1.05, bar=False)                  #the cast
+loop.decide(1.5, bar=True)                             #the bar appears: fishing since 1.5
+check("a splash 0.3 s later presses nothing (measured: the landing plop came 0.3 s after the bar)",
+      loop.decide(1.8, bar=True, splash=True) is None and loop.state == fishing.FISHING)
+check(f"and the log says why ('{loop.lines[-1][:60]}...')", "landing" in loop.lines[-1])
+check("a lure 'bob' that early is ignored the same way", loop.decide(2.0, bar=True, bobbed=True) is None)
+check("a splash 1.6 s after the bar is a bite: reel in", loop.decide(3.1, bar=True, splash=True) == fishing.PRESS)
+
+
+print("\nL-710  Either signal reels in - the splash heard, or the lure seen bobbing - and the tally says which")
+loop = make_loop()
+loop.start(0.0, bar=True)
+check("the lure bobbing alone reels in", loop.decide(5.0, bar=True, bobbed=True) == fishing.PRESS)
+loop.start(20.0, bar=True)
+check("the splash alone reels in", loop.decide(25.0, bar=True, splash=True) == fishing.PRESS)
+loop.start(40.0, bar=True)
+check("both on the same tick: ONE press, not two", loop.decide(45.0, bar=True, splash=True, bobbed=True)
+      == fishing.PRESS and loop.decide(45.01, bar=True, splash=True, bobbed=True) is None)
+check(f"tallied by signal {loop.caught_by}", loop.caught_by == {"sound": 1, "sight": 1, "both": 1})
+loop = make_loop()
+loop.start(0.0, bar=False)
+loop.decide(0.5, bar=False, bobbed=True)
+check(f"a bite while not fishing is logged as not acted on ('{loop.lines[-1][:50]}...')",
+      "not acted on" in loop.lines[-1] and "lure bobbed" in loop.lines[-1])
+
+
+print("\nL-711  Pause and resume are ONE key, and each state still has its own sound")
+check("there is no separate resume key any more", not hasattr(wow, "RESUME_KEY"))
+check(f"the pause key is {wow.PAUSE_KEY.upper()}", wow.PAUSE_KEY == "f5")
+check("the two cues differ (falling to pause, rising to resume)",
+      not np.array_equal(wow.cue_samples(False, 16000), wow.cue_samples(True, 16000)))
+check(f"the no-bite restart is {wow.NO_SPLASH_TIMEOUT_SECONDS:.0f} s, and the loop's default agrees",
+      wow.NO_SPLASH_TIMEOUT_SECONDS == 30.0 and fishing.FishingLoop().no_splash_timeout == 30.0)
 
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

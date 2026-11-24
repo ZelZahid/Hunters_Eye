@@ -121,6 +121,8 @@ Code under test: wow.py, assets/wow/*.json (through core/presence.py)
 | V-314 | The fishing bar is seen on real frames, and not on frames without it | test_wow_fishing.py | **new** |
 | V-315 | 'Your fish got away!' is read off a real frame, and not off one without it | test_wow_fishing.py | **new** |
 | V-316 | The water behind the text does not matter - only the yellow letters are compared | test_wow_fishing.py | **new** |
+| V-317 | The lure is found by the cog over it - on different water, light and camera - and not where there is none | test_wow_fishing.py | **new** |
+| V-318 | A real bite is seen at the moment it happens, once, and a pointer crossing the lure is not a bite | test_wow_fishing.py | **new** |
 
 ### V-4xx  Text and OCR
 
@@ -210,6 +212,7 @@ Code under test: all detectors
 | V-903 | OCR finds listed words on a white document page, and says where | test_detector_contract.py | **new** |
 | V-904 | OCR reads light text on a dark background - a night-time sign, a dark UI | test_detector_contract.py | **new** |
 | V-905 | 'Cannot tell' comes back as None from every detector, never as a confident no | test_detector_contract.py | **new** |
+| V-906 | Spot watch notices a light coming on in a doorway - a camera, not a game | test_detector_contract.py | **new** |
 
 ## L — Logic
 
@@ -323,6 +326,9 @@ Code under test: routes/fishing.py, wow.py
 | L-706 | A cast that never shows the bar is retried, then the loop stops and says why | test_wow_fishing.py | **new** |
 | L-707 | Key holds stay in 0.2-0.6 s, and are usually short | test_wow_fishing.py | **new** |
 | L-708 | The reference recording, replayed through the ears and the loop, reels in at every splash | test_wow_fishing.py | **new** |
+| L-709 | A splash right after the bar appears is the lure landing, not a bite: ignored, and said so | test_wow_fishing.py | **new** |
+| L-710 | Either signal reels in - the splash heard, or the lure seen bobbing - and the tally says which | test_wow_fishing.py | **new** |
+| L-711 | Pause and resume are ONE key, and each state still has its own sound | test_wow_fishing.py | **new** |
 
 ## A — Actions
 
@@ -402,6 +408,8 @@ Code under test: core/sound_match.py, core/audio_source.py, core/wav_io.py
 | S-105 | Silence and gaps are 'cannot tell', never a match | test_sound_match.py | **new** |
 | S-106 | Reference clips: a bad one is skipped, none at all is None, never a crash | test_sound_match.py | **new** |
 | S-107 | Chunk size does not change what is heard; a WAV source serves the file intact | test_sound_match.py | **new** |
+| S-108 | The newer recordings' splashes are heard too - including ones from clips NOT in the library | test_sound_match.py | **new** |
+| S-109 | A loud sound that is NOT taken for a splash is recorded, with the test it failed, in words | test_sound_match.py | **new** |
 
 ## T — Tools
 

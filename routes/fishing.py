@@ -13,9 +13,19 @@ nothing to interact with, casts again):
        ^                      |  (no bar after CAST_CONFIRM_SECONDS: cast again,          |
        |                      |   and give up after MAX_FAILED_CASTS in a row)            |
        |                                                                                  |
-       +-- random 1-6 s wait <-- splash heard: press at once (reel in) ------------------+
+       +-- random 1-6 s wait <-- splash heard OR lure bobbed: press at once (reel in) ---+
        +-- random 1-6 s wait <-- "Your fish got away!" appeared, or the bar went away ---+
        +-- random 1-6 s wait <-- nothing heard for NO_SPLASH_TIMEOUT: press (restart) ---+
+
+TWO SIGNALS FOR A BITE, EITHER ONE IS ENOUGH: the splash SOUND (core/sound_match.py) and the lure
+BOBBING in the water (wow.py's BobberEye). They fail in different ways - the sound when the game's
+audio does not reach the loopback, the sight when the lure is off screen or covered - so the loop
+reels in on whichever comes first. On the recordings the sight came 0.3-0.45 s sooner.
+
+THE CAST'S OWN PLOP. The bobber landing in the water is a small splash too, and it lands about
+0.3 s after the bar appears (measured, 2026-11-24 recording, 73.6 s bar -> 73.89 s plop). A splash
+heard in the first `splash_settle_seconds` of FISHING is that plop, not a bite - no fish bites that
+fast - so it is logged and ignored rather than reeling in an empty line.
 
 THREE-VALUED INPUTS. `bar` and `got_away` are True / False / None, and None ("the screen could not
 be read") is never treated as False. A FISHING state that cannot see the screen waits; it does not
@@ -45,8 +55,9 @@ class FishingLoop:
     printing (what happened and what comes next), so a person watching the console can follow.
     """
 
-    def __init__(self, recast_delay=(1.0, 6.0), no_splash_timeout=20.0, cast_confirm_seconds=4.0,
-                 bar_lost_seconds=0.6, max_failed_casts=3, rng=None, log=print):
+    def __init__(self, recast_delay=(1.0, 6.0), no_splash_timeout=30.0, cast_confirm_seconds=4.0,
+                 bar_lost_seconds=0.6, max_failed_casts=3, splash_settle_seconds=1.5, rng=None,
+                 log=print):
         low, high = recast_delay
         if not 0 <= low <= high:
             raise ValueError(f"recast_delay must be (low, high) with 0 <= low <= high, got {recast_delay}")
@@ -55,6 +66,7 @@ class FishingLoop:
         self.cast_confirm_seconds = float(cast_confirm_seconds)
         self.bar_lost_seconds = float(bar_lost_seconds)
         self.max_failed_casts = int(max_failed_casts)
+        self.splash_settle_seconds = float(splash_settle_seconds)
         self.rng = rng or random.Random()
         self.log = log
 
@@ -65,17 +77,19 @@ class FishingLoop:
         self.fishing_since = None  #FISHING: when the bar appeared
         self.bar_lost_at = None    #FISHING: when the bar was first seen missing
         self.failed_casts = 0
-        self.catches = 0           #splashes reeled in (the game decides if a fish was caught)
+        self.catches = 0           #bites reeled in (the game decides if a fish was caught)
+        self.caught_by = {"sound": 0, "sight": 0, "both": 0}   #which signal triggered each one
         self.misses = 0            #rounds that ended with no splash heard, or the fish got away
         self._saw_got_away = None
 
     # ---- the one entry point -------------------------------------------------------------------
 
-    def decide(self, now, bar, splash=False, got_away=None, allowed=True):
+    def decide(self, now, bar, splash=False, got_away=None, allowed=True, bobbed=False):
         """What to do at time `now` (seconds, any monotonic clock).
 
         bar: is the fishing bar on screen - True / False / None (cannot tell).
         splash: was the splash sound heard since the last call.
+        bobbed: was the lure seen bobbing since the last call. Either one reels in.
         got_away: is "Your fish got away!" on screen - True / False / None.
         allowed: may a key be pressed right now (not paused, game in front). When it is False
             the decision is HELD, not skipped - a splash heard while not allowed is dropped,
@@ -87,12 +101,17 @@ class FishingLoop:
 
         if self.state == STOPPED or not allowed:
             return None
+        signal = signal_name(splash, bobbed)
+        if signal and self.state != FISHING:
+            #Logged, because "it noticed the bite and did nothing" is the first thing to rule out
+            #when a fish is missed live.
+            self.log(f"{signal} but not acted on: not fishing (state: {self.state})")
         if self.state == CASTING:
             return self._casting(now, bar)
         if self.state == WAITING_FOR_BAR:
             return self._waiting_for_bar(now, bar)
         if self.state == FISHING:
-            return self._fishing(now, bar, splash, appeared)
+            return self._fishing(now, bar, splash, bobbed, appeared)
         return None
 
     def start(self, now, bar):
@@ -138,13 +157,21 @@ class FishingLoop:
         self._schedule_cast(now, f"no fishing bar after the cast ({self.failed_casts} in a row)")
         return None
 
-    def _fishing(self, now, bar, splash, got_away_appeared):
-        if splash and bar is not False:
-            #bar None (cannot read the screen this instant) still reels in: the splash itself is
+    def _fishing(self, now, bar, splash, bobbed, got_away_appeared):
+        signal = signal_name(splash, bobbed)
+        if signal and now - self.fishing_since < self.splash_settle_seconds:
+            self.log(f"{signal}, ignored: {now - self.fishing_since:.1f}s after the bar appeared is "
+                     f"the lure landing, not a bite")
+            signal = None
+        if signal and bar is False:
+            self.log(f"{signal} but not acted on: the fishing bar is not on screen")
+        if signal and bar is not False:
+            #bar None (cannot read the screen this instant) still reels in: the bite itself is
             #the evidence a fish is on, and we were fishing a moment ago. Waiting to see the bar
             #again would spend the very fraction of a second the reel-in has.
             self.catches += 1
-            self._schedule_cast(now, f"splash heard - reeling in (#{self.catches})")
+            self.caught_by["both" if splash and bobbed else "sound" if splash else "sight"] += 1
+            self._schedule_cast(now, f"{signal} - reeling in (#{self.catches})")
             return PRESS
         if got_away_appeared:
             self.misses += 1
@@ -181,3 +208,13 @@ class FishingLoop:
         self.cast_at = now + delay
         self.bar_lost_at = None
         self.log(f"{why}; casting again in {delay:.1f}s")
+
+
+def signal_name(splash, bobbed):
+    if splash and bobbed:
+        return "splash heard and lure bobbed"
+    if splash:
+        return "splash heard"
+    if bobbed:
+        return "lure bobbed"
+    return None
