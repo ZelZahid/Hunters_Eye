@@ -11,6 +11,8 @@ that tag rather than guessing from commit history - that's what these are for.
 ------------------------------------------------------------------------------
 AT A GLANCE - newest first. Full entries are below, oldest first.
 ------------------------------------------------------------------------------
+0.025  wow.py waits 30s (was 20s) before giving up on a cast - about the
+       fishing bar's full length. 20s kept restarting while the bar ran.
 0.024  wow.py: a WORLD OF WARCRAFT FISHING HELPER, and the engine's first ear.
        It sees the cast bar, hears the bobber splash (core/sound_match.py,
        3 of 3 heard, 0 false alarms on the owner's recording), reels in,
@@ -1655,3 +1657,13 @@ New: wow.py, core/sound_match.py, core/audio_source.py, core/wav_io.py,
 routes/fishing.py, assets/wow/, docs/wow_fishing.md, tests/test_sound_match.py
 (S-101..S-107), tests/test_wow_fishing.py (V-314..V-316, L-701..L-708).
 New dependency: pyaudiowpatch (Windows only).
+
+
+0.025 - 2026-11-24
+------------------------------------------------------------------------------
+wow.py's no-splash restart is now 30s (NO_SPLASH_TIMEOUT_SECONDS, and the
+FishingLoop default). Zel, playing with v0.024: at 20s "it keeps reeling in
+the fish before the fishing bar runs out". The cast bar lasts about 30s, and
+one bite in the reference video came 20.2s after its bar appeared. If the bar
+runs out first, that path already existed: the bar going away with no splash
+heard counts as a miss and schedules the next cast. No code paths changed.

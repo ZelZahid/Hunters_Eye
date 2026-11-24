@@ -45,7 +45,7 @@ class FishingLoop:
     printing (what happened and what comes next), so a person watching the console can follow.
     """
 
-    def __init__(self, recast_delay=(1.0, 6.0), no_splash_timeout=20.0, cast_confirm_seconds=4.0,
+    def __init__(self, recast_delay=(1.0, 6.0), no_splash_timeout=30.0, cast_confirm_seconds=4.0,
                  bar_lost_seconds=0.6, max_failed_casts=3, rng=None, log=print):
         low, high = recast_delay
         if not 0 <= low <= high:
