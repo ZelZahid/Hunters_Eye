@@ -11,6 +11,10 @@ that tag rather than guessing from commit history - that's what these are for.
 ------------------------------------------------------------------------------
 AT A GLANCE - newest first. Full entries are below, oldest first.
 ------------------------------------------------------------------------------
+0.024  wow.py: a WORLD OF WARCRAFT FISHING HELPER, and the engine's first ear.
+       It sees the cast bar, hears the bobber splash (core/sound_match.py,
+       3 of 3 heard, 0 false alarms on the owner's recording), reels in,
+       waits a random 1-6s and recasts. F5 pause, F6 resume, End quit.
 0.023  A TESTING SYSTEM so only what needs a person is checked by hand
        (docs/testing.md). tools/live_check.py walks you through six game
        states with F9 and prints PASS/FAIL on everything that reads the game.
@@ -1603,3 +1607,51 @@ window - and the pipe wait hid which file it was.
 New: tools/live_check.py, docs/testing.md, tests/test_pipeline.py,
 tests/test_overlay_window.py, tests/test_window_lookup.py,
 tests/test_live_check.py. No new dependencies.
+
+
+0.024 - 2026-11-24
+------------------------------------------------------------------------------
+wow.py, A WORLD OF WARCRAFT FISHING HELPER - a separate entry point that does
+not touch main.py or anything Diablo II. WoW is ONLINE: automating it is
+against Blizzard's terms and can get the account banned. That warning is in
+the script header and docs/wow_fishing.md.
+
+  cast (F) -> "Fishing" bar appears -> listen
+    splash heard           -> F at once (reel in)
+    "Your fish got away!"  -> random 1-6s wait, cast
+    bar gone, nothing heard-> random 1-6s wait, cast
+    nothing for 20s        -> F (restart), then the same wait
+  Every press is held 0.2-0.6s, usually ~0.3s. Three casts with no bar
+  stop it with the reason. F5 pause (falling tones), F6 resume (rising
+  tones), End quit. Keys only while WoW is the window in front.
+  --dry-run prints instead of pressing; --replay FILE lists the splashes
+  heard in a recording.
+
+THE ENGINE'S FIRST EAR. core/sound_match.py hears a reference sound in a
+stream by its SPECTRUM (19 bands, 180 Hz-7.5 kHz), not its waveform - no two
+splashes share a waveform. Three tests must agree: a sudden rise over the
+last 2s (>=15 dB), louder than the loud end of the last 15s (>=8 dB), and
+spectral shape vs the reference clips (>=0.70). The first test alone fired on
+the water's ambience fading in over near-silence (+29 dB); against the last
+15s that scored +1.8 dB while the splashes scored +16 to +24. Silent frames
+are a gap, never background, and a matched sound is kept out of the history
+so a second splash seconds later is not missed. On the owner's 57s recording:
+3 of 3 splashes, 0 false alarms, at 48 kHz and 16 kHz, leave-one-out too,
+heard 0.13-0.25s after onset, ~3% of one core. core/audio_source.py is the
+speakers' WASAPI loopback (Windows) or a WAV file; core/wav_io.py is the
+neutral WAV helper both use.
+
+SCREEN: the bar is the word "Fishing" under it (1.00 with the bar vs at most
+0.38 without; the bar's end scored 0.78 on a monster nameplate, so it is not
+used). "Your fish got away!" is a yellow mask matched against a mask
+template, so the water behind it does not matter, and it counts only when it
+APPEARS while fishing. routes/fishing.py makes every decision with time and
+inputs passed in.
+
+Zel tried it in game on 2026-11-24 - "works like a charm" - and moved the
+no-splash restart from 15s to 20s.
+
+New: wow.py, core/sound_match.py, core/audio_source.py, core/wav_io.py,
+routes/fishing.py, assets/wow/, docs/wow_fishing.md, tests/test_sound_match.py
+(S-101..S-107), tests/test_wow_fishing.py (V-314..V-316, L-701..L-708).
+New dependency: pyaudiowpatch (Windows only).

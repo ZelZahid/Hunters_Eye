@@ -99,7 +99,6 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 
 ## Parking lot
 
-- **`wow.py` has not been tried in the game yet** (2026-11-24). Everything in it was measured on one 57 s recording - see `docs/wow_fishing.md`, "Not tested, and why". The two things to learn first: does WoW act on key-down (if not, the 0.2-0.6 s hold delays every reel-in), and is the reel window really as short as the 0.2-0.6 s the video suggests. The 15 s no-splash timeout would have abandoned one of the video's three bites (it came at 20 s) - 25 s would not.
 - **macOS can't hear the game.** `core/audio_source.py` is WASAPI loopback, Windows only; macOS has no system loopback. A BlackHole-style virtual device as an input would be the way in, if `wow.py` or the security-robot idea ever needs it there (the robot would use a microphone, which is an ordinary input device anyway).
 - **The sound matcher is the engine's first ear, and is general.** `core/sound_match.py` hears any reference sound from a few clips - glass breaking, a door, an alarm for the security robot. Its thresholds were tuned on a splash; a different sound should be checked with `wow.py --replay` (or a small tool of its own) on a recording before it is trusted.
 
@@ -169,6 +168,8 @@ See [`updates.txt`](updates.txt) for the version changelog, [`Error_history.txt`
 ---
 
 ## Done
+
+- [x] **2026-11-24 — v0.024, `wow.py`, a World of Warcraft fishing helper, and the engine's first ear.** Sees the "Fishing" cast bar and "Your fish got away!" with `core/presence.py`, hears the bobber splash through the speakers' loopback with the new `core/sound_match.py` (3 of 3 splashes, 0 false alarms on the owner's recording), reels in, waits a random 1-6 s, recasts. Zel tried it in game: "works like a charm", and moved the no-splash restart from 15 s to 20 s. Automating WoW breaks Blizzard's terms - the warning is in the script and `docs/wow_fishing.md`. Open: one bite in the reference video came 20.2 s after its bar, just past 20 s.
 
 - [x] **2026-10-16 — a testing system so the owner only checks what needs a person** (owner's request: *"I only want to manually test things that are absolutely necessary"*). `docs/testing.md` is the map: CI cards, then **`tools/live_check.py`** (the owner sets up six game states and presses F9; it judges each with the pipeline's own readers, prints PASS/FAIL, and saves a recording that can be re-judged with `--replay` and turned into fixtures), then a short by-hand list for changes that *act* in the game. New CI cards close three of the four "known gaps": the pipeline threads end to end on a real screen (L-601..603), the overlay's see-through and click-through with real pixels and a real click (T-105/T-106 - no longer a by-hand check), and live window lookup (V-806/V-807). T-302..T-304 hold the live check's own verdicts to the fixtures. `tests/run_all.py` can no longer be hung by a test that leaves a helper process behind. **Next: the owner's first live_check run** - its OCR line answers "Re-check `OCR_INTERVAL_SECONDS`" and its menu step the "plausible-but-wrong reading in the dimmed menu" item below.
 

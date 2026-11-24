@@ -40,7 +40,7 @@ Hotkeys, global like Hunter's Eye's (they work while WoW has focus):
       splash heard ----------------------+--> press F at once (reel in)
       "Your fish got away!" appears -----+
       the bar went away, nothing heard --+--> wait a random 1-6 s --> cast (F) --> ...
-      nothing heard for 15 s ------------+--> press F (restart), then the same wait
+      nothing heard for 20 s ------------+--> press F (restart), then the same wait
 ```
 
 Every press is held for a random 0.2–0.6 s, most often about 0.3 s. If three casts in a row never
@@ -55,14 +55,15 @@ At the top of `wow.py`, under `SETTINGS`. Edit, then restart.
 |---|---|---|
 | `FISH_KEY` | `f` | the key that reels in and casts |
 | `RECAST_DELAY_SECONDS` | `(1.0, 6.0)` | random wait before each cast |
-| `NO_SPLASH_TIMEOUT_SECONDS` | `15.0` | bar up this long with no splash → press anyway and restart |
+| `NO_SPLASH_TIMEOUT_SECONDS` | `20.0` | bar up this long with no splash → press anyway and restart |
 | `KEY_HOLD_SECONDS` / `KEY_HOLD_TYPICAL_SECONDS` | `(0.2, 0.6)` / `0.28` | how long each press is held |
 | `WINDOW_TITLE` | `World of Warcraft` | the window it looks at and must be in front |
 
-**The 15 s timeout will cut off some real bites.** In the reference video the second cast went 20
-seconds before its splash (cast at 17.0 s, splash at 37.0 s); the cast bar lasts about 30 s. With
-15 s, that bite would have been abandoned. 15 s is what was asked for, so it is the default — but
-25 s would have caught all three bites in the video and still restarts well before the bar runs out.
+**The timeout decides which slow bites are abandoned.** The cast bar lasts about 30 s. In the
+reference video the second cast's splash was heard 20.2 s after its bar appeared (bar at 17.0 s,
+splash heard at 37.18 s), so 20 s would have restarted just before it; 15 s (the first default)
+would have too, and 25 s would have caught it. Zel tried 15 s in game on 2026-11-24 and chose
+20 s.
 
 ## How it decides
 
@@ -119,8 +120,8 @@ Two things decide whether that is enough, and neither can be checked from a reco
 
 ## Not tested, and why
 
-Everything above was measured on one 57-second recording. Untested:
-- **Live, in the game.** Nothing here can open WoW. This is the by-hand check in `docs/testing.md`.
+Everything above was measured on one 57-second recording, then **tried by Zel in game on
+2026-11-24 ("works like a charm")**. Still untested:
 - **Other places and sounds**: combat, other players' splashes, music, a city. Another player's
   bobber splashing nearby will sound like yours — there is no way to tell them apart by ear.
 - **Other UI layouts or scales.** The templates were cut at 1920×1080. A different resolution is

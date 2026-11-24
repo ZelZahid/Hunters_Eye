@@ -10,7 +10,7 @@ fishing key the moment the bobber's splash sound plays:
     1. Splash heard while the bar is up -> press F at once (reel in).
     2. Wait a random 1-6 seconds, press F again (cast), and listen again.
     3. "Your fish got away!" on screen, or the bar went away -> random wait, cast again.
-    4. Nothing heard for 15 seconds -> press F anyway (restart), random wait, cast again.
+    4. Nothing heard for 20 seconds -> press F anyway (restart), random wait, cast again.
 
 Every key press is held down a random 0.2-0.6 s, usually near the short end.
 
@@ -56,9 +56,9 @@ from routes import fishing
 # ======================================================================================================
 FISH_KEY = "f"                      #the key that reels in AND casts (WoW's interact key on the bobber)
 RECAST_DELAY_SECONDS = (1.0, 6.0)   #random wait after a reel-in / miss before casting again
-NO_SPLASH_TIMEOUT_SECONDS = 15.0    #bar up this long with no splash heard -> press anyway, restart.
-                                    #NOTE: in the reference video one bite came 20 s after its cast;
-                                    #see docs/wow_fishing.md before lowering (or raising) this.
+NO_SPLASH_TIMEOUT_SECONDS = 20.0    #bar up this long with no splash heard -> press anyway, restart.
+                                    #NOTE: in the reference video one bite came 20.2 s after the bar
+                                    #appeared; see docs/wow_fishing.md before changing this.
 KEY_HOLD_SECONDS = (0.2, 0.6)       #each press is held a random time in this range...
 KEY_HOLD_TYPICAL_SECONDS = 0.28     #...most often near this value (a triangular distribution)
 
