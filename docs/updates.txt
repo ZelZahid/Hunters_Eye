@@ -11,6 +11,11 @@ that tag rather than guessing from commit history - that's what these are for.
 ------------------------------------------------------------------------------
 AT A GLANCE - newest first. Full entries are below, oldest first.
 ------------------------------------------------------------------------------
+0.025  wow.py SEES THE LURE BOB as well as hearing the splash, and reels in
+       on whichever comes first (9 of 9 bites seen on four recordings, 0
+       false alarms, 0.3-0.45s sooner than the sound). Splash library of 8
+       clips; --check-audio and a log file for "it heard nothing" live;
+       30s no-bite restart; F5 toggles pause/resume.
 0.024  wow.py: a WORLD OF WARCRAFT FISHING HELPER, and the engine's first ear.
        It sees the cast bar, hears the bobber splash (core/sound_match.py,
        3 of 3 heard, 0 false alarms on the owner's recording), reels in,
@@ -1655,3 +1660,55 @@ New: wow.py, core/sound_match.py, core/audio_source.py, core/wav_io.py,
 routes/fishing.py, assets/wow/, docs/wow_fishing.md, tests/test_sound_match.py
 (S-101..S-107), tests/test_wow_fishing.py (V-314..V-316, L-701..L-708).
 New dependency: pyaudiowpatch (Windows only).
+
+
+0.025 - 2026-11-24
+------------------------------------------------------------------------------
+Zel's later runs missed splashes, and one heard nothing at all. He added a
+second sign of a bite - the lure bobbing in the water - and asked for either
+one to reel in.
+
+THE LURE. WoW draws a cog icon over whatever the interact key would use; while
+fishing that is the lure. The cog is UI art, the same on any water, light or
+camera distance (0.96-1.00 in all four recordings, at most 0.64 with no lure),
+while a template of the lure itself from one recording scored 0.5-0.7 on the
+others. The lure is 91 px below the cog in all four. A bite is colourless,
+bright pixels (spray) in a 72x72 patch on the lure jumping to 3x the patch's
+own recent median plus 1.2% of its area: water 10-40, a bite 100-220. Found by
+the new detector core/spot_watch.py ("did something suddenly appear at this
+spot?" - card V-906 points it at a doorway light). Measured on all four
+recordings: 9 of 9 bites, 0 false alarms, at 20, 12 and 8 looks a second;
+0.3-0.45s sooner than the ear. Two frames in a row lost 4 of 9 at 12/s, so
+one frame is enough and the ratio keeps odd frames out (the mouse pointer
+crossing the lure reached 102 of 114). Search 4 ms at half size, 4x a second;
+watching 2 ms a look on a 140x220 capture, 20x a second.
+
+THE SPLASH. A library of 8 clips (3 recordings), scored by the best match, not
+an average; each clip's fingerprint is its first 0.3s. A matched sound now
+counts toward the 2s background but not the 15s recent level: kept out of
+both, a long spell sound that matched once matched again every 3s. Shape
+threshold 0.70 -> 0.78: a spell scored 0.67 at 48 kHz but 0.71 at 44.1 and
+16 kHz. All 30 splashes (four recordings x 16/44.1/48 kHz) heard, 0 false
+alarms, also with each recording's own clips left out.
+
+THE LOOP. Either signal reels in; the end-of-run tally says which (heard,
+seen, both). A bite in the first 1.5s of fishing is the lure LANDING (0.3s
+after the bar, measured) and is ignored with a log line. No-bite restart 20s
+-> 30s (Zel: "it keeps reeling in the fish before the fishing bar runs out").
+F5 pauses AND resumes (F6 is gone); the two sounds stay.
+
+WHY IT HEARD NOTHING. Offline, every splash in Zel's recordings is now heard,
+and the console prints "splash heard" for every match. A run that printed
+nothing points at the sound never reaching the program. New for that:
+--check-audio (15s of levels, saves the WAV, scans it), --list-audio,
+AUDIO_DEVICE (listen to a device other than the Windows default), and a log
+file per run in recordings/wow/ with a 10s audio heartbeat, every loud sound
+NOT taken for a splash and the test it failed, the bar and lure coming and
+going, and every bite noticed but not acted on, with why. --replay on a video
+now lists the lure bobs too.
+
+Not yet tried in game. Needs WoW's soft-target interact icon (the cog).
+
+New: core/spot_watch.py, assets/wow/bobber.json + bobber_marker.png,
+assets/wow/splash/splash_4..8.wav, cards V-317, V-318, V-906, L-709..L-711,
+S-108, S-109 with fixtures from recordings 2-4. No new dependencies.

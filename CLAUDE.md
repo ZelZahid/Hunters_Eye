@@ -293,19 +293,30 @@ Windows must be created topmost or they never appear. The live preview is the po
 - Settings are edited as **text, never via `configparser.write()`** (it drops the comments,
   which are the help) and validated by **`user_config.load()` itself** before saving.
 
-### `wow.py` + `core/sound_match.py` + `core/audio_source.py` — the WoW fishing helper
+### `wow.py` + `core/sound_match.py` + `core/spot_watch.py` + `core/audio_source.py` — the WoW fishing helper
 A separate entry point, not a `main.py` mode; full record in `docs/wow_fishing.md`. **WoW is
 online: automating it is against Blizzard's terms and can get the account banned** — keep that
 warning in the docs and the script header.
+- A bite is **heard OR seen**, whichever first; each covers the other's failure (sound not reaching
+  the loopback / lure off screen). Sight came 0.3-0.45 s sooner on the recordings.
 - The splash is heard by **spectrum, not waveform**, and three tests must agree: a sudden rise over
-  the last 2 s, louder than the loud end of the last 15 s, and spectral shape vs the reference
-  clips. The first alone fired on ambient fading in over near-silence. Silent frames are a gap,
-  never background; a **matched** sound is kept out of the history (else the next splash is missed).
+  the last 2 s, louder than the loud end of the last 15 s, and spectral shape vs a **library** of
+  clips (best match, never an average - the variants differ; fingerprint = a clip's first 0.3 s).
+  Silent frames are a gap, never background; a **matched** sound stays out of the recent level
+  (else the next splash is missed) but counts toward the 2 s background (else a long sound that
+  matched once keeps matching). Shape threshold 0.78: a spell scored 0.71 at 44.1 kHz, 0.67 at 48.
+- The lure is found by the **cog icon WoW draws over it** (UI art: same on any water or camera), the
+  lure itself never - a lure template from one recording failed on the others. A bite = colourless
+  bright pixels under it jumping to 3x their own recent median (`spot_watch.py`), **one frame is
+  enough** (two in a row lost bites at 12 fps). Its first second is the lure landing - never judged.
 - Loopback is Windows-only and delivers nothing while nothing plays — `read()` → `None`.
 - Bar = the word "Fishing" only (the fill drains; nameplates share the frame art). "Got away" =
   a **yellow mask** matched against a mask template, so the water behind is irrelevant, and it
   counts only on its **rising edge** while fishing.
 - `routes/fishing.py` decides, with time and inputs passed in; `wow.py` only wires eyes, ears, hands.
+  A bite in the first 1.5 s of FISHING is the lure landing, not a bite: ignored and logged.
+- When a live fish is missed, the run's log in `recordings/wow/` says why (heartbeat, near misses
+  with the failed test, bites not acted on); `wow.py --check-audio` answers "does sound reach us?".
 
 ### `legacy/` — reference only, not runnable.
 
@@ -324,7 +335,7 @@ Directional, measured on dev hardware.
 ```
 main.py                  # the one entry point - the pipeline, and the Diablo II integration
 gui.py                   # the control panel: runs main.py --control, buttons, settings, log
-wow.py                   # WoW fishing helper: sees the cast bar, hears the splash, presses F
+wow.py                   # WoW fishing helper: sees the cast bar, hears the splash, sees the lure bob, presses F
 user_config.txt          # USER-EDITABLE: potion thresholds, teleport key, settles, game name
 
 core/                    # THE ENGINE. Knows nothing about any particular game.
@@ -338,6 +349,7 @@ core/                    # THE ENGINE. Knows nothing about any particular game.
   overlay.py             #   transparent click-through output layer (Windows-only)
   presence.py            #   "is this reference art on screen?" - the in-play check
   sound_match.py         #   "did THAT sound just play?" - hearing a reference sound in a stream
+  spot_watch.py          #   "did something suddenly appear at this spot?" - a burst in one patch
   slots.py               #   what is in each of a row of fixed cells - the potion belt
   text_detection.py      #   OCR: find listed names, or read a line of text as-is
   user_config.py         #   loader/validator for user_config.txt, + comment-keeping edits
@@ -347,7 +359,7 @@ core/                    # THE ENGINE. Knows nothing about any particular game.
 routes/                  # GAME-SPECIFIC scripted sequences, built on core/. Never imports main.
   pindle.py              #   the Pindle run: new game -> red portal -> temple doorway -> fight
   shuttle.py             #   bot test mode: teleport out and back, each jump checked by looking
-  fishing.py             #   wow.py's decisions: reel in, wait 1-6 s, recast, restart
+  fishing.py             #   wow.py's decisions: reel in (heard or seen), wait 1-6 s, recast, restart
 
 tools/                   # run by hand, never by the pipeline
   build_route_map.py     #   stitch route screenshots into assets/routes/<name>.png/.json
@@ -404,7 +416,7 @@ assets/                  # data, not code - edit these instead of the source
   stash.json/.png        #   the same for the stash - add a file per panel, no code needed
   save_and_exit.json/.png#   the Esc menu's Save and Exit button
   routes/                #   route maps + paths, written by tools/build_route_map.py
-  wow/                   #   wow.py's references: cast bar, 'got away' mask, splash/*.wav
+  wow/                   #   wow.py's references: cast bar, 'got away' mask, the lure's cog, splash/*.wav
   zelScreenshots/        #   owner's scratch space for sharing screenshots mid-session.
                          #   GITIGNORED and cleared at will - NEVER point a test at it
 

@@ -32,7 +32,7 @@ import cv2 as cv
 import numpy as np
 
 import main
-from core import game_state, monster_detection, presence, slots
+from core import game_state, monster_detection, presence, slots, spot_watch
 from core import text_detection as td
 from routes import pindle
 
@@ -119,6 +119,9 @@ for name, frame in FRAMES.items():
              lambda r: r.found is not True)
     survives("    monster model (none loaded)", lambda: monster_detection.detect(frame),
              lambda r: r == [])
+    spot = spot_watch.SpotWatcher((0, 0, 200), (180, 40, 255), min_history=1)
+    survives("    spot watch", lambda: [spot.feed(frame), spot.feed(frame)],
+             lambda r: r[0] is None and r[1] in (True, False))
     #Only frames at least the needle's size: the capture is always a whole monitor, so that is
     #what main.py can hand it. A SMALLER frame does not raise - OpenCV swaps image and template
     #and reports phantom matches - which is parked in docs/todolist.md, not asserted here.
@@ -196,6 +199,9 @@ check("meter whose region is off the frame -> None, not 0.0", game_state.read_me
 check("belt whose region is off the frame -> None, not four empty slots",
       slots.read_row(frame, off, belt["count"], belt["colors"]) is None)
 check("in-play check with no frame -> (None, None), not False", in_play.check(None, 576) == (None, None))
+check("spot watch with no patch -> None, and before it has a history -> None, not False",
+      spot_watch.SpotWatcher((0, 0, 200), (180, 40, 255)).feed(None) is None
+      and spot_watch.SpotWatcher((0, 0, 200), (180, 40, 255)).feed(frame) is None)
 check("map locate on a flat frame -> found is None, not False",
       route.locator.locate(np.zeros((172, 288), np.uint8)).found is None)
 #And the other way round: a confident answer must still be possible, or None is just a crash
@@ -203,6 +209,32 @@ check("map locate on a flat frame -> found is None, not False",
 check("a readable frame with no liquid in the orb is a real 0.0 or None - never negative",
       all(v is None or v >= 0.0 for v in game_state.read_all(frame, meters).values()))
 
+
+
+print("\nV-906  Spot watch notices a light coming on in a doorway - a camera, not a game")
+#The same detector wow.py points at the water under a fishing lure, pointed at a dim doorway in a
+#noisy night-time camera picture: "did something bright and colourless suddenly appear HERE?"
+rng = np.random.default_rng(906)
+spot = spot_watch.SpotWatcher((0, 0, 200), (180, 40, 255), ratio=3.0, margin=0.01)
+
+
+def doorway(light=False):
+    frame = np.clip(rng.normal(60, 12, (80, 60, 3)), 0, 255).astype(np.uint8)   #sensor noise
+    frame[:, :, 0] = np.clip(frame[:, :, 0].astype(int) + 30, 0, 255)            #a blue night tint
+    if light:
+        frame[20:60, 15:45] = 235                                                 #the light comes on
+    return frame
+
+
+answers = [spot.feed(doorway()) for _ in range(30)]
+check(f"30 dark, noisy frames: 'cannot tell' until it has a history, then calm "
+      f"({answers.count(None)} None, {answers.count(False)} False)",
+      answers[:10] == [None] * 10 and set(answers[10:]) == {False})
+check("the light comes on: True on that frame", spot.feed(doorway(light=True)) is True)
+check("and it is reported ONCE, not again on every frame it stays on",
+      [spot.feed(doorway(light=True)) for _ in range(5)] == [False] * 5)
+spot.reset()
+check("reset() starts over (no history: None)", spot.feed(doorway()) is None)
 
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

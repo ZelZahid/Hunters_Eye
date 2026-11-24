@@ -1,0 +1,23 @@
+{
+  "_comment": "The fishing lure (bobber). WoW draws a small cog icon over whatever the interact key would use, and while fishing that is the bobber - so the cog is how the lure is FOUND: it is UI art, the same size and look on any water, lighting or camera distance (scored 0.96-1.00 in all four of Zel's recordings, at most 0.64 with no lure out). The lure itself sits a fixed distance below the cog (offset, in 1920-wide pixels: measured -4, 91 in all four). 'watch' is the patch around the lure that core/spot_watch.py watches for the white spray a biting fish throws up: pixels with saturation <= 44 and brightness >= 95. Measured: 10-40 such pixels in calm or choppy water, 100-220 in a bite; a bite is a frame with 3x the recent median plus 1.2% of the patch (9 of 9 bites, 0 false alarms in four recordings). Needs WoW's soft-target interact icons (the default with an interact key). See docs/wow_fishing.md.",
+  "references": [
+    {
+      "name": "interact cog over the bobber",
+      "template": "bobber_marker.png",
+      "source_size": [1920, 1080],
+      "search_region": [0.15, 0.05, 0.70, 0.75],
+      "threshold": 0.85
+    }
+  ],
+  "watch": {
+    "offset": [-4, 91],
+    "size": [72, 72],
+    "pixel_low": [0, 0, 95],
+    "pixel_high": [180, 44, 255],
+    "ratio": 3.0,
+    "margin": 0.0116,
+    "consecutive": 1,
+    "settle_seconds": 1.0,
+    "moved_px": 30
+  }
+}
