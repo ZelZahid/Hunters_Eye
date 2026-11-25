@@ -26,9 +26,10 @@ stops `wow.py` for you and shows, live:
   reaches zero the helper pauses itself and plays three falling tones, so it never fishes on for
   hours while you are away. **Every F5 press — pause or resume — starts the 30 minutes over**, and
   so does the panel's Pause/Resume button, which does exactly what F5 does.
-- **This session** — fishing time (only the time actually fishing: not paused, WoW in front), how
-  long the session has been open, fish caught, the catch rate per hour of fishing, one fish every
-  how many seconds, bites reeled in (and how many got away or timed out), and the last catch.
+- **This session** — the session length, which counts **only while actually fishing** (it stands
+  still while paused, auto-paused, with WoW not in front or with wow.py stopped), fish caught, the
+  catch rate per hour of that fishing, one fish every how many seconds, bites reeled in (and how
+  many got away or timed out), and the last catch.
 - **Earnings** — what the session's catch is worth to a vendor, and that per hour of fishing, in
   gold, silver and copper.
 - **Catches** — every fish caught, how many, its share, its vendor price, what they are worth and

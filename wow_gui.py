@@ -21,8 +21,8 @@ HOW IT IS BUILT - the same way as the Diablo II control panel (gui.py), and for 
     writes every catch to recordings/wow/catches.csv, which the "All time" tab adds up.
 
 WHAT THE NUMBERS MEAN:
-  - Fishing time: time actually fishing - not paused, WoW in front. Rates are per hour of THAT, so
-    a coffee break does not drag the catch rate down.
+  - Session length: time actually fishing - not paused, WoW in front, wow.py running. It stands
+    still otherwise, and rates are per hour of THAT, so a coffee break does not drag them down.
   - Earnings: vendor prices (the tooltip's "Sell Price"), not auction prices. A fish with no price
     yet is counted, but left out of the money and named in red: double-click it to set one.
 
@@ -59,8 +59,14 @@ STATUS_STALE_SECONDS = 3.0     #no @status for this long: the numbers on screen 
 EVENT_LINE = re.compile(r"^@(\w+) (\{.*\})\s*$")
 PROBLEM_LINE = re.compile(r"WARNING|Traceback|Error|STOPPED|could not", re.IGNORECASE)
 
-GOLD, SILVER, COPPER = "#c9a227", "#8c939b", "#b0683a"
-GREEN, AMBER, RED, GREY = "#2e8b3a", "#c88a00", "#b00020", "gray50"
+#The look: a dark window with gold headings, like the game's own panels. Colours only ever say
+#something - green fishing / fine, amber paused / soon, red stopped / needs you - plus the coins'.
+BG, HEADER_BG, FIELD, BUTTON = "#1f2128", "#15161b", "#17191e", "#2c303b"
+BORDER, SELECTED = "#3a3f4c", "#34405a"
+TEXT, MUTED, ACCENT = "#e8e6e1", "#9aa0ab", "#e3b448"      #ACCENT: the headings' gold
+BLUE = "#6cb6ff"
+GOLD, SILVER, COPPER = "#f2c94c", "#c7ccd3", "#d9844a"
+GREEN, AMBER, RED, GREY = "#4cc764", "#f0b429", "#ff5c5c", "#8a8f98"
 LOOP_STATES = {"casting": "about to cast", "waiting for bar": "casting",
                "fishing": "waiting for a bite", "stopped": "stopped"}
 
@@ -71,6 +77,98 @@ def clock(seconds):
     hours, rest = divmod(seconds, 3600)
     minutes, secs = divmod(rest, 60)
     return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
+
+
+def apply_theme(root):
+    """Dark, gold-headed ttk styles for the whole window. 'clam' is the one built-in ttk theme that
+    takes colours on every OS ('vista' and 'aqua' draw native widgets and ignore most of them), and
+    it ships with Tk itself - still nothing to install. Plain tk widgets (the log, the lists) are
+    not styled by this; each is coloured where it is made, from the same constants."""
+    style = ttk.Style(root)
+    style.theme_use("clam")
+    root.configure(background=BG)
+    base = ("TkDefaultFont", 10)
+    style.configure(".", background=BG, foreground=TEXT, fieldbackground=FIELD, bordercolor=BORDER,
+                    lightcolor=BG, darkcolor=BG, troughcolor=FIELD, selectbackground=SELECTED,
+                    selectforeground=TEXT, insertcolor=TEXT, arrowcolor=TEXT, focuscolor=BORDER,
+                    font=base)
+    style.map(".", foreground=[("disabled", GREY)])
+    style.configure("Header.TFrame", background=HEADER_BG)
+    style.configure("Header.TLabel", background=HEADER_BG, foreground=TEXT)
+    style.configure("Title.TLabel", background=HEADER_BG, foreground=ACCENT,
+                    font=("TkDefaultFont", 13, "bold"))
+    style.configure("State.TLabel", background=HEADER_BG, font=("TkDefaultFont", 12, "bold"))
+    style.configure("HeaderCaption.TLabel", background=HEADER_BG, foreground=MUTED)
+    style.configure("Header.TCheckbutton", background=HEADER_BG, foreground=MUTED,
+                    indicatorbackground=FIELD, indicatorforeground=GREEN)
+    style.map("Header.TCheckbutton", background=[("active", HEADER_BG)],
+              indicatorbackground=[("selected", FIELD)])
+    style.configure("TCheckbutton", indicatorbackground=FIELD, indicatorforeground=GREEN)
+    style.map("TCheckbutton", background=[("active", BG)])
+    style.configure("Big.TLabel", font=("TkDefaultFont", 28, "bold"), foreground=GREEN)
+    style.configure("Value.TLabel", font=("TkDefaultFont", 11, "bold"))
+    for name, colour in (("Green", GREEN), ("Gold", GOLD), ("Blue", BLUE)):
+        style.configure(f"{name}.Value.TLabel", font=("TkDefaultFont", 11, "bold"), foreground=colour)
+    style.configure("Caption.TLabel", foreground=MUTED)
+    style.configure("Problem.TLabel", foreground=RED)
+    style.configure("TLabelframe", background=BG, bordercolor=BORDER, lightcolor=BORDER,
+                    darkcolor=BORDER, relief="solid", borderwidth=1)
+    style.configure("TLabelframe.Label", background=BG, foreground=ACCENT,
+                    font=("TkDefaultFont", 10, "bold"))
+    #Buttons: plain ones grey; Start green, Stop red, Pause amber - the colour says what it does.
+    style.configure("TButton", background=BUTTON, foreground=TEXT, bordercolor=BORDER,
+                    lightcolor=BUTTON, darkcolor=BUTTON, padding=(10, 4))
+    style.map("TButton", background=[("disabled", BG), ("pressed", BORDER), ("active", "#3a3f4c")],
+              lightcolor=[("disabled", BG)], darkcolor=[("disabled", BG)])
+    for name, colour, hover in (("Start", "#2f7d3d", "#38944a"), ("Stop", "#8f2d2d", "#a83a3a"),
+                                ("Pause", "#8a6514", "#a37819")):
+        style.configure(f"{name}.TButton", background=colour, lightcolor=colour, darkcolor=colour,
+                        bordercolor=colour, foreground="#ffffff", font=("TkDefaultFont", 10, "bold"))
+        style.map(f"{name}.TButton", background=[("disabled", BUTTON), ("pressed", colour), ("active", hover)],
+                  lightcolor=[("disabled", BUTTON), ("active", hover)],
+                  darkcolor=[("disabled", BUTTON), ("active", hover)],
+                  bordercolor=[("disabled", BUTTON)], foreground=[("disabled", GREY)])
+    style.configure("TNotebook", background=BG, bordercolor=BORDER, lightcolor=BG, darkcolor=BG,
+                    tabmargins=(8, 4, 8, 0))
+    style.configure("TNotebook.Tab", background=BUTTON, foreground=MUTED, bordercolor=BORDER,
+                    lightcolor=BUTTON, padding=(14, 5))
+    style.map("TNotebook.Tab", background=[("selected", BG), ("active", "#353a46")],
+              foreground=[("selected", ACCENT), ("active", TEXT)],
+              lightcolor=[("selected", BG)])
+    style.configure("Treeview", background=FIELD, fieldbackground=FIELD, foreground=TEXT,
+                    bordercolor=BORDER, rowheight=24)
+    style.map("Treeview", background=[("selected", SELECTED)], foreground=[("selected", TEXT)])
+    style.configure("Treeview.Heading", background=BUTTON, foreground=ACCENT, bordercolor=BORDER,
+                    lightcolor=BUTTON, darkcolor=BUTTON, font=("TkDefaultFont", 10, "bold"))
+    style.map("Treeview.Heading", background=[("active", "#353a46")])
+    style.configure("TCombobox", background=BUTTON, fieldbackground=FIELD, foreground=TEXT,
+                    arrowcolor=TEXT, bordercolor=BORDER, lightcolor=FIELD, darkcolor=FIELD)
+    style.map("TCombobox", fieldbackground=[("readonly", FIELD)], foreground=[("readonly", TEXT)],
+              selectbackground=[("readonly", FIELD)], selectforeground=[("readonly", TEXT)],
+              background=[("active", "#353a46")])
+    root.option_add("*TCombobox*Listbox.background", FIELD)
+    root.option_add("*TCombobox*Listbox.foreground", TEXT)
+    root.option_add("*TCombobox*Listbox.selectBackground", SELECTED)
+    root.option_add("*Menu.background", BUTTON)
+    root.option_add("*Menu.foreground", TEXT)
+    root.option_add("*Menu.activeBackground", SELECTED)
+    for name, colour in (("Green", GREEN), ("Amber", AMBER), ("Red", RED), ("Grey", GREY)):
+        style.configure(f"{name}.Horizontal.TProgressbar", background=colour, troughcolor=FIELD,
+                        bordercolor=BORDER, lightcolor=colour, darkcolor=colour, thickness=10)
+    style.configure("TPanedwindow", background=BG)
+    style.configure("Vertical.TScrollbar", background=BUTTON, troughcolor=FIELD, bordercolor=BORDER,
+                    arrowcolor=MUTED, lightcolor=BUTTON, darkcolor=BUTTON)
+    return style
+
+
+def dark_text(widget):
+    """The plain tk text widgets (log, lists) in the window's colours."""
+    widget.configure(background=FIELD, foreground=TEXT, selectbackground=SELECTED,
+                     selectforeground=TEXT, relief="flat", highlightthickness=1,
+                     highlightbackground=BORDER, highlightcolor=BORDER)
+    if isinstance(widget, tk.Text):
+        widget.configure(insertbackground=TEXT)
+    return widget
 
 
 class RunCounter:
@@ -104,10 +202,11 @@ class Money(ttk.Frame):
         font = ("TkDefaultFont", size, "bold" if bold else "normal")
         self.parts = []
         for colour in (GOLD, SILVER, COPPER):
-            number = tk.Label(self, font=font)
-            unit = tk.Label(self, font=font, foreground=colour)
+            #The number in the coin's colour too, a shade lighter than the letter - as in game.
+            number = tk.Label(self, font=font, foreground=colour, background=BG, padx=0)
+            unit = tk.Label(self, font=font, foreground=colour, background=BG, padx=0)
             self.parts.append((number, unit))
-        self.dash = tk.Label(self, text="-", font=font, foreground=GREY)
+        self.dash = tk.Label(self, text="-", font=font, foreground=GREY, background=BG)
         self.set(None)
 
     def set(self, copper):
@@ -137,7 +236,6 @@ class FishingPanel:
         self.fishing = RunCounter()
         self.reeled = RunCounter()
         self.missed = RunCounter()
-        self.session_started = time.time()
         self.last_catch = None           #(time.time(), name)
         self.status = None
         self.status_at = 0.0
@@ -149,9 +247,7 @@ class FishingPanel:
         root.geometry("1040x760")
         root.minsize(860, 600)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
-        ttk.Style(root).configure("Big.TLabel", font=("TkDefaultFont", 26, "bold"))
-        ttk.Style(root).configure("Value.TLabel", font=("TkDefaultFont", 11, "bold"))
-        ttk.Style(root).configure("Caption.TLabel", foreground="gray35")
+        apply_theme(root)
 
         self._build_header()
         self._build_cards()
@@ -180,24 +276,27 @@ class FishingPanel:
 
     # --- the top: state, start/stop -------------------------------------------------------
     def _build_header(self):
-        bar = ttk.Frame(self.root, padding=(8, 8, 8, 4))
+        bar = ttk.Frame(self.root, padding=(12, 10, 12, 10), style="Header.TFrame")
         bar.pack(fill="x")
-        self.state_dot = tk.Label(bar, text="●", font=("TkDefaultFont", 16))
+        ttk.Label(bar, text="WoW fishing", style="Title.TLabel").pack(side="left", padx=(0, 18))
+        self.state_dot = tk.Label(bar, text="●", font=("TkDefaultFont", 16), background=HEADER_BG)
         self.state_dot.pack(side="left")
-        self.state_label = ttk.Label(bar, text="", font=("TkDefaultFont", 12, "bold"))
+        self.state_label = ttk.Label(bar, text="", style="State.TLabel")
         self.state_label.pack(side="left", padx=(4, 12))
-        self.detail_label = ttk.Label(bar, text="", style="Caption.TLabel")
+        self.detail_label = ttk.Label(bar, text="", style="HeaderCaption.TLabel")
         self.detail_label.pack(side="left")
-        self.stop_button = ttk.Button(bar, text="Stop", command=self.stop_bot)
+        self.stop_button = ttk.Button(bar, text="Stop", command=self.stop_bot, style="Stop.TButton")
         self.stop_button.pack(side="right")
-        self.start_button = ttk.Button(bar, text="Start fishing", command=self.start_bot)
-        self.start_button.pack(side="right", padx=4)
+        self.start_button = ttk.Button(bar, text="Start fishing", command=self.start_bot, style="Start.TButton")
+        self.start_button.pack(side="right", padx=6)
         self.dry_run = tk.BooleanVar(value=False)
-        ttk.Checkbutton(bar, text="Dry run (press nothing)", variable=self.dry_run).pack(side="right", padx=8)
+        ttk.Checkbutton(bar, text="Dry run (press nothing)", variable=self.dry_run,
+                        style="Header.TCheckbutton").pack(side="right", padx=8)
+        tk.Frame(self.root, height=2, background=ACCENT).pack(fill="x")   #a thin gold rule
 
     # --- the three cards: auto-pause, this session, earnings -------------------------------
     def _build_cards(self):
-        row = ttk.Frame(self.root, padding=(8, 0, 8, 8))
+        row = ttk.Frame(self.root, padding=(8, 10, 8, 8))
         row.pack(fill="x")
         for column in range(3):
             row.columnconfigure(column, weight=1, uniform="cards")
@@ -208,11 +307,13 @@ class FishingPanel:
         self.timer_label.pack(anchor="w")
         self.timer_caption = ttk.Label(timer, text="", style="Caption.TLabel", wraplength=280)
         self.timer_caption.pack(anchor="w")
-        self.timer_bar = ttk.Progressbar(timer, maximum=1.0, mode="determinate")
+        self.timer_bar = ttk.Progressbar(timer, maximum=1.0, mode="determinate",
+                                         style="Green.Horizontal.TProgressbar")
         self.timer_bar.pack(fill="x", pady=(6, 6))
         controls = ttk.Frame(timer)
         controls.pack(fill="x")
-        self.pause_button = ttk.Button(controls, text="Pause  (F5)", command=self.toggle_pause)
+        self.pause_button = ttk.Button(controls, text="Pause  (F5)", command=self.toggle_pause,
+                                       style="Pause.TButton")
         self.pause_button.pack(side="left")
         ttk.Label(controls, text="after").pack(side="left", padx=(12, 4))
         self.minutes = tk.StringVar(value=str(wow.AUTO_PAUSE_MINUTES))
@@ -225,14 +326,19 @@ class FishingPanel:
         session = ttk.LabelFrame(row, text="This session", padding=10)
         session.grid(row=0, column=1, sticky="nsew", padx=6)
         self.session_values = {}
-        for line, (key, caption) in enumerate((("fishing", "Fishing time"), ("session", "Session length"),
-                                               ("caught", "Caught"),
-                                               ("rate", "Catch rate"), ("each", "One every"),
-                                               ("reeled", "Bites reeled in"), ("last", "Last catch"))):
-            ttk.Label(session, text=caption, style="Caption.TLabel").grid(row=line, column=0, sticky="w")
-            value = ttk.Label(session, text="-", style="Value.TLabel")
+        #Session length counts only while actually fishing (Zel, 2026-11-25): paused, auto-paused,
+        #WoW not in front or wow.py stopped, it stands still - it is the same clock the rates use.
+        for line, (key, caption, look) in enumerate((
+                ("fishing", "Session length", "Value"), ("caught", "Caught", "Green.Value"),
+                ("rate", "Catch rate", "Blue.Value"), ("each", "One every", "Value"),
+                ("reeled", "Bites reeled in", "Value"), ("last", "Last catch", "Value"))):
+            ttk.Label(session, text=caption, style="Caption.TLabel").grid(row=line, column=0, sticky="w",
+                                                                          pady=1)
+            value = ttk.Label(session, text="-", style=f"{look}.TLabel")
             value.grid(row=line, column=1, sticky="w", padx=(12, 0))
             self.session_values[key] = value
+        ttk.Label(session, text="Counts only while fishing - not while paused.",
+                  style="Caption.TLabel").grid(row=line + 1, column=0, columnspan=2, sticky="w", pady=(6, 0))
         session.columnconfigure(1, weight=1)
 
         money = ttk.LabelFrame(row, text="Earnings (vendor prices)", padding=10)
@@ -243,7 +349,7 @@ class FishingPanel:
         ttk.Label(money, text="Per hour of fishing", style="Caption.TLabel").grid(row=2, column=0, sticky="w")
         self.hourly = Money(money, size=16)
         self.hourly.grid(row=3, column=0, sticky="w")
-        self.money_note = ttk.Label(money, text="", foreground=RED, wraplength=280)
+        self.money_note = ttk.Label(money, text="", style="Problem.TLabel", wraplength=280)
         self.money_note.grid(row=4, column=0, sticky="w", pady=(8, 0))
 
     # --- Catches tab ---------------------------------------------------------------------------
@@ -261,6 +367,7 @@ class FishingPanel:
                                           (70, 70, 100, 100, 80)):
             self.table.heading(column, text=heading)
             self.table.column(column, width=width, anchor="e")
+        self.table.tag_configure("odd", background="#1c1f26")
         self.table.tag_configure("unpriced", foreground=RED)
         self.table.pack(fill="both", expand=True)
         self.table.bind("<Double-1>", lambda e: self.ask_price())
@@ -277,7 +384,7 @@ class FishingPanel:
         panes.add(left, weight=3)
 
         right = ttk.LabelFrame(panes, text="Latest catches", padding=4)
-        self.recent = tk.Listbox(right, height=12, activestyle="none", font=gui._log_font())
+        self.recent = dark_text(tk.Listbox(right, height=12, activestyle="none", font=gui._log_font()))
         self.recent.pack(fill="both", expand=True)
         panes.add(right, weight=2)
         return tab
@@ -327,7 +434,7 @@ class FishingPanel:
             messagebox.showinfo("Misreading", "Pick the misread name in the list first.")
             return
         others = [n for n in self.catalog.names() if n != wrong]
-        dialog = tk.Toplevel(self.root)
+        dialog = tk.Toplevel(self.root, background=BG)
         dialog.title("A misreading")
         dialog.transient(self.root)
         ttk.Label(dialog, padding=10, wraplength=380, text=(
@@ -361,7 +468,6 @@ class FishingPanel:
         self.tally = fish_tally.Tally()
         for counter in (self.fishing, self.reeled, self.missed):
             counter.reset()
-        self.session_started = time.time()
         self.last_catch = None
         self.recent.delete(0, "end")
         self._refresh()
@@ -378,11 +484,13 @@ class FishingPanel:
         ttk.Button(top, text="Refresh", command=self.refresh_history).pack(side="right")
         self.history = ttk.Treeview(tab, columns=("caught", "value"), height=12)
         self.history.heading("#0", text="Fish")
+        self.history.tag_configure("unpriced", foreground=RED)
         self.history.column("#0", width=260)
         self.history.heading("caught", text="Caught")
         self.history.heading("value", text="Worth")
         self.history.column("caught", width=90, anchor="e")
         self.history.column("value", width=120, anchor="e")
+        self.history.tag_configure("odd", background="#1c1f26")
         self.history.pack(fill="both", expand=True, pady=(6, 0))
         ttk.Label(tab, style="Caption.TLabel", text=f"From {wow.HISTORY}, which wow.py adds every "
                   "catch to, with or without this window.").pack(fill="x", pady=(6, 0))
@@ -395,20 +503,22 @@ class FishingPanel:
             all_time.add(name, count)
         copper, unpriced = all_time.value(self.catalog)
         self.history.delete(*self.history.get_children())
-        for name, count in counts.most_common():
+        for index, (name, count) in enumerate(counts.most_common()):
             price = self.catalog.price(name)
             self.history.insert("", "end", iid=name, text=name, values=(
-                count, fish_tally.format_money(price * count) if price is not None else "no price"))
+                count, fish_tally.format_money(price * count) if price is not None else "no price"),
+                tags=(("unpriced",) if price is None else ()) + (("odd",) if index % 2 else ()))
         self.history_label.configure(text=f"{all_time.total} caught in {sessions} session(s), worth")
         self.history_money.set(copper)
 
     # --- Log tab -----------------------------------------------------------------------------
     def _build_log_tab(self, parent):
         tab = ttk.Frame(parent, padding=8)
-        self.log = ScrolledText(tab, height=10, wrap="none", state="disabled", font=gui._log_font())
+        self.log = dark_text(ScrolledText(tab, height=10, wrap="none", state="disabled",
+                                          font=gui._log_font()))
         self.log.pack(fill="both", expand=True)
         self.log.tag_configure("problem", foreground=RED)
-        self.log.tag_configure("panel", foreground="#1a5fb4")
+        self.log.tag_configure("panel", foreground=BLUE)
         self.log.tag_configure("catch", foreground=GREEN)
         return tab
 
@@ -438,7 +548,8 @@ class FishingPanel:
         ttk.Button(buttons, text="Back to the default area", command=self.default_chat_area).pack(side="left")
         self.chat_where = ttk.Label(tab, style="Caption.TLabel")
         self.chat_where.pack(fill="x")
-        self.check_text = ScrolledText(tab, height=12, wrap="word", state="disabled", font=gui._log_font())
+        self.check_text = dark_text(ScrolledText(tab, height=12, wrap="word", state="disabled",
+                                                 font=gui._log_font()))
         self.check_text.pack(fill="both", expand=True, pady=(8, 0))
         self._show_chat_where()
         return tab
@@ -627,6 +738,8 @@ class FishingPanel:
         worth = fish_tally.format_money(price * count, "") if price is not None else "no price"
         self.recent.insert(0, f"{when}  {name}{f' x{count}' if count > 1 else ''}  {worth}"
                               f"{'  (inferred)' if how == 'inferred' else ''}")
+        self.recent.itemconfigure(0, foreground=RED if price is None else MUTED if how == "inferred"
+                                  else TEXT)
         if self.recent.size() > 200:
             self.recent.delete(200, "end")
 
@@ -682,7 +795,7 @@ class FishingPanel:
             detail = f"wow.py exited with an error (code {self.bot.exit_code}) - see the Log tab"
         else:
             text, colour = "Not running", GREY
-        self.state_label.configure(text=text)
+        self.state_label.configure(text=text, foreground=colour)
         self.state_dot.configure(foreground=colour)
         self.detail_label.configure(text=detail)
         paused = bool(status and status.get("paused"))
@@ -693,7 +806,7 @@ class FishingPanel:
         total = minutes * 60
         if status is None:
             left, caption, colour = total, (f"Pauses by itself after {minutes:.0f} min without F5, "
-                                            "so it never fishes on with nobody here."), None
+                                            "so it never fishes on with nobody here."), GREY
         elif status.get("pause_reason") == "auto":
             left, caption, colour = 0, "Paused itself. F5 (or Resume) to carry on.", RED
         elif status.get("paused"):
@@ -702,8 +815,10 @@ class FishingPanel:
         else:
             left = float(status.get("auto_pause_left", total))
             caption = "until it pauses by itself. Every F5 starts it over."
-            colour = RED if left < 60 else AMBER if left < 300 else None
-        self.timer_label.configure(text=clock(left), foreground=colour or "")
+            colour = RED if left < 60 else AMBER if left < 300 else GREEN
+        self.timer_label.configure(text=clock(left), foreground=colour)
+        bar = {GREEN: "Green", AMBER: "Amber", RED: "Red"}.get(colour, "Grey")
+        self.timer_bar.configure(style=f"{bar}.Horizontal.TProgressbar")
         self.timer_caption.configure(text=caption)
         self.timer_bar.configure(value=max(0.0, min(1.0, left / total)) if total else 0)
 
@@ -712,7 +827,6 @@ class FishingPanel:
         caught = self.tally.total
         values = self.session_values
         values["fishing"].configure(text=fish_tally.format_duration(seconds))
-        values["session"].configure(text=fish_tally.format_duration(time.time() - self.session_started))
         values["caught"].configure(text=f"{caught}" + (f"   ({self.tally.inferred} inferred)"
                                                        if self.tally.inferred else ""))
         rate = fish_tally.per_hour(caught, seconds)
@@ -746,7 +860,7 @@ class FishingPanel:
                       fish_tally.format_money(price) if price is not None else "set price",
                       fish_tally.format_money(price * count) if price is not None else "-",
                       f"{hourly:.0f}" if hourly is not None else "-")
-            tags = ("unpriced",) if price is None else ()
+            tags = (("unpriced",) if price is None else ()) + (("odd",) if index % 2 else ())
             if self.table.exists(name):
                 self.table.item(name, values=values, tags=tags)
                 self.table.move(name, "", index)
@@ -775,7 +889,7 @@ class ChatAreaDialog:
         shown = cv.resize(frame, None, fx=self.scale, fy=self.scale, interpolation=cv.INTER_AREA) \
             if self.scale < 1.0 else frame
         ok, png = cv.imencode(".png", shown)
-        self.window = tk.Toplevel(root)
+        self.window = tk.Toplevel(root, background=BG)
         self.window.title("Drag a box around the chat text")
         self.window.transient(root)
         self.image = tk.PhotoImage(data=base64.b64encode(png.tobytes()).decode("ascii"))
