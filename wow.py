@@ -23,11 +23,20 @@ Every key press is held down a random 0.2-0.6 s, usually near the short end.
     python wow.py --check-audio   listen for 15 s and say what was heard - run it with WoW (or a
                                recording) playing if the splash is never heard live.
     python wow.py --list-audio    the sound devices it can listen to (see AUDIO_DEVICE below).
+    python wow.py --read-chat     read the chat box once and say what it saw - checks the catch
+                               counter can see your chat (the GUI's Setup tab runs this too).
+    python wow_gui.py          the same, in a window: start/stop, the auto-pause countdown, what
+                               was caught, the catch rate and what it is worth per hour.
+
+It also COUNTS WHAT IS CAUGHT, by reading the green "You receive loot: [...]" lines in the chat box
+(core/text_feed.py finds the new lines, OCR reads them), and AUTO-PAUSES after 30 minutes without
+an F5 press, so it never fishes on for hours with nobody at the keyboard. Every F5 restarts the 30.
 
 Every run also writes a log file to recordings/wow/ with more detail than the console: what it
 heard every 10 s, every loud sound that was NOT taken for a splash and why, the lure found and lost.
 
 Hotkeys (global, like Hunter's Eye's):  F5 pause / resume (falling tone, rising tone)   End quit
+Auto-pause (no F5 for AUTO_PAUSE_MINUTES): three falling tones.
 
 !!! READ THIS FIRST !!!
 World of Warcraft is an ONLINE game, and Blizzard's terms of use forbid automating gameplay with
@@ -46,9 +55,14 @@ How it is built (see docs/wow_fishing.md for the measurements behind every numbe
   ears   core/audio_source.py    - the speakers' output (WASAPI loopback, Windows)
          core/sound_match.py     - "did THAT sound just play?" against assets/wow/splash/*.wav
   hands  core/actions.py         - press_key(), through `keyboard` (real scancodes; see actions.py)
-  brain  routes/fishing.py       - the loop's decisions, testable without any of the above
+         core/text_feed.py       - "which lines of the chat box are new?", then
+         core/text_detection.py  - OCR reads only those lines (and only the green loot ones)
+  brain  routes/fishing.py       - the loop's decisions, and the auto-pause timer
+         routes/fish_tally.py    - what was caught, prices, catch rate, earnings
 """
 import argparse
+import json
+import queue
 import random
 import sys
 import threading
@@ -58,9 +72,9 @@ from pathlib import Path
 import cv2 as cv
 import numpy as np
 
-from core import (audio_source, frame_source, presence, sound_match, spot_watch, wav_io,
-                  window_region)
-from routes import fishing
+from core import (audio_source, frame_source, presence, sound_match, spot_watch, text_detection,
+                  text_feed, wav_io, window_region)
+from routes import fish_tally, fishing
 
 # ======================================================================================================
 # SETTINGS - edit these, then restart
@@ -78,6 +92,11 @@ AUDIO_DEVICE = None                 #None = the Windows default speakers. If WoW
                                     #somewhere else (a headset), put part of that device's name
                                     #here, as `python wow.py --list-audio` prints it: "Headset"
 
+AUTO_PAUSE_MINUTES = 30             #pause by itself after this long with no F5 press (or the GUI's
+                                    #pause button). Every manual pause/resume restarts the count.
+AUTO_PAUSE_CHOICES = (10, 15, 20, 30, 45, 60, 90, 120)   #what the GUI (and --auto-pause) offer
+READ_CHAT = True                    #count catches from the chat box's "You receive loot" lines
+
 PAUSE_KEY = "f5"                    #pauses, and the same key resumes
 QUIT_KEY = "end"
 
@@ -91,7 +110,16 @@ BAR_CONFIG = ASSETS / "fishing_bar.json"
 GOT_AWAY_CONFIG = ASSETS / "fish_got_away.json"
 BOBBER_CONFIG = ASSETS / "bobber.json"
 SPLASH_FOLDER = ASSETS / "splash"
+CHAT_CONFIG = ASSETS / "chat.json"
+PRICES = ASSETS / "fish_prices.json"
 LOG_FOLDER = Path(__file__).resolve().parent / "recordings" / "wow"   #gitignored, like all recordings
+#This PC's own files, next to the logs (gitignored, so a `git pull` never touches them):
+USER_CHAT_CONFIG = LOG_FOLDER / "chat.json"        #the chat box, if it is not where the default says
+USER_PRICES = LOG_FOLDER / "fish_prices.json"      #new fish, and prices typed into the GUI
+HISTORY = LOG_FOLDER / "catches.csv"               #every catch ever counted, one row each
+#A loot line that shows up this soon after pausing is the fish reeled in just before: still counted.
+PAUSE_GRACE_SECONDS = 3.0
+STATUS_EVERY_SECONDS = 0.5                         #--control: how often the GUI is told the state
 
 #"Your fish got away!" is plain yellow text over moving water. Matching it as a picture would match
 #the water too, so both the template and the screen are reduced to "which pixels are that yellow"
@@ -112,6 +140,17 @@ def hold_time(rng=random):
 
 _log_file = None
 _log_lock = threading.Lock()
+_print_lock = threading.Lock()
+
+
+def write_line(line):
+    """One whole line to the console. Several threads print (the loop, the eyes, the ears, the
+    command channel), and print() writes the text and the newline separately - so two threads can
+    splice their lines together. Under --control the panel reads these lines, and a spliced
+    "@catch" line would be a lost catch; one locked write each keeps every line whole."""
+    with _print_lock:
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
 
 
 def open_log_file(kind):
@@ -140,7 +179,7 @@ def log(message, console=True):
     find out why a fish was missed, but would bury the console if printed every few seconds."""
     line = f"[{time.strftime('%H:%M:%S')}] {message}"
     if console:
-        print(line, flush=True)
+        write_line(line)
     with _log_lock:
         if _log_file is not None:
             try:
@@ -163,6 +202,19 @@ def play_cue(rising):
             import winsound
             for tone in tones:
                 winsound.Beep(tone, 110)
+        except Exception:                        # noqa: BLE001 - not Windows, or no sound device
+            print("\a", end="", flush=True)
+
+    threading.Thread(target=play, daemon=True).start()
+
+
+def play_auto_pause_cue():
+    """Three falling tones: different from F5's two, so "it paused itself" is clear by ear."""
+    def play():
+        try:
+            import winsound
+            for tone in (990, 830, 660):
+                winsound.Beep(tone, 140)
         except Exception:                        # noqa: BLE001 - not Windows, or no sound device
             print("\a", end="", flush=True)
 
@@ -501,6 +553,283 @@ class LureWatcher:
 
 
 # ------------------------------------------------------------------------------------------------------
+# The chat box - counting catches
+# ------------------------------------------------------------------------------------------------------
+
+def load_chat_config(path=CHAT_CONFIG, user_path=USER_CHAT_CONFIG):
+    """The chat settings: the repo's defaults, with this PC's own box (if one was set) on top.
+    None, with the reason printed, if they cannot be used."""
+    config = {}
+    for source in (path, user_path):
+        if source is None or not Path(source).exists():
+            continue
+        try:
+            with open(source, encoding="utf-8") as handle:
+                config.update(json.load(handle))
+        except (OSError, ValueError) as exc:
+            print(f"WARNING: {source}: could not read it ({exc}) - "
+                  f"{'catches will not be counted' if source == path else 'using the default chat box'}.")
+            if source == path:
+                return None
+    try:
+        region = [float(v) for v in config["region"]]
+        if len(region) != 4 or not all(0.0 <= v <= 1.0 for v in region) or region[2] <= 0 or region[3] <= 0:
+            raise ValueError(f"region must be 4 fractions of the window, got {config['region']}")
+        config["region"] = region
+        for key in ("line_pitch", "source_height", "loot_min_pixels", "checks_per_second",
+                    "loot_wait_seconds"):
+            config[key] = float(config[key])
+            if config[key] <= 0:
+                raise ValueError(f"{key} must be above 0")
+        config["ocr_thresholds"] = [int(v) for v in config["ocr_thresholds"]] or [110]
+        config["loot_low"] = tuple(int(v) for v in config["loot_low"])
+        config["loot_high"] = tuple(int(v) for v in config["loot_high"])
+    except (KeyError, TypeError, ValueError) as exc:
+        print(f"WARNING: the chat settings are broken ({exc}) - catches will not be counted.")
+        return None
+    return config
+
+
+def chat_pitch(config, window_height):
+    """The chat's line pitch in pixels for a window this tall (the font scales with the UI)."""
+    return max(4, int(round(config["line_pitch"] * window_height / config["source_height"])))
+
+
+def chat_region(config, client):
+    """The chat box in screen pixels, as an mss region, for a window at `client` (x, y, w, h)."""
+    x, y, w, h = client
+    rx, ry, rw, rh = config["region"]
+    return {"left": int(round(x + rx * w)), "top": int(round(y + ry * h)),
+            "width": max(1, int(round(rw * w))), "height": max(1, int(round(rh * h)))}
+
+
+def ocr_line(image, threshold):
+    """One line of chat as text. The brightest channel, not grey: the loot words are pure green
+    (0,160,0), which a grey conversion turns into 94 - below any threshold that keeps the background
+    out (EH#48). Measured: every line of Zel's chat screenshot read exactly at 110."""
+    gray = image.max(axis=2) if image.ndim == 3 else image
+    return text_detection.read_line(np.ascontiguousarray(gray), threshold=threshold, whitelist=None)
+
+
+class ChatReader:
+    """Finds the new "You receive loot: [...]" lines in pictures of the chat box. Frame-driven and
+    clock-free (time is passed in), so the tests feed it real chat pictures.
+
+    look(frame, now) -> [(name as read, count, closed, how)], how = "read" for a loot line seen
+    arriving, "inferred" for the one case pixels cannot settle (see below).
+
+    WHAT IS READ: core/text_feed.py says which lines are new; only those with the loot green in
+    them (measured 335-379 green pixels on a loot line, 0 on any other) are OCR'd - about 0.1 s,
+    once per catch. A misread is tried again at the other thresholds before giving up.
+
+    THE AMBIGUOUS CASE: a chat box showing nothing but the same loot line, say eight Snappers in a
+    row, looks exactly the same after a ninth arrives. text_feed flags that as `ambiguous`. So when
+    the loop reels in on a bite it calls expect(now); if no loot line has arrived `loot_wait_seconds`
+    later, the box looked ambiguous meanwhile, and its bottom line is a loot line, that line is
+    counted once more, as "inferred". cancel() (the fish got away) drops the expectation.
+    """
+
+    def __init__(self, config, pitch, ocr=ocr_line, log=print, detail=None):
+        self.config = config
+        self.feed = text_feed.TextFeed(pitch)
+        self.ocr = ocr
+        self.log = log                                 #worth a line on the console
+        self.detail = detail or (lambda message: None)  #only for the log file
+        scale = pitch / config["line_pitch"]
+        self.min_green = config["loot_min_pixels"] * scale * scale
+        self.expect_until = None
+        self._loot_since = False
+        self._ambiguous_since = False
+        self.lost = False          #the last look did not line up with the one before
+
+    def expect(self, now):
+        self.expect_until = now + self.config["loot_wait_seconds"]
+        self._loot_since = False
+        self._ambiguous_since = False
+
+    def cancel(self):
+        self.expect_until = None
+
+    def is_loot(self, image):
+        hsv = cv.cvtColor(image, cv.COLOR_BGR2HSV)
+        green = cv.inRange(hsv, self.config["loot_low"], self.config["loot_high"])
+        return int(cv.countNonZero(green)) >= self.min_green
+
+    def read(self, image):
+        """(name, count, closed) from a loot line's picture, or None; plus the text last read."""
+        text = ""
+        for threshold in self.config["ocr_thresholds"]:
+            text = self.ocr(image, threshold)
+            parsed = fish_tally.parse_loot_line(text)
+            if parsed is not None and parsed[2]:
+                return parsed, text
+        return fish_tally.parse_loot_line(text), text
+
+    def look(self, frame, now):
+        events = []
+        new = self.feed.feed(frame)
+        self.lost = new is None
+        for image in new or []:
+            if not self.is_loot(image):
+                continue
+            parsed, text = self.read(image)
+            self.detail(f"chat: new loot line, read as {text!r}")
+            if parsed is None:
+                self.log(f"chat: a loot line arrived but could not be read (OCR: {text!r})")
+                continue
+            events.append((*parsed, "read"))
+            self.expect_until = None
+        if self.expect_until is not None:
+            self._ambiguous_since |= self.feed.ambiguous
+            if now >= self.expect_until:
+                self.expect_until = None
+                lines = self.feed.lines or []
+                if self._ambiguous_since and lines and self.is_loot(lines[-1].image):
+                    parsed, text = self.read(lines[-1].image)
+                    if parsed is not None:
+                        self.log(f"chat: no new line after the reel-in, but the box shows only "
+                                 f"repeats of {parsed[0]!r} - counting one more of it")
+                        events.append((*parsed, "inferred"))
+        return events
+
+
+class ChatWatcher:
+    """Runs a ChatReader on its own daemon thread, `checks_per_second` times a second, on a small
+    capture of the chat box (about 400x170 pixels; a look costs about 6 ms, OCR only on new loot)."""
+
+    def __init__(self, config, screen):
+        self.config = config
+        self.screen = screen
+        self.reader = None
+        self._lock = threading.Lock()
+        self._events = queue.Queue(maxsize=200)
+        self._stop = threading.Event()
+
+    def expect_loot(self):
+        with self._lock:
+            if self.reader is not None:
+                self.reader.expect(time.monotonic())
+
+    def cancel_loot(self):
+        with self._lock:
+            if self.reader is not None:
+                self.reader.cancel()
+
+    def take_catches(self):
+        caught = []
+        try:
+            while True:
+                caught.append(self._events.get_nowait())
+        except queue.Empty:
+            return caught
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        source, source_region = None, None
+        period = 1.0 / self.config["checks_per_second"]
+        was_lost = False
+        try:
+            while not self._stop.is_set():
+                started = time.monotonic()
+                client = self.screen.client
+                if client is None:
+                    self._stop.wait(0.5)
+                    continue
+                region = chat_region(self.config, client)
+                if region != source_region:
+                    if source is not None:
+                        source.close()
+                    source = frame_source.FrameSource(region, backend=frame_source.MSS)
+                    source_region = region
+                    with self._lock:
+                        #A new reader (a moved window starts the comparison over), keeping any
+                        #reel-in it was waiting on.
+                        waiting = self.reader.expect_until if self.reader is not None else None
+                        self.reader = ChatReader(self.config, chat_pitch(self.config, client[3]),
+                                                 log=log, detail=lambda m: log(m, console=False))
+                        self.reader.expect_until = waiting
+                    log(f"chat: reading the box at {region['width']}x{region['height']} px", console=False)
+                try:
+                    frame = source.grab()
+                except Exception as exc:             # noqa: BLE001 - "cannot tell", never a crash
+                    log(f"chat capture failed ({exc})", console=False)
+                    frame = None
+                if frame is not None:
+                    with self._lock:
+                        events = self.reader.look(np.ascontiguousarray(frame[:, :, :3]), started)
+                        lost = self.reader.lost
+                    if lost and not was_lost:
+                        log("chat: the box changed all at once (scrolled, covered, or just started) "
+                            "- reading from what is there now", console=False)
+                    was_lost = lost
+                    for event in events:
+                        try:
+                            self._events.put_nowait(event)
+                        except queue.Full:
+                            pass
+                self._stop.wait(max(0.0, period - (time.monotonic() - started)))
+        finally:
+            if source is not None:
+                source.close()
+
+
+def read_chat_once():
+    """--read-chat: one look at the chat box, everything it can see, line by line."""
+    config = load_chat_config()
+    if config is None:
+        return 2
+    if not text_detection.ocr_available():
+        print("No OCR (Tesseract) is installed, so the chat cannot be read - see requirements.txt.")
+        return 2
+    found = window_region.find_window(WINDOW_TITLE)
+    if found is not None:
+        client = found[1]
+    elif window_region.available():
+        print(f"No window called '{WINDOW_TITLE}' - is WoW running?")
+        return 1
+    else:
+        client = _primary_monitor()
+    region = chat_region(config, client)
+    source = frame_source.FrameSource(region, backend=frame_source.MSS)
+    try:
+        frame = source.grab()
+    finally:
+        source.close()
+    if frame is None:
+        print("Could not capture the screen.")
+        return 1
+    frame = np.ascontiguousarray(frame[:, :, :3])
+    LOG_FOLDER.mkdir(parents=True, exist_ok=True)
+    picture = LOG_FOLDER / "chat_check.png"
+    cv.imwrite(str(picture), frame)
+    pitch = chat_pitch(config, client[3])
+    reader = ChatReader(config, pitch)
+    lines = text_feed.split_lines(frame, pitch)
+    measured = text_feed.estimate_pitch(frame)
+    print(f"Chat box: {region['width']}x{region['height']} px at ({region['left']}, {region['top']}); "
+          f"{len(lines)} line(s) of text, {pitch} px apart"
+          + (f" (measured: {measured})" if measured and measured != pitch else "") + ".")
+    loot = 0
+    for line in lines:
+        if reader.is_loot(line.image):
+            parsed, text = reader.read(line.image)
+            if parsed:
+                loot += 1
+                print(f"  LOOT  {text}\n        -> {parsed[0]} x{parsed[1]}")
+            else:
+                print(f"  loot? {text}   (green, but not read as a loot line)")
+        else:
+            print(f"        {ocr_line(line.image, config['ocr_thresholds'][0])}")
+    print(f"{loot} loot line(s). The picture it read is saved as {picture}")
+    if not lines:
+        print("No text found there. Is the chat box where wow_gui.py's Setup tab says? (Chat "
+              "lines fade after a while - loot something, or type in chat, then try again.)")
+    return 0
+
+
+# ------------------------------------------------------------------------------------------------------
 # Ears
 # ------------------------------------------------------------------------------------------------------
 
@@ -716,13 +1045,67 @@ def check_audio(reference, seconds=15.0):
     return 0
 
 
-def run(dry_run):
+class Bookkeeper:
+    """What was caught this run: names resolved against the price list, counted, written to the
+    history file, and (under --control) told to the GUI. Lives on the main thread only."""
+
+    def __init__(self, catalog, session, control):
+        self.catalog = catalog
+        self.session = session
+        self.control = control
+        self.tally = fish_tally.Tally()
+
+    def caught(self, raw, count, closed, how, counted):
+        name = self.catalog.resolve(raw, closed)
+        if name is None:
+            log(f"loot line not understood ({raw!r}) - not counted")
+            return
+        if self.catalog.add(name):
+            log(f"a new item, not seen before: {name} (no price yet - set one in wow_gui.py)")
+        if not counted:
+            log(f"looted {name} while paused - not counted as fishing")
+            return
+        self.tally.add(name, count, time.monotonic(), how)
+        try:
+            fish_tally.append_history(HISTORY, time.strftime("%Y-%m-%d %H:%M:%S"), self.session,
+                                      name, count, how)
+        except OSError as exc:
+            log(f"could not write {HISTORY.name} ({exc}) - the catch still counts for this run")
+        price = self.catalog.price(name)
+        log(f"caught: {name}{f' x{count}' if count > 1 else ''} "
+            f"({fish_tally.format_money(price, 'price not known')})"
+            f"{' - inferred, see docs/wow_fishing.md' if how == 'inferred' else ''}")
+        if self.control:
+            emit("catch", {"fish": name, "count": count, "how": how,
+                           "vendor": price, "time": time.strftime("%H:%M:%S")})
+
+    def summary(self, fishing_seconds):
+        copper, unpriced = self.tally.value(self.catalog)
+        hourly = fish_tally.per_hour(copper, fishing_seconds)
+        rate = fish_tally.per_hour(self.tally.total, fishing_seconds)
+        parts = [f"{self.tally.total} caught in {fish_tally.format_duration(fishing_seconds)} of fishing"]
+        if rate is not None:
+            parts.append(f"{rate:.0f} an hour")
+        parts.append(f"worth {fish_tally.format_money(copper)} to a vendor"
+                     + (f" (+{unpriced} with no price yet)" if unpriced else ""))
+        if hourly is not None:
+            parts.append(f"{fish_tally.format_money(hourly)} an hour")
+        return ", ".join(parts)
+
+
+def emit(kind, payload):
+    """One machine-readable line for wow_gui.py: "@<kind> <json>". Console only, never the log
+    file - it is the GUI's feed, not something a person reads."""
+    write_line(f"@{kind} {json.dumps(payload, separators=(',', ':'))}")
+
+
+def run(dry_run, control=False, auto_pause_minutes=None):
     try:
         import keyboard
     except ImportError:
         print("The `keyboard` package is missing - run: python -m pip install -r requirements.txt")
         return 2
-    from core import actions
+    from core import actions, command_channel
 
     bar_check = presence.load(BAR_CONFIG)
     got_away_check = presence.load(GOT_AWAY_CONFIG)
@@ -744,6 +1127,10 @@ def run(dry_run):
     if source is None and eye is None:
         print("Neither the splash nor the lure can be used, so a bite could never be noticed.")
         return 2
+    chat_config = load_chat_config() if READ_CHAT else None
+    if READ_CHAT and chat_config is not None and not text_detection.ocr_available():
+        print("No OCR (Tesseract) installed - catches will not be counted (see requirements.txt).")
+        chat_config = None
 
     log_path = open_log_file("wow")
     if log_path:
@@ -751,10 +1138,16 @@ def run(dry_run):
     if source is not None:
         log(f"listening to: {source.device_name} ({source.sample_rate} Hz)")
     log(f"watching the lure: {'yes' if eye is not None else 'no'}")
+    log(f"counting catches from the chat: {'yes' if chat_config is not None else 'no'}")
+    catalog = fish_tally.Catalog(PRICES, USER_PRICES)
+    for problem in catalog.problems:
+        log(f"WARNING: fish prices - {problem}")
+    books = Bookkeeper(catalog, time.strftime("%Y-%m-%d_%H-%M-%S"), control)
 
     screen = ScreenWatcher(bar_check, got_away_check)
     ears = SplashListener(source, reference) if source is not None else None
     lure = LureWatcher(eye, screen) if eye is not None else None
+    chat = ChatWatcher(chat_config, screen) if chat_config is not None else None
     loop = fishing.FishingLoop(recast_delay=RECAST_DELAY_SECONDS,
                                no_splash_timeout=NO_SPLASH_TIMEOUT_SECONDS, log=log)
     threading.Thread(target=screen.run, daemon=True, name="screen").start()
@@ -762,28 +1155,54 @@ def run(dry_run):
         threading.Thread(target=ears.run, daemon=True, name="audio").start()
     if lure is not None:
         threading.Thread(target=lure.run, daemon=True, name="lure").start()
+    if chat is not None:
+        threading.Thread(target=chat.run, daemon=True, name="chat").start()
 
     quit_requested = threading.Event()
     paused = threading.Event()
     restart = threading.Event()
+    auto_pause = fishing.AutoPause(auto_pause_minutes or AUTO_PAUSE_MINUTES, time.monotonic())
+    pause_state = {"reason": None, "at": None}   #why paused ("manual" / "auto") and since when
+    state_lock = threading.Lock()
 
-    def toggle_pause():
+    def toggle_pause(by=PAUSE_KEY.upper()):
         #One key, two states (Zel asked for F5 to do both). Each state still has its own sound,
-        #so it is clear which one you are in without looking at the console.
-        if paused.is_set():
-            paused.clear()
-            restart.set()
-            play_cue(rising=True)
-            log("resumed")
-        else:
-            paused.set()
-            play_cue(rising=False)
-            log(f"PAUSED - {PAUSE_KEY.upper()} again to resume")
+        #so it is clear which one you are in without looking at the console. Either way it is a
+        #person at the keyboard, so the auto-pause countdown starts over.
+        with state_lock:
+            auto_pause.restart(time.monotonic())
+            if paused.is_set():
+                paused.clear()
+                pause_state["reason"] = None
+                restart.set()
+                play_cue(rising=True)
+                log(f"resumed ({by}) - auto-pause in {auto_pause.minutes:.0f} min unless "
+                    f"{PAUSE_KEY.upper()} is pressed")
+            else:
+                paused.set()
+                pause_state.update(reason="manual", at=time.monotonic())
+                play_cue(rising=False)
+                log(f"PAUSED ({by}) - {PAUSE_KEY.upper()} again to resume")
+
+    def set_auto_pause(minutes):
+        with state_lock:
+            auto_pause.set_minutes(minutes, time.monotonic())
+        log(f"auto-pause set to {minutes} min (counting from now)")
 
     keyboard.add_hotkey(PAUSE_KEY, toggle_pause)
     keyboard.add_hotkey(QUIT_KEY, quit_requested.set)
+    if control:
+        handlers = {"toggle": lambda: toggle_pause("control panel"),
+                    "pause": lambda: paused.is_set() or toggle_pause("control panel"),
+                    "resume": lambda: paused.is_set() and toggle_pause("control panel"),
+                    "quit": quit_requested.set}
+        for minutes in AUTO_PAUSE_CHOICES:
+            handlers[f"auto_pause_{minutes}"] = lambda m=minutes: set_auto_pause(m)
+        #End of input = the control panel went away: nobody is watching, so stop.
+        command_channel.listen(handlers, on_close=quit_requested.set, log=log)
     log(f"{'DRY RUN - no key will be pressed. ' if dry_run else ''}"
-        f"{PAUSE_KEY.upper()} pause/resume, {QUIT_KEY.title()} quit.")
+        f"{PAUSE_KEY.upper()} pause/resume, {QUIT_KEY.title()} quit. "
+        f"Auto-pause after {auto_pause.minutes:.0f} min without {PAUSE_KEY.upper()}.")
     play_cue(rising=True)
 
     def press():
@@ -799,6 +1218,9 @@ def run(dry_run):
         return heard, seen
 
     started_at = time.monotonic()
+    fishing_seconds = 0.0       #time actually fishing: not paused, WoW in front, not stopped
+    last_tick = started_at
+    next_status = 0.0
     #Wait (briefly) for a first screen reading so the loop starts from what is really there.
     deadline = time.monotonic() + 2.0
     while screen.latest()[0] is None and time.monotonic() < deadline:
@@ -809,6 +1231,13 @@ def run(dry_run):
         while not quit_requested.is_set() and loop.state != fishing.STOPPED:
             now = time.monotonic()
             bar, got_away, foreground, _scores = screen.latest()
+            with state_lock:
+                if auto_pause.due(now, paused.is_set()):
+                    paused.set()
+                    pause_state.update(reason="auto", at=now)
+                    play_auto_pause_cue()
+                    log(f"AUTO-PAUSED: {auto_pause.minutes:.0f} min without {PAUSE_KEY.upper()} - "
+                        f"press {PAUSE_KEY.upper()} to carry on")
             if restart.is_set():
                 restart.clear()
                 take_bites()                   #a bite from before the pause is stale
@@ -823,12 +1252,36 @@ def run(dry_run):
                     log("WoW is in front again")
                     loop.start(now, bar)       #the old timers are meaningless after a gap
                 blocked_reason = reason
+            if reason is None:
+                fishing_seconds += now - last_tick
+            last_tick = now
             heard, seen = take_bites()
             if (heard or seen) and reason is not None:
                 log(f"{fishing.signal_name(heard, seen)} but not acted on: {reason}")
+            reeled, missed = loop.catches, loop.misses
             if loop.decide(now, bar, splash=heard, got_away=got_away, allowed=reason is None,
                            bobbed=seen) == fishing.PRESS:
                 press()
+            if chat is not None:
+                if loop.catches > reeled:
+                    chat.expect_loot()         #a reeled-in bite: a loot line should follow
+                elif loop.misses > missed:
+                    chat.cancel_loot()
+                for raw, count, closed, how in chat.take_catches():
+                    since_pause = (now - pause_state["at"]) if paused.is_set() and pause_state["at"] else 0.0
+                    books.caught(raw, count, closed, how,
+                                 counted=not paused.is_set() or since_pause <= PAUSE_GRACE_SECONDS)
+            if control and now >= next_status:
+                next_status = now + STATUS_EVERY_SECONDS
+                emit("status", {
+                    "state": loop.state, "paused": paused.is_set(), "pause_reason": pause_state["reason"],
+                    "blocked": reason if reason != "paused" else None,
+                    "auto_pause_left": round(auto_pause.left(now, paused.is_set()), 1),
+                    "auto_pause_minutes": auto_pause.minutes,
+                    "fishing_seconds": round(fishing_seconds, 1),
+                    "reeled": loop.catches, "missed": loop.misses, "by": loop.caught_by,
+                    "caught": books.tally.total,
+                    "chat": "reading" if chat is not None else "off", "dry_run": dry_run})
             time.sleep(0.01)                   #100 Hz: at most 10 ms between a bite and the press
     except KeyboardInterrupt:
         pass
@@ -838,16 +1291,22 @@ def run(dry_run):
             ears.stop()
         if lure is not None:
             lure.stop()
+        if chat is not None:
+            chat.stop()
         if source is not None:
             source.close()
         keyboard.unhook_all_hotkeys()
     minutes = (time.monotonic() - started_at) / 60
     if loop.state == fishing.STOPPED:
         log(f"stopped: {loop.reason}")
+        if control:
+            emit("stopped", {"reason": loop.reason})
     by = loop.caught_by
     log(f"done after {minutes:.1f} min: {loop.catches} reeled in (heard {by['sound']}, seen "
         f"{by['sight']}, both {by['both']}), {loop.misses} missed"
         f"{f', {source.dropped} audio chunks dropped' if source is not None and source.dropped else ''}")
+    if chat is not None:
+        log(books.summary(fishing_seconds))
     close_log_file()
     return 0
 
@@ -862,16 +1321,25 @@ def main(argv=None):
                         help="listen for 15 s and report what reached wow.py, then exit")
     parser.add_argument("--list-audio", action="store_true",
                         help="list the sound devices wow.py can listen to, then exit")
+    parser.add_argument("--read-chat", action="store_true",
+                        help="read the chat box once and print what it saw, then exit")
+    parser.add_argument("--auto-pause", type=int, choices=AUTO_PAUSE_CHOICES, metavar="MINUTES",
+                        help=f"pause after this many minutes without {PAUSE_KEY.upper()} "
+                             f"(default {AUTO_PAUSE_MINUTES}; one of {AUTO_PAUSE_CHOICES})")
+    parser.add_argument("--control", action="store_true",
+                        help="run under wow_gui.py: commands on stdin, state as @lines on stdout")
     args = parser.parse_args(argv)
     if args.list_audio:
         return list_audio()
+    if args.read_chat:
+        return read_chat_once()
     if args.replay or args.check_audio:
         reference = sound_match.load_reference_folder(SPLASH_FOLDER)
         if reference is None:
             print(f"No usable reference clips in {SPLASH_FOLDER}.")
             return 2
         return replay(args.replay, reference) if args.replay else check_audio(reference)
-    return run(args.dry_run)
+    return run(args.dry_run, control=args.control, auto_pause_minutes=args.auto_pause)
 
 
 if __name__ == "__main__":

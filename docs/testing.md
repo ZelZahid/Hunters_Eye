@@ -80,7 +80,10 @@ Only these still need you, and each says why no script can do it:
    - **F7** - the Pindle run reaches the pack and fights.
    - **`wow.py`** - run `python wow.py --dry-run` while fishing and see `splash heard` and/or
      `lure bobbed` print at each bite and nowhere else, then `python wow.py` and see it reel in and
-     recast. If nothing is heard, `python wow.py --check-audio` first. No script can do this one:
+     recast. If nothing is heard, `python wow.py --check-audio` first. For the catch counter:
+     `python wow.py --read-chat` with a loot line on screen should list it as LOOT; then fish a
+     few minutes from `python wow_gui.py` and see each catch appear once, and the countdown pause
+     it (set it to 10 min to wait less). No script can do this one:
      WoW is a different game on a live server, and its sound only exists while it plays. What the
      recordings could check is checked by S-1xx, V-317/V-318 and L-7xx; what they could not is
      listed in [`wow_fishing.md`](wow_fishing.md#not-tested-and-why).

@@ -1,0 +1,13 @@
+{
+  "about": "What a vendor pays for one of each, in copper (100 copper = 1 silver, 100 silver = 1 gold) - the 'Sell Price' line of the game's own tooltip, read off Zel's screenshots on 2026-11-25. A price can also be written like \"19s\" or \"2s 40c\". This list is only a starting point: wow.py counts ANY item the chat says was looted, and adds new ones (price unknown) to recordings/wow/fish_prices.json on this PC, where prices typed into wow_gui.py are kept too. That file wins over this one.",
+  "items": {
+    "Raw Brilliant Smallfish":     {"vendor": 19},
+    "Raw Slitherskin Mackerel":    {"vendor": 18},
+    "Raw Longjaw Mud Snapper":     {"vendor": 20},
+    "Oily Blackmouth":             {"vendor": 24},
+    "Raw Rainbow Fin Albacore":    {"vendor": 26},
+    "Darkshore Grouper":           {"vendor": 30},
+    "Raw Bristle Whisker Catfish": {"vendor": 40},
+    "19 Pound Catfish":            {"vendor": 1900}
+  }
+}

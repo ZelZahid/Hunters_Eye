@@ -123,6 +123,7 @@ Code under test: wow.py, assets/wow/*.json (through core/presence.py)
 | V-316 | The water behind the text does not matter - only the yellow letters are compared | test_wow_fishing.py | **new** |
 | V-317 | The lure is found by the cog over it - on different water, light and camera - and not where there is none | test_wow_fishing.py | **new** |
 | V-318 | A real bite is seen at the moment it happens, once, and a pointer crossing the lure is not a bite | test_wow_fishing.py | **new** |
+| V-319 | Loot lines are read off real chat: the screenshot's three, and the recording's two as they arrive | test_wow_catches.py | **new** |
 
 ### V-4xx  Text and OCR
 
@@ -145,6 +146,17 @@ Code under test: core/text_detection.py
 | V-413 | A name no single threshold reads correctly is still resolved, per character | test_next_game.py | next_game §16 |
 | V-414 | A name with an unreadable character is resolved from what we already typed | test_next_game.py | next_game §17 |
 | V-415 | The Game Name box's arrow marker is not read as part of the name | test_next_game.py | next_game §18 |
+
+### V-4xx (continued)  New lines in a scrolling text box
+
+Code under test: core/text_feed.py
+
+| Card | What it checks | File | Was |
+|---|---|---|---|
+| V-416 | Chat lines are cut exactly between rows, whatever is behind the box, and the pitch is measured | test_wow_catches.py | **new** |
+| V-417 | A line matches itself in another frame - even fading, or over moving grass - and never a different line | test_wow_catches.py | **new** |
+| V-418 | New lines are found as they arrive on a real recording; an unchanged box finds none; a crab is 'cannot tell' | test_wow_catches.py | **new** |
+| V-419 | A box of nothing but the same line: no line is invented, but it says it cannot be sure | test_wow_catches.py | **new** |
 
 ### V-5xx  Image search (template matching)
 
@@ -213,6 +225,7 @@ Code under test: all detectors
 | V-904 | OCR reads light text on a dark background - a night-time sign, a dark UI | test_detector_contract.py | **new** |
 | V-905 | 'Cannot tell' comes back as None from every detector, never as a confident no | test_detector_contract.py | **new** |
 | V-906 | Spot watch notices a light coming on in a doorway - a camera, not a game | test_detector_contract.py | **new** |
+| V-907 | Text feed finds the new lines of a log window scrolling on a white page - not a game | test_detector_contract.py | **new** |
 
 ## L — Logic
 
@@ -314,7 +327,7 @@ Code under test: main.py `get_screenshot`, `detect_objects`, `detect_text`
 
 ### L-7xx  WoW fishing (wow.py)
 
-Code under test: routes/fishing.py, wow.py
+Code under test: routes/fishing.py, routes/fish_tally.py, wow.py
 
 | Card | What it checks | File | Was |
 |---|---|---|---|
@@ -329,6 +342,12 @@ Code under test: routes/fishing.py, wow.py
 | L-709 | A splash right after the bar appears is the lure landing, not a bite: ignored, and said so | test_wow_fishing.py | **new** |
 | L-710 | Either signal reels in - the splash heard, or the lure seen bobbing - and the tally says which | test_wow_fishing.py | **new** |
 | L-711 | Pause and resume are ONE key, and each state still has its own sound | test_wow_fishing.py | **new** |
+| L-712 | Loot lines are parsed from what OCR really returns - misread brackets, stacks, junk after | test_wow_catches.py | **new** |
+| L-713 | A name snaps to the fish it means; numbers must agree; an unknown fish is new; junk is refused | test_wow_catches.py | **new** |
+| L-714 | Prices: copper, silver and gold; the user's own file wins; new fish, typed prices and merges are kept | test_wow_catches.py | **new** |
+| L-715 | The tally: counts, what they are worth (unpriced fish counted apart), and per hour | test_wow_catches.py | **new** |
+| L-716 | Auto-pause: after N minutes with no F5, never while paused, and every F5 starts it over | test_wow_catches.py | **new** |
+| L-717 | The one case pixels cannot settle: a reeled-in bite and a box of repeats counts one more; a fish that got away does not | test_wow_catches.py | **new** |
 
 ## A — Actions
 
@@ -465,3 +484,15 @@ Code under test: gui.py, core/command_channel.py
 | T-403 | The control panel window: settings form, Save, buttons, status | test_control_panel.py | **new** |
 | T-404 | Each button shows the hotkey main.py really binds, in F-key order | test_control_panel.py | **new** |
 | T-405 | The potion snooze counts down in red on its button; the log is readable | test_control_panel.py | **new** |
+
+### T-4xx (continued)  The WoW fishing panel
+
+Code under test: wow_gui.py, wow.py --control
+
+| Card | What it checks | File | Was |
+|---|---|---|---|
+| T-406 | The fishing panel reads wow.py's @lines - status, catches, the stop reason - and keeps them out of the log | test_wow_panel.py | **new** |
+| T-407 | The auto-pause countdown is shown, warns near the end, and says when it paused itself | test_wow_panel.py | **new** |
+| T-408 | Session numbers: fishing time across restarts, catch rate, earnings in gold/silver/copper, unpriced flagged | test_wow_panel.py | **new** |
+| T-409 | Pause sends the same toggle as F5; the header follows wow.py's answer | test_wow_panel.py | **new** |
+| T-410 | Every word the panel sends is one wow.py --control answers to | test_wow_panel.py | **new** |

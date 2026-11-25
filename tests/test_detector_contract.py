@@ -32,7 +32,7 @@ import cv2 as cv
 import numpy as np
 
 import main
-from core import game_state, monster_detection, presence, slots, spot_watch
+from core import game_state, monster_detection, presence, slots, spot_watch, text_feed
 from core import text_detection as td
 from routes import pindle
 
@@ -122,6 +122,9 @@ for name, frame in FRAMES.items():
     spot = spot_watch.SpotWatcher((0, 0, 200), (180, 40, 255), min_history=1)
     survives("    spot watch", lambda: [spot.feed(frame), spot.feed(frame)],
              lambda r: r[0] is None and r[1] in (True, False))
+    feed = text_feed.TextFeed(18)
+    survives("    text feed", lambda: [feed.feed(frame), feed.feed(frame)],
+             lambda r: r[0] is None and r[1] == [])
     #Only frames at least the needle's size: the capture is always a whole monitor, so that is
     #what main.py can hand it. A SMALLER frame does not raise - OpenCV swaps image and template
     #and reports phantom matches - which is parked in docs/todolist.md, not asserted here.
@@ -202,6 +205,8 @@ check("in-play check with no frame -> (None, None), not False", in_play.check(No
 check("spot watch with no patch -> None, and before it has a history -> None, not False",
       spot_watch.SpotWatcher((0, 0, 200), (180, 40, 255)).feed(None) is None
       and spot_watch.SpotWatcher((0, 0, 200), (180, 40, 255)).feed(frame) is None)
+check("text feed's first look, and a missing picture -> None, not 'no new lines'",
+      text_feed.TextFeed(18).feed(frame) is None and text_feed.TextFeed(18).feed(None) is None)
 check("map locate on a flat frame -> found is None, not False",
       route.locator.locate(np.zeros((172, 288), np.uint8)).found is None)
 #And the other way round: a confident answer must still be possible, or None is just a crash
@@ -235,6 +240,32 @@ check("and it is reported ONCE, not again on every frame it stays on",
       [spot.feed(doorway(light=True)) for _ in range(5)] == [False] * 5)
 spot.reset()
 check("reset() starts over (no history: None)", spot.feed(doorway()) is None)
+
+
+print("\nV-907  Text feed finds the new lines of a log window scrolling on a white page - not a game")
+#The detector wow.py points at WoW's chat, pointed at dark text on a white page: a log, a terminal,
+#a list of messages. Same code; only the pitch and dark_text are different.
+#Lines that differ in more than a word or two: two lines alike but for one short word ("door 3
+#opened" / "door 1 opened") can be taken for each other - see core/text_feed.py.
+MESSAGES = ["Backup started", "Copying photos (1200 files)", "Network drive not found",
+            "Retrying in 30 seconds", "Connected to NAS", "Backup finished, no errors",
+            "Next run tomorrow at 02:00"]
+
+
+def log_window(messages, rows=4, pitch=30):
+    img = page(rows * pitch + 24, 520)
+    for i, text in enumerate(messages[-rows:]):
+        write(img, text, 8, 10 + pitch * i + 22, scale=0.7, thickness=2)
+    return img
+
+
+feed = text_feed.TextFeed(30, dark_text=True)
+feed.feed(log_window(MESSAGES[:4]))
+arrived = [feed.feed(log_window(MESSAGES[:n])) for n in range(4, 8)]
+check(f"nothing new, then one new line for each message logged ({[len(a) for a in arrived]})",
+      [len(a) for a in arrived] == [0, 1, 1, 1])
+check("the pitch of the log is measured from its picture",
+      text_feed.estimate_pitch(log_window(MESSAGES)) == 30)
 
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

@@ -11,6 +11,11 @@ that tag rather than guessing from commit history - that's what these are for.
 ------------------------------------------------------------------------------
 AT A GLANCE - newest first. Full entries are below, oldest first.
 ------------------------------------------------------------------------------
+0.026  A FISHING PANEL (python wow_gui.py) and a CATCH COUNTER that reads
+       WoW's chat: every "You receive loot" line counted, no fish list built
+       in, catch rate, vendor earnings per hour in gold/silver/copper. A
+       30-minute auto-pause that every F5 restarts. New detector
+       core/text_feed.py: the new lines of a scrolling text box.
 0.025  wow.py SEES THE LURE BOB as well as hearing the splash, and reels in
        on whichever comes first (9 of 9 bites seen on four recordings, 0
        false alarms, 0.3-0.45s sooner than the sound). Splash library of 8
@@ -1712,3 +1717,47 @@ Not yet tried in game. Needs WoW's soft-target interact icon (the cog).
 New: core/spot_watch.py, assets/wow/bobber.json + bobber_marker.png,
 assets/wow/splash/splash_4..8.wav, cards V-317, V-318, V-906, L-709..L-711,
 S-108, S-109 with fixtures from recordings 2-4. No new dependencies.
+
+0.026 - 2026-11-25
+------------------------------------------------------------------------------
+Zel asked for a well-made window for wow.py: a 30-minute auto-pause so it never
+fishes on while he is away, every fish counted from the chat's green "You
+receive loot: [...]" lines (with no list of fish built in - more appear as he
+levels), fishing time, catch rate, and vendor earnings per hour.
+
+THE PANEL (wow_gui.py). Runs `wow.py --control` as a child process, exactly as
+gui.py runs main.py: one word per line in (toggle, auto_pause_N, quit), JSON
+@status / @catch / @stopped lines out, end of input quits wow.py. Start/Stop,
+a dry-run switch, Pause/Resume (the same toggle as F5), the auto-pause
+countdown (green -> amber -> red), session length (counts ONLY while actually
+fishing - Zel), caught, catch rate, one every, bites reeled in, last catch,
+earnings and earnings per hour in g/s/c. Tabs: Catches (per fish: count,
+share, price, worth, per hour; double-click to set a price, "it's a misreading
+of..." merges a misread name), All time (from catches.csv), Log, Setup (drag a
+box around the chat on a screenshot; test the chat reading). Dark theme with
+gold headings, per Zel ("it looks really plain").
+
+AUTO-PAUSE (routes/fishing.AutoPause). 30 min by default (10-120 to choose).
+A dead man's switch: any manual pause or resume restarts it; when it runs out
+wow.py pauses itself and plays a cue.
+
+THE CATCH COUNTER. New detector core/text_feed.py finds the NEW lines of a
+scrolling text box by how the old ones slid up (ink correlation with faint
+ink zeroed: the same line scores 0.90-1.00, a different one at most 0.58).
+Only new lines in the loot green are OCR'd, once per catch. A box showing only
+one repeated line is ambiguous, never "new": one more is counted, marked
+inferred, only after a reeled-in bite brings no new line. Names snap to a
+known fish only when their numbers agree (17 vs 19 Pound Catfish). Money is
+integer copper. Seed prices from Zel's tooltips in assets/wow/fish_prices.json;
+his own prices, new fish, chat area and catches.csv live in gitignored
+recordings/wow/, so a git pull never conflicts with them.
+
+Measured: Zel's chat screenshot reads exactly; on the 00-24-51 recording
+Gaffer Jack and Raw Rainbow Fin Albacore were each counted once, nothing
+counted on the other recordings. Zel tried it in game: "looks and works
+great".
+
+New: wow_gui.py, core/text_feed.py, routes/fish_tally.py, assets/wow/chat.json,
+assets/wow/fish_prices.json; wow.py --control, --read-chat, --auto-pause;
+cards V-416..V-419, V-319, V-907, L-712..L-717, T-406..T-410 with chat
+fixtures. No new dependencies.

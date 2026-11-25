@@ -41,30 +41,6 @@ If a new test needs a real frame, add it here.
 | `wow/fishing_session3_50-90s_16k.wav` | 50 s to 90 s of the third recording (2026-11-24 00-17-13), audio only, 16 kHz mono - splashes at about 11.45 and 32.3 s by its own clock, and the lure LANDING 0.3 s after the bar came up at 23.6 s | S-108; the landing is what card L-709 ignores |
 | `wow/lure_bite_v4.png` / `lure_bite_choppy_v3.png` / `lure_pointer_no_bite_v4.png` | strips of 150x230 crops, **10 frames a second stacked top to bottom**, of the fourth (2026-11-24 00-24-51) and third recordings at 1920x1080: the cog WoW draws over the lure and the water under it. Crop origins in the window and first-frame times are in the test (`LURE_STRIPS`) | V-318: a bite at 27.2 s (calm water) and 24.4 s (choppy), and the mouse pointer crossing the lure at 10.0 s, which is not a bite |
 | `wow/lure_v1_12s.png` / `no_lure_v4_29s.png` | single 150x230 crops: the lure in the first recording (different water and light), and the fourth recording's water after the lure is gone | V-317 |
-
-The `route_harrogath_*` frames are the other exception, in the opposite direction: they are
-**downscaled rather than masked**, to exactly the map's scale (`map_scale` in
-`assets/routes/harrogath_to_nihlathak.json`). That is the array the live path produces after its
-own resize, so the test skips the resize and measures bit-for-bit what runs live - while each file
-is ~240 KB instead of ~3 MB. If `map_scale` ever changes, these have to be regenerated from the
-original screenshots at the new scale, or the test will be measuring a different image from the
-one the game produces.
-
-`pindle_pack.png` is the one fixture kept **unmasked and full-size**, deliberately. Everywhere else the
-subject is a small HUD region and the rest is noise worth blacking out; here the monsters scattered
-across the frame *are* the subject, and the viewport-crop result in the plan depends on this exact
-geometry. Masking it would delete the thing it exists to show.
-
-## Why they are mostly black
-
-Everything outside the regions the tests actually search is masked out, at the **same frame
-dimensions** - so every fraction, offset and coordinate is unchanged while the files compress to
-roughly half. Rebuilt and verified equivalent to the originals: identical in-play scores
-(0.815 / 0.272 / 0.268), identical row spacing, click points, name read and dialog detection, and identical
-Save-and-Exit scores (0.889 right button vs 0.529 wrong).
-
-One thing that took a second pass, and is the rule for adding any fixture: **preserve the numbers
-a test asserts on, not just the answers.** The first attempt masked the orb corners out of the
-lobby frames. Every True/False still matched - but the in-play score fell from 0.272 to 0.038,
-so the test that checks the *margin* between in-play and lobby would have been measuring black
-pixels and would have passed however far the real margin eroded.
+| `wow/chat_zel_screenshot.png` | the owner's own screenshot of his chat box (2026-11-25), 436x147 at native size: a skill-up line, three green "You receive loot" lines (Catfish, Snapper, Snapper), NPC chatter wrapped over two lines, and a line cut off at the top | V-416/V-417/V-419/V-319: line cutting, matching (the two Snapper lines are the same line, nothing else is), the loot read, and the synthetic "box of repeats" built from its real lines |
+| `wow/chat_loot_28_25s.png` / `chat_loot_28_5s.png` / `chat_loot_28_75s.png` | the fourth recording (2026-11-24 00-24-51) at 28.25 / 28.5 / 28.75 s, each exactly the chat box `wow.py` captures by default (406x178 at 1920x1080, `assets/wow/chat.json`): "You receive loot: [Gaffer Jack]" then "[Raw Rainbow Fin Albacore]" arriving under NPC dialogue, over moving grass | V-416/V-417/V-418/V-319: lines found as they arrive, one at a time, read correctly |
+| `wow/chat_crab_behind.png` | the first recording at 39.0 s, the same box: empty chat, with a monster walking through behind it | V-418: never taken for new lines |
