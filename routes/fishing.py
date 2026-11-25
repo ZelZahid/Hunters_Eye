@@ -218,3 +218,40 @@ def signal_name(splash, bobbed):
     if bobbed:
         return "lure bobbed"
     return None
+
+
+class AutoPause:
+    """A dead man's switch: pause by itself once nobody has touched pause/resume for `minutes`.
+
+    Zel asked (2026-11-25) for the helper to stop itself after 30 minutes, so it never runs on for
+    hours while he is away from the keyboard. "Touched" means a MANUAL pause or resume (F5, or the
+    GUI's button): each one restarts the countdown, so someone actually playing presses F5 now and
+    then and is never interrupted, and someone who walked away is stopped at most `minutes` later.
+
+    Clock-free like FishingLoop: every call takes `now`. While paused it is not counting - left()
+    reports the full time, which is what it will restart from on resume.
+    """
+
+    def __init__(self, minutes, now):
+        self.minutes = None
+        self.deadline = None
+        self.set_minutes(minutes, now)
+
+    def set_minutes(self, minutes, now):
+        minutes = float(minutes)
+        if minutes <= 0:
+            raise ValueError(f"auto-pause minutes must be above 0, got {minutes}")
+        self.minutes = minutes
+        self.restart(now)
+
+    def restart(self, now):
+        self.deadline = now + self.minutes * 60.0
+
+    def left(self, now, paused=False):
+        """Seconds until it pauses (never below 0); the full time while paused."""
+        if paused:
+            return self.minutes * 60.0
+        return max(0.0, self.deadline - now)
+
+    def due(self, now, paused=False):
+        return not paused and now >= self.deadline

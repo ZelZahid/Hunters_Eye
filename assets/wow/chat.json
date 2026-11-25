@@ -1,0 +1,12 @@
+{
+  "_comment": "Where wow.py reads the chat box, for counting 'You receive loot: [...]' lines. region = [x, y, width, height] as fractions of the WoW window: the default is WoW's default chat frame at 1920x1080 (x 32-438, y 760-938 px), stopping short of the player portrait that overlaps its right end, and a couple of pixels below the last line (a line cut off by the edge is never read). line_pitch = pixels from one line of chat text to the next at source_height (18 with the default chat font). If you moved the chat box or changed its font size, use wow_gui.py's Setup tab ('Set chat area'), which saves YOUR box to recordings/wow/chat.json - that file wins over this one. loot_low/high = the HSV colour (OpenCV's 0-180 hue) of the green 'You receive loot:' words: a line is only read when it has at least loot_min_pixels of it (at 18 px pitch; measured 335-379 on loot lines, 0 on every other line). See docs/wow_fishing.md.",
+  "region": [0.0167, 0.7037, 0.2115, 0.1648],
+  "line_pitch": 18,
+  "source_height": 1080,
+  "loot_low": [50, 150, 100],
+  "loot_high": [70, 255, 255],
+  "loot_min_pixels": 120,
+  "ocr_thresholds": [110, 140, 85],
+  "checks_per_second": 4,
+  "loot_wait_seconds": 5.0
+}
