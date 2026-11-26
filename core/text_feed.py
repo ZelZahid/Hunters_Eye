@@ -30,6 +30,17 @@ HOW, in order (each step measured on a real WoW chat box, see docs/wow_fishing.m
   4. Alignment: the new picture should be the old one with its top n lines gone (scrolled off or
      faded) and new lines below. The smallest n that makes every remaining old line match is
      taken, and the lines below them are new.
+  5. Junk on top: a line that is FADING OUT can still be bright enough to count as a line but too
+     faint to match itself (measured on the recording over grass: at 35-45% of its brightness),
+     and the empty top of a box can show a line-like streak (a nameplate, a glint on water). Both
+     sit ABOVE the lines that still match. So when nothing lines up, up to `max_unaligned` top
+     lines are set aside - but only lines that match no old line at all (a line seen before is
+     never junk: setting it aside could hide a real repeat) - and the alignment is tried again.
+
+THE PITCH MUST BE RIGHT. Lines cut at the wrong pitch drift a little further off on every line, and
+the box stops lining up with itself (measured on the owner's chat, 16 px apart, read at 18: the box
+was "cannot tell" every few seconds and two catches of three were missed). estimate_pitch()
+measures it; a caller that was given the pitch should check it against a picture now and then.
 
 LINES ALIKE BUT FOR A WORD can be taken for each other: correlation is over the whole line, so two
 lines sharing most of their letters ("door 3 opened" / "door 1 opened" in a log) can score above
@@ -224,8 +235,8 @@ class TextFeed:
             if len(previous) <= 1:
                 self.lines = current
             return []
-        dropped = self._align(previous, current)
-        if dropped is None:
+        aligned = self._align(previous, current)
+        if aligned is None:
             if len(current) <= self.max_unaligned:
                 #Nothing old is left: the box was empty (or fully faded) and these just arrived.
                 self.ambiguous = False
@@ -233,9 +244,11 @@ class TextFeed:
                 return [line.image for line in current]
             self.lines = current
             return None
+        dropped, junk = aligned
+        rest = current[junk:]
         kept = len(previous) - dropped
-        new = current[kept:]
-        self.ambiguous = self._fits(previous, current, dropped + 1)
+        new = rest[kept:]
+        self.ambiguous = self._fits(previous, rest, dropped + 1)
         self.lines = current
         return [line.image for line in new]
 
@@ -251,8 +264,18 @@ class TextFeed:
         return all(same_line(previous[dropped + i], current[i], self.threshold) for i in range(kept))
 
     def _align(self, previous, current):
-        """The fewest old lines that must have left the top for the rest to match, or None."""
-        for dropped in range(len(previous)):
-            if self._fits(previous, current, dropped):
-                return dropped
+        """(old lines gone from the top, junk lines set aside at the top of the new picture), or
+        None. The fewest of both: with no junk this is exactly the plain alignment, so the junk
+        step only ever turns a "cannot tell" into an answer, never changes an answer."""
+        for junk in range(min(self.max_unaligned, len(current) - 1) + 1):
+            if junk and self._seen(previous, current[junk - 1]):
+                return None              #a line seen before is not junk - see the module docstring
+            rest = current[junk:]
+            for dropped in range(len(previous)):
+                if self._fits(previous, rest, dropped):
+                    return dropped, junk
         return None
+
+    def _seen(self, previous, line):
+        """Does this line match any line of the last picture?"""
+        return any(same_line(old, line, self.threshold) for old in previous)

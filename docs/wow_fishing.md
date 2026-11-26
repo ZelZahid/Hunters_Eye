@@ -76,8 +76,12 @@ detector that knows nothing about WoW, works out which lines are new:
 1. **Ink.** The brightest colour channel (the loot green is 0,160,0 — a grey conversion makes it
    94, EH#48), then a morphological top-hat, which keeps thin bright strokes and drops the smooth
    world behind the see-through box — dark water and bright fog alike.
-2. **Lines.** Chat lines are 18 px apart at 1080 p. They are cut where the gap rows hold the least
-   ink; a line cut off by the box's edge is left alone until it is whole.
+2. **Lines.** Chat lines are 18 px apart at 1080 p with WoW's default chat font — and 16 px with
+   the smaller font Zel's chat had on 2026-11-25. So the pitch in `chat.json` is only the starting
+   guess: `wow.py` measures it off the chat picture (`text_feed.estimate_pitch`, about 2 ms) on
+   every look until a picture agrees with it, and again whenever the box changes, and switches when
+   two measurements in a row agree on another pitch (the log says so). They are cut where the gap
+   rows hold the least ink; a line cut off by the box's edge is left alone until it is whole.
 3. **Matching.** A line matches itself in the next picture by correlation of its ink, faint ink
    (the background showing through) zeroed first. Measured: the same line two frames apart over
    moving grass 0.90-1.00, a line fading to 60% still matches; different lines at most 0.58, loot
@@ -85,9 +89,17 @@ detector that knows nothing about WoW, works out which lines are new:
 4. **Alignment.** The new picture should be the old one with its top lines gone; whatever is left
    below is new. A picture that lines up with nothing (the box scrolled by hand, a monster walking
    behind an empty box) is "cannot tell" and counts nothing — it never guesses a whole box is new.
+5. **Junk on top.** A line fading out can stay bright enough to be a line but too faint to match
+   itself (on the recording over grass, at 35-45% of its brightness), and a glint behind the empty
+   top of the box can look like a line. Both sit above the lines that still match, so when nothing
+   lines up, up to 3 top lines that match **no** old line are set aside and the alignment is tried
+   again. A line seen before is never set aside (that could hide a real repeat).
 
-Only new lines with the loot green in them (335-379 green pixels on a loot line, 0 on every other
-line measured) are OCR'd, about 0.1 s each, so OCR runs once per catch. Every line of Zel's chat
+Only new lines with the loot green in them (334-344 green pixels on a loot line in a screenshot,
+180-223 in a compressed video, 0 on every other line measured) are OCR'd. **Guild chat is green
+too** — a paler green, 64,255,64, where the loot words are pure 0,170,0 — so only fully saturated
+green counts (saturation 200 and up; guild chat's is 191). At the old 150 every guild line was
+OCR'd as a loot line and logged in red as "could not be read". A loot line takes about 0.1 s to read, so OCR runs once per catch. Every line of Zel's chat
 screenshot read exactly; the opening bracket is sometimes read as `(` and is allowed for. A misread
 letter snaps to the closest known name (`Raw Longiaw Mud Snapper` → `Raw Longjaw Mud Snapper`),
 but only to a name with the same numbers in it — `17 Pound Catfish` and `19 Pound Catfish` are 94%
@@ -104,6 +116,12 @@ so when it reels in, no new loot line arrives within 5 s, the box looked ambiguo
 the bottom line is a loot line, it counts that fish once more, marked **inferred** (in the log, the
 panel and `catches.csv`). A fish that got away cancels it. Any other line in the box (a skill-up,
 another fish, NPC chatter) makes the case unambiguous again.
+
+**Why 2 of 3 Snappers were missed on 2026-11-25** (EH#52): Zel's chat lines were 16 px apart and
+`wow.py` cut them at 18. Every line was cut 2 px further off than the one above, so the box stopped
+lining up with itself — the log said "the box changed all at once" 26 times in 7 minutes — and
+the loot lines that arrived in those moments were never counted. Read at the measured 16, the same
+chat counts every Snapper once, when it arrives (card V-420, on a crop of his own screenshot).
 
 Loot that arrives while paused is not counted as fishing, except in the first 3 s after the pause
 (the fish reeled in just before it).
@@ -171,12 +189,42 @@ At the top of `wow.py`, under `SETTINGS`. Edit, then restart.
 | `WINDOW_TITLE` | `World of Warcraft` | the window it looks at and must be in front |
 | `AUTO_PAUSE_MINUTES` | `30` | pause by itself after this long with no `F5` (the panel and `--auto-pause` override it per run) |
 | `READ_CHAT` | `True` | count catches from the chat box |
+| `SUCCESS_RATE_PERCENT` | `(90, 99)` | keep the success rate in this band by letting a bite go now and then (below); `(100, 100)` reels in every bite. The panel's Setup tab changes it at once, even while fishing; `--success-rate 85-95` sets it for one run |
 
 **The timeout decides which slow bites are abandoned.** The cast bar lasts about 30 s. In the
 reference video the second cast's splash was heard 20.2 s after its bar appeared (bar at 17.0 s,
 splash heard at 37.18 s), so 20 s would have restarted just before it. Zel tried 15 s in game, then
 20 s, then found it "keeps reeling in the fish before the fishing bar runs out" and asked for 30 s
 (v0.025).
+
+## The success rate, and missing on purpose
+
+**Success rate** = bites reeled in ÷ casts that ended (reeled in, or missed: the fish got away, the
+bar went with no bite, or nothing bit for 30 s). Four reeled in of five is 80%. The panel shows it
+under *This session*.
+
+Zel asked (2026-11-26) for it to stay between 90% and 99% rather than sit at 100%, missing a fish
+now and then on purpose, with the band a setting. `routes/fishing.SuccessRateKeeper` decides, one
+bite at a time:
+
+- Under 10 casts it never lets one go (one catch of one is 100% and means nothing).
+- When the rate reaches the **top** of the band it starts letting bites go — each with a 35%
+  chance, **never two in a row** — until the rate is back at the **bottom**; then it reels in
+  everything again. So the rate drifts through the band rather than sitting on one number.
+  Simulated over 600 bites with 2% real misses: 89.7-99.0% after the first 100.
+- A bite let go is **reeled in late**, a random 4-7 s after it (Zel's idea: what someone too slow
+  would do), so the fish is gone. If the game ends the round first ("Your fish got away!", or the
+  bar goes), nothing is pressed. The log says `letting this one go on purpose` each time.
+
+The rate is per run of `wow.py`; the panel's figure adds up the whole session (restarts included),
+so the two can differ a little after a Stop and Start. The band in use is shown next to the rate
+(*kept in 90-99%*); a change in the Setup tab reaches `wow.py` at once, as two words on its input
+(`success_low_90`, `success_high_95`), and the card follows when `wow.py` reports it back. **This does not make automating WoW any less
+against Blizzard's terms** (see the top of this file).
+
+**Not measured:** how long WoW keeps a fish on the hook after the splash. If 4 s is still in time,
+a "let go" bite would be caught anyway: the log would show `reeled in late, on purpose` followed by
+a `caught:` line. Widen `fishing.LET_GO_DELAY` if that happens.
 
 ## How it decides
 

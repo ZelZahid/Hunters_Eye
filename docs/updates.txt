@@ -11,6 +11,11 @@ that tag rather than guessing from commit history - that's what these are for.
 ------------------------------------------------------------------------------
 AT A GLANCE - newest first. Full entries are below, oldest first.
 ------------------------------------------------------------------------------
+0.027  EVERY CATCH COUNTED: the chat's line spacing is measured, not assumed
+       (Zel's smaller chat font is 16 px, not 18 - 2 of 3 Snappers were
+       missed), and guild chat is no longer taken for loot. Catch times in
+       12-hour form. A SUCCESS RATE on the panel, kept in a band (default
+       90-99%) by letting a bite go now and then, reeled in 4-7 s late.
 0.026  A FISHING PANEL (python wow_gui.py) and a CATCH COUNTER that reads
        WoW's chat: every "You receive loot" line counted, no fish list built
        in, catch rate, vendor earnings per hour in gold/silver/copper. A
@@ -1761,3 +1766,36 @@ New: wow_gui.py, core/text_feed.py, routes/fish_tally.py, assets/wow/chat.json,
 assets/wow/fish_prices.json; wow.py --control, --read-chat, --auto-pause;
 cards V-416..V-419, V-319, V-907, L-712..L-717, T-406..T-410 with chat
 fixtures. No new dependencies.
+
+0.027 - 2026-11-26
+------------------------------------------------------------------------------
+Zel: "In chat there is 3 fish caught, but in the gui only 1 is shown." Also
+asked for 12-hour times in Latest catches, and for a success rate he can keep
+in a band rather than at 100%.
+
+THE MISSED CATCHES (EH#52). His chat lines are 16 px apart (a smaller chat
+font); chat.json said 18. Cut 2 px further off on every line, the box stopped
+lining up with itself ("the box changed all at once" 26 times in 7 minutes in
+his log) and loot lines arriving at those moments were never counted. wow.py's
+ChatReader now measures the pitch off the chat (text_feed.estimate_pitch) and
+switches when two measurements agree; the Setup tab shows the measured value.
+Guild chat is green too (64,255,64, saturation 191): loot green now needs
+saturation 200+, and a green line that does not read like loot is no longer
+logged in red. text_feed sets aside up to 3 unmatched top lines (a line fading
+out, a glint) before calling the box "cannot tell".
+
+12-HOUR TIMES. Latest catches shows 4:03:45 PM. The log and catches.csv keep
+24-hour times so they sort.
+
+SUCCESS RATE. Bites reeled in / casts that ended, on the session card with
+the band in use. routes/fishing.SuccessRateKeeper: once the rate reaches the
+top of the band it lets about one bite in three go (never two in a row) until
+the rate is back at the bottom; a bite let go is reeled in 4-7 s late (Zel's
+idea). Band: SUCCESS_RATE_PERCENT (90, 99), --success-rate, or the Setup tab,
+which changes it at once even while fishing. Missing on purpose does not make
+automating WoW any less against Blizzard's terms.
+
+Zel tried it in game: "works well".
+
+New: cards V-420..V-422, L-718, T-411; fixtures chat_pitch16_loot.png and
+chat_guild_pitch16.png (his own chat). No new dependencies.

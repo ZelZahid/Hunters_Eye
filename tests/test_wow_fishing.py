@@ -105,6 +105,14 @@ for name, background in backgrounds.items():
 # The loop. A fake game: `bar`, `got_away` and `splash` are set by each test; time is a number.
 #---------------------------------------------------------------------------------------------------
 
+def _raises(action):
+    try:
+        action()
+    except ValueError:
+        return True
+    return False
+
+
 def make_loop(**kwargs):
     lines = []
     loop = fishing.FishingLoop(rng=random.Random(7), log=lines.append, **kwargs)
@@ -357,6 +365,100 @@ check("the two cues differ (falling to pause, rising to resume)",
       not np.array_equal(wow.cue_samples(False, 16000), wow.cue_samples(True, 16000)))
 check(f"the no-bite restart is {wow.NO_SPLASH_TIMEOUT_SECONDS:.0f} s, and the loop's default agrees",
       wow.NO_SPLASH_TIMEOUT_SECONDS == 30.0 and fishing.FishingLoop().no_splash_timeout == 30.0)
+
+print("\nL-718  The success rate is kept in its band: bites are let go only near the top, never two in a row, reeled in late")
+Keeper = fishing.SuccessRateKeeper
+check("the rate is None before anything was tried - not 0%, not 100%", Keeper.rate(0, 0) is None)
+check("4 reeled of 5 ended is 80%", Keeper.rate(4, 1) == 0.8)
+keeper = Keeper(0.90, 0.99, rng=random.Random(1))
+check("under 10 casts nothing is let go, even at 100%",
+      not any(keeper.let_go(n, 0) for n in range(10)))
+keeper = Keeper(0.90, 0.99, rng=random.Random(1))
+check("below the top of the band nothing is let go (95%, 50 times)",
+      not any(keeper.let_go(95, 5) for _ in range(50)))
+check("bands that cannot be: refused", all(_raises(lambda b=b: Keeper(*b)) for b in
+                                           ((0.0, 0.9), (0.95, 0.90), (0.9, 1.01))))
+keeper = Keeper(0.90, 0.99)
+keeper.set_band(0.90, 0.95)
+check("the band can be changed while fishing; a band that is not one is refused and the old kept",
+      (keeper.low, keeper.high) == (0.90, 0.95) and _raises(lambda: keeper.set_band(0.97, 0.95))
+      and (keeper.low, keeper.high) == (0.90, 0.95))
+check("a band ending at 100% is off: every bite reeled in",
+      Keeper(0.9, 1.0).off and not any(Keeper(0.9, 1.0).let_go(500, 0) for _ in range(20)))
+
+
+def simulate(low, high, bites, seed, natural_miss=0.02):
+    """A long session with the keeper in charge: (rate after each bite, longest run of let-gos)."""
+    rng = random.Random(seed)
+    keeper = Keeper(low, high, rng=random.Random(seed + 1000))
+    reeled = missed = run = longest = 0
+    rates = []
+    for _ in range(bites):
+        if keeper.let_go(reeled, missed):
+            missed += 1
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 0
+            if rng.random() < natural_miss:      #a bite the eyes and ears really missed
+                missed += 1
+            else:
+                reeled += 1
+        rates.append(reeled / (reeled + missed))
+    return rates, longest
+
+
+for seed in (3, 4, 5):
+    rates, longest = simulate(0.90, 0.99, 600, seed)
+    settled = rates[100:]
+    check(f"600 bites (seed {seed}): after the first 100 the rate stays in 89-99.5% "
+          f"({min(settled):.1%}-{max(settled):.1%}), and never two let go in a row (longest {longest})",
+          0.89 <= min(settled) and max(settled) <= 0.995 and longest == 1)
+rates, _ = simulate(0.80, 0.85, 600, 6)
+check(f"the band is a setting: 80-85% keeps it at {min(rates[200:]):.1%}-{max(rates[200:]):.1%}",
+      0.79 <= min(rates[200:]) and max(rates[200:]) <= 0.86)
+
+
+class AlwaysLetGo(Keeper):
+    """A keeper that lets every bite go - to drive the loop's let-go path on demand."""
+
+    def let_go(self, reeled, missed):
+        return True
+
+
+loop = make_loop(keeper=AlwaysLetGo())
+loop.start(0.0, bar=True)
+check("a bite let go: no press on the bite", loop.decide(5.0, bar=True, splash=True) is None)
+check(f"...and it is said so ('{loop.lines[-1][:60]}...')", "on purpose" in loop.lines[-1])
+late = loop.late_press_at - 5.0
+check(f"...the reel-in comes {late:.1f} s late, inside 4-7 s", 4.0 <= late <= 7.0)
+check("later splashes from the same bite are ignored, and nothing is pressed before then",
+      loop.decide(5.5, bar=True, splash=True) is None
+      and run_until(loop, 5.6, loop.late_press_at - 0.01, bar=True, bobbed=True) == [])
+check("then ONE late press, counted as a miss, not a catch",
+      loop.decide(loop.late_press_at, bar=True) == fishing.PRESS
+      and (loop.catches, loop.misses, loop.let_go) == (0, 1, 1) and loop.state == fishing.CASTING)
+loop = make_loop(keeper=AlwaysLetGo())
+loop.start(0.0, bar=True)
+loop.decide(5.0, bar=True, splash=True)
+check("if the fish gets away before the late press, nothing is pressed at all",
+      loop.decide(6.0, bar=True, got_away=False) is None
+      and loop.decide(6.1, bar=True, got_away=True) is None and loop.state == fishing.CASTING
+      and loop.misses == 1)
+loop = make_loop(keeper=AlwaysLetGo())
+loop.start(0.0, bar=True)
+loop.decide(5.0, bar=True, splash=True)
+check("...or if the bar goes away (debounced, as when fishing)",
+      run_until(loop, 5.1, 6.0, bar=False) == [] and loop.state == fishing.CASTING and loop.misses == 1)
+loop = make_loop()
+loop.start(0.0, bar=True)
+check("with no keeper, every bite is reeled in at once, as before",
+      loop.decide(5.0, bar=True, splash=True) == fishing.PRESS and loop.let_go == 0)
+check(f"wow.py's default band is 90-99% ({wow.SUCCESS_RATE_PERCENT})", wow.SUCCESS_RATE_PERCENT == (90, 99))
+check("--success-rate reads '85-95', '85-95%', 'off'; refuses '95-85' and '0-90'",
+      wow.parse_success_band("85-95") == (85, 95) and wow.parse_success_band("85-95%") == (85, 95)
+      and wow.parse_success_band("off") == (100, 100)
+      and _raises(lambda: wow.parse_success_band("95-85")) and _raises(lambda: wow.parse_success_band("0-90")))
 
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")
 sys.exit(1 if failures else 0)

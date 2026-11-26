@@ -79,6 +79,30 @@ def clock(seconds):
     return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
 
 
+def twelve_hour(when):
+    """'16:03:45' -> '4:03:45 PM', for the Latest catches list. wow.py sends 24-hour times (its log
+    and catches.csv keep them, so they sort); anything that is not one is shown as it came."""
+    try:
+        hours, minutes, seconds = (int(part) for part in str(when).split(":"))
+    except ValueError:
+        return str(when)
+    if not (0 <= hours < 24 and 0 <= minutes < 60 and 0 <= seconds < 60):
+        return str(when)
+    return f"{hours % 12 or 12}:{minutes:02d}:{seconds:02d} {'AM' if hours < 12 else 'PM'}"
+
+
+def success_text(reeled, missed, status=None):
+    """'92%  (23 of 25)  - kept in 90-99%' for the session card; '-' before anything was tried."""
+    attempts = reeled + missed
+    if not attempts:
+        return "-"
+    text = f"{100 * reeled / attempts:.0f}%   ({reeled} of {attempts})"
+    band = (status or {}).get("success_band")
+    if band and band[1] < 100:
+        text += f"   kept in {band[0]}-{band[1]}%"
+    return text
+
+
 def apply_theme(root):
     """Dark, gold-headed ttk styles for the whole window. 'clam' is the one built-in ttk theme that
     takes colours on every OS ('vista' and 'aqua' draw native widgets and ignore most of them), and
@@ -266,13 +290,19 @@ class FishingPanel:
         self.root.after(POLL_MS, self._tick)
 
     @staticmethod
-    def _command(dry_run, minutes=None):
+    def _command(dry_run, minutes=None, band=None):
         command = [gui._python_for_child(), "-u", str(WOW_SCRIPT), "--control"]
         if dry_run:
             command.append("--dry-run")
         if minutes:
             command += ["--auto-pause", str(minutes)]
+        if band:
+            command += ["--success-rate", f"{band[0]}-{band[1]}"]
         return command
+
+    def success_band(self):
+        """The band to start wow.py with, or None (with a note in the log): it keeps its default."""
+        return self.band_from_setup()
 
     # --- the top: state, start/stop -------------------------------------------------------
     def _build_header(self):
@@ -331,7 +361,8 @@ class FishingPanel:
         for line, (key, caption, look) in enumerate((
                 ("fishing", "Session length", "Value"), ("caught", "Caught", "Green.Value"),
                 ("rate", "Catch rate", "Blue.Value"), ("each", "One every", "Value"),
-                ("reeled", "Bites reeled in", "Value"), ("last", "Last catch", "Value"))):
+                ("reeled", "Bites reeled in", "Value"), ("success", "Success rate", "Value"),
+                ("last", "Last catch", "Value"))):
             ttk.Label(session, text=caption, style="Caption.TLabel").grid(row=line, column=0, sticky="w",
                                                                           pady=1)
             value = ttk.Label(session, text="-", style=f"{look}.TLabel")
@@ -548,23 +579,69 @@ class FishingPanel:
         ttk.Button(buttons, text="Back to the default area", command=self.default_chat_area).pack(side="left")
         self.chat_where = ttk.Label(tab, style="Caption.TLabel")
         self.chat_where.pack(fill="x")
+        rate = ttk.Frame(tab)
+        rate.pack(fill="x", pady=(14, 0))
+        ttk.Label(rate, text="Keep the success rate between").pack(side="left")
+        self.band_low = tk.StringVar(value=str(wow.SUCCESS_RATE_PERCENT[0]))
+        self.band_high = tk.StringVar(value=str(wow.SUCCESS_RATE_PERCENT[1]))
+        ttk.Spinbox(rate, from_=50, to=100, width=4, textvariable=self.band_low).pack(side="left", padx=4)
+        ttk.Label(rate, text="% and").pack(side="left")
+        ttk.Spinbox(rate, from_=50, to=100, width=4, textvariable=self.band_high).pack(side="left", padx=4)
+        ttk.Label(rate, text="%").pack(side="left")
+        self.band_low.trace_add("write", self._band_changed)
+        self.band_high.trace_add("write", self._band_changed)
+        ttk.Label(tab, style="Caption.TLabel", wraplength=900, justify="left", text=(
+            "Success rate = bites reeled in / casts that ended. Once it reaches the top of the band, "
+            "some bites are let go (reeled in 4-7 s late, so the fish gets away) until it is back at "
+            "the bottom. 100 and 100 reels in every bite. A change takes effect at once, also while "
+            "fishing (This session shows the band in use); the default is SUCCESS_RATE_PERCENT at "
+            "the top of wow.py.")).pack(fill="x")
         self.check_text = dark_text(ScrolledText(tab, height=12, wrap="word", state="disabled",
                                                  font=gui._log_font()))
         self.check_text.pack(fill="both", expand=True, pady=(8, 0))
         self._show_chat_where()
         return tab
 
-    def _show_chat_where(self):
+    def _show_chat_where(self, measured=None):
+        """measured: the pitch wow.py is reading the chat at right now (it measures it off the
+        chat), or None when it is not running - then chat.json's starting guess is shown."""
+        self.shown_pitch = measured
         mine = wow.USER_CHAT_CONFIG.exists()
         config = wow.load_chat_config()
         if config is None:
             self.chat_where.configure(text="The chat settings cannot be read - see the Log tab.")
             return
         x, y, w, h = config["region"]
+        lines = (f"lines {measured} px apart (measured on your chat while fishing)" if measured else
+                 f"lines {config['line_pitch']:.0f} px apart at {config['source_height']:.0f} px tall "
+                 f"to start with - measured on your chat once fishing starts")
         self.chat_where.configure(text=(
             f"Reading: {'your own area' if mine else 'the default area'} - from {x:.1%} across and "
-            f"{y:.1%} down the WoW window, {w:.1%} wide and {h:.1%} tall; "
-            f"lines {config['line_pitch']:.0f} px apart at {config['source_height']:.0f} px tall."))
+            f"{y:.1%} down the WoW window, {w:.1%} wide and {h:.1%} tall; {lines}."))
+
+    def band_from_setup(self, quiet=False):
+        """The band typed in the Setup tab as (low, high) percent, or None if it is not one -
+        both ends in wow.SUCCESS_RATE_CHOICES, low <= high. quiet: no note in the log (used on
+        every keystroke, where "9" on the way to "95" is not a mistake)."""
+        try:
+            low, high = int(self.band_low.get()), int(self.band_high.get())
+        except ValueError:
+            low = high = None
+        if low in wow.SUCCESS_RATE_CHOICES and high in wow.SUCCESS_RATE_CHOICES and low <= high:
+            return low, high
+        if not quiet:
+            self._append(f"panel: the success-rate band {self.band_low.get()}-{self.band_high.get()}% "
+                         f"is not one (each end {wow.SUCCESS_RATE_CHOICES.start}-"
+                         f"{wow.SUCCESS_RATE_CHOICES.stop - 1}, low <= high) - using wow.py's default",
+                         "problem")
+        return None
+
+    def _band_changed(self, *_):
+        """Spinbox changed: tell a running wow.py at once (it answers in its status line)."""
+        band = self.band_from_setup(quiet=True)
+        if band is not None and self.bot.running():
+            self.bot.send(f"success_low_{band[0]}")
+            self.bot.send(f"success_high_{band[1]}")
 
     def _set_check_text(self, text):
         self.check_text.configure(state="normal")
@@ -655,7 +732,7 @@ class FishingPanel:
     def start_bot(self):
         if self.bot.running():
             return
-        self.bot.command = self._command(self.dry_run.get(), self.minutes.get())
+        self.bot.command = self._command(self.dry_run.get(), self.minutes.get(), self.success_band())
         self.stopped_reason = ""
         self.status = None
         for counter in (self.fishing, self.reeled, self.missed):
@@ -722,6 +799,8 @@ class FishingPanel:
             self.fishing.update(payload.get("fishing_seconds"))
             self.reeled.update(payload.get("reeled"))
             self.missed.update(payload.get("missed"))
+            if payload.get("chat_pitch") != self.shown_pitch:
+                self._show_chat_where(payload.get("chat_pitch"))
         elif kind == "catch":
             self.add_catch(payload.get("fish", "?"), int(payload.get("count", 1)),
                            payload.get("how", "read"), payload.get("time", time.strftime("%H:%M:%S")))
@@ -736,7 +815,7 @@ class FishingPanel:
         self.last_catch = (time.time(), name)
         price = self.catalog.price(name)
         worth = fish_tally.format_money(price * count, "") if price is not None else "no price"
-        self.recent.insert(0, f"{when}  {name}{f' x{count}' if count > 1 else ''}  {worth}"
+        self.recent.insert(0, f"{twelve_hour(when)}  {name}{f' x{count}' if count > 1 else ''}  {worth}"
                               f"{'  (inferred)' if how == 'inferred' else ''}")
         self.recent.itemconfigure(0, foreground=RED if price is None else MUTED if how == "inferred"
                                   else TEXT)
@@ -834,6 +913,7 @@ class FishingPanel:
         values["each"].configure(text=fish_tally.format_duration(seconds / caught) if caught else "-")
         reeled, missed = int(self.reeled.total), int(self.missed.total)
         values["reeled"].configure(text=f"{reeled}   ({missed} missed)" if reeled or missed else "-")
+        values["success"].configure(text=success_text(reeled, missed, self.status))
         if self.last_catch:
             ago = time.time() - self.last_catch[0]
             values["last"].configure(text=f"{fish_tally.format_duration(ago)} ago")
