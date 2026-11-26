@@ -80,10 +80,22 @@ detector that knows nothing about WoW, works out which lines are new:
    the smaller font Zel's chat had on 2026-11-25. So the pitch in `chat.json` is only the starting
    guess: `wow.py` measures it off the chat picture (`text_feed.estimate_pitch`, about 2 ms) on
    every look until a picture agrees with it, and again whenever the box changes, and switches when
-   two measurements in a row agree on another pitch (the log says so). They are cut where the gap
-   rows hold the least ink; a line cut off by the box's edge is left alone until it is whole.
+   two measurements in a row agree on another pitch (six, once a picture has agreed with the one in
+   use; the log says so). **Twice or three times the pitch in use is never switched to:** lines
+   16 px apart line up every 32 px too, and read at 32 two chat lines become one picture (Zel's log,
+   2026-11-25: 16 → 32 → 16 three times in a minute, names read as `Raw Lonoiah WISSHRASEH AY`).
+   Lines are cut half a line away from the middle of the text — the rows of small letters, which
+   hold most of the ink — so each line keeps its own ascenders and descenders and the cut does not
+   move between frames (cutting at "the emptiest row" did: on the 16 px font four rows nearly tie,
+   and the cut jumped 3 px). A line cut off by the box's edge is left alone until it is whole.
+   **Each line is only as wide as its words** (its leftmost run of ink; a gap of two lines' height
+   ends it): the chat frame's scroll arrows, the portrait's level badge and the glowing buttons
+   below the last line stay put while the text scrolls past them, so they are cut off, never
+   compared or read. A row whose ink starts in the right half of the box is not a line at all.
 3. **Matching.** A line matches itself in the next picture by correlation of its ink, faint ink
-   (the background showing through) zeroed first. Measured: the same line two frames apart over
+   (the background showing through) zeroed first, with a quarter of a line of slack up and down. A
+   long line that runs right into the box's edge is compared over the width both pictures have
+   (what is joined onto its end changes as it scrolls past the scroll arrows). Measured: the same line two frames apart over
    moving grass 0.90-1.00, a line fading to 60% still matches; different lines at most 0.58, loot
    lines for two different fish 0.47. Threshold 0.75.
 4. **Alignment.** The new picture should be the old one with its top lines gone; whatever is left
@@ -99,11 +111,17 @@ Only new lines with the loot green in them (334-344 green pixels on a loot line 
 180-223 in a compressed video, 0 on every other line measured) are OCR'd. **Guild chat is green
 too** — a paler green, 64,255,64, where the loot words are pure 0,170,0 — so only fully saturated
 green counts (saturation 200 and up; guild chat's is 191). At the old 150 every guild line was
-OCR'd as a loot line and logged in red as "could not be read". A loot line takes about 0.1 s to read, so OCR runs once per catch. Every line of Zel's chat
-screenshot read exactly; the opening bracket is sometimes read as `(` and is allowed for. A misread
-letter snaps to the closest known name (`Raw Longiaw Mud Snapper` → `Raw Longjaw Mud Snapper`),
-but only to a name with the same numbers in it — `17 Pound Catfish` and `19 Pound Catfish` are 94%
-alike and different fish.
+OCR'd as a loot line and logged in red as "could not be read". A loot line is **enlarged 3x**
+(cubic) before it is thresholded and read: the 16 px font is too small for Tesseract at its own
+size (3 of 12 lines read as `Raw Brillant Smallish` at 1x; all 14 loot lines of Zel's four
+screenshots exactly at 3x, card V-426). About 0.1 s a line, once per catch. The opening bracket is
+sometimes read as `(` and is allowed for. A misread letter snaps to the closest known name
+(`Raw Longiaw Mud Snapper` → `Raw Longjaw Mud Snapper`), but only to a name with the same numbers
+in it — `17 Pound Catfish` and `19 Pound Catfish` are 94% alike and different fish. A reading that
+names no known fish is tried at the other two thresholds, and one that does wins (card L-721).
+**A loot line whose name cannot be read at all is still a catch**: it is counted as
+`(name unreadable)`, with no price, and the log says what OCR made of it. Before, it was dropped
+("loot line not understood ... not counted"), which is part of how 25 fish became 9.
 
 Measured on all four recordings: the two loot lines in the fourth (Gaffer Jack and Raw Rainbow Fin
 Albacore at 28.5 s) counted once each, the moment each arrived; nothing counted anywhere else,
@@ -122,6 +140,16 @@ another fish, NPC chatter) makes the case unambiguous again.
 lining up with itself — the log said "the box changed all at once" 26 times in 7 minutes — and
 the loot lines that arrived in those moments were never counted. Read at the measured 16, the same
 chat counts every Snapper once, when it arrives (card V-420, on a crop of his own screenshot).
+
+**Why only 9 of 25+ were counted on 2026-11-25** (EH#53): Zel's chat screenshots show the chat
+frame's scroll arrows and the portrait's level badge down the right edge of the box, and two
+glowing buttons just below the last line. Every line was compared whole, so those stayed put while
+the words scrolled past them: a line no longer matched itself one line higher, and the buttons'
+row was a "line" that never moved. The box did not line up with itself just when loot arrived. On
+top of that, the pitch flipped between 16 and 32 (two lines read as one, names garbled), and a
+loot line whose name was garbled was dropped. Rebuilt from his own chat lines with his scroll
+arrows and buttons over them, a session of 30 catches counted 0-6 before and 30 now (card V-425,
+three sessions).
 
 Loot that arrives while paused is not counted as fishing, except in the first 3 s after the pause
 (the fish reeled in just before it).
@@ -189,7 +217,7 @@ At the top of `wow.py`, under `SETTINGS`. Edit, then restart.
 | `WINDOW_TITLE` | `World of Warcraft` | the window it looks at and must be in front |
 | `AUTO_PAUSE_MINUTES` | `30` | pause by itself after this long with no `F5` (the panel and `--auto-pause` override it per run) |
 | `READ_CHAT` | `True` | count catches from the chat box |
-| `SUCCESS_RATE_PERCENT` | `(90, 99)` | keep the success rate in this band by letting a bite go now and then (below); `(100, 100)` reels in every bite. The panel's Setup tab changes it at once, even while fishing; `--success-rate 85-95` sets it for one run |
+| `SUCCESS_RATE_PERCENT` | `(90, 95)` | keep the success rate in this band by letting a bite go now and then (below); `(100, 100)` reels in every bite. The panel's Setup tab changes it at once, even while fishing; `--success-rate 85-95` sets it for one run |
 
 **The timeout decides which slow bites are abandoned.** The cast bar lasts about 30 s. In the
 reference video the second cast's splash was heard 20.2 s after its bar appeared (bar at 17.0 s,
@@ -218,7 +246,7 @@ bite at a time:
 
 The rate is per run of `wow.py`; the panel's figure adds up the whole session (restarts included),
 so the two can differ a little after a Stop and Start. The band in use is shown next to the rate
-(*kept in 90-99%*); a change in the Setup tab reaches `wow.py` at once, as two words on its input
+(*kept in 90-95%*); a change in the Setup tab reaches `wow.py` at once, as two words on its input
 (`success_low_90`, `success_high_95`), and the card follows when `wow.py` reports it back. **This does not make automating WoW any less
 against Blizzard's terms** (see the top of this file).
 
@@ -345,6 +373,11 @@ loot lines in his fourth recording; the panel was tested against a stand-in for 
 T-410). Not yet seen live: the default chat area on his screen (the recordings' layout), a long
 session's worth of loot lines, the inferred count in a box of repeats, and the Set chat area
 screenshot on Windows. `python wow.py --read-chat` with a loot line on screen is the first check.
+
+**The 2026-11-26 fixes (EH#53)** were measured on Zel's four chat screenshots of 2026-11-25 and on
+sessions rebuilt from their lines; not yet seen live. Whether his chat area takes in the scroll
+arrows and buttons is not known from here (his screenshots do; his Setup box may not) - the fixes
+hold either way. His log from the next run says whether every catch is counted.
 
 v0.024 was measured on one 57-second recording, then **tried by Zel in game on 2026-11-24 ("works
 like a charm")**; later runs missed splashes (above). v0.025 is measured on all four recordings,

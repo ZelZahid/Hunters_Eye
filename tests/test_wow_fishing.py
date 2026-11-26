@@ -454,7 +454,8 @@ loop = make_loop()
 loop.start(0.0, bar=True)
 check("with no keeper, every bite is reeled in at once, as before",
       loop.decide(5.0, bar=True, splash=True) == fishing.PRESS and loop.let_go == 0)
-check(f"wow.py's default band is 90-99% ({wow.SUCCESS_RATE_PERCENT})", wow.SUCCESS_RATE_PERCENT == (90, 99))
+check(f"wow.py's default band is 90-95%, the band Zel asked to start with ({wow.SUCCESS_RATE_PERCENT})",
+      wow.SUCCESS_RATE_PERCENT == (90, 95))
 check("--success-rate reads '85-95', '85-95%', 'off'; refuses '95-85' and '0-90'",
       wow.parse_success_band("85-95") == (85, 95) and wow.parse_success_band("85-95%") == (85, 95)
       and wow.parse_success_band("off") == (100, 100)

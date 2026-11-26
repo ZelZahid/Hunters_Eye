@@ -808,7 +808,8 @@ class FishingPanel:
             self.stopped_reason = payload.get("reason", "")
 
     def add_catch(self, name, count, how, when):
-        if self.catalog.price(name) is None and name not in self.catalog.prices:
+        if (name != fish_tally.UNREADABLE and self.catalog.price(name) is None
+                and name not in self.catalog.prices):
             self.catalog.reload()          #wow.py has just listed a new fish in the user file
             self.catalog.prices.setdefault(name, None)
         self.tally.add(name, count, time.time(), how)

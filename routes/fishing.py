@@ -33,11 +33,12 @@ decide the bar is gone and start pressing keys at a screen it cannot see.
 
 MISSING ON PURPOSE (Zel, 2026-11-26). A person does not reel in 100% of bites, so the loop can keep
 its success rate - bites reeled in / casts that ended, reeled or missed - inside a band (default
-90-99%). SuccessRateKeeper decides, bite by bite: once the rate reaches the top of the band it lets
-some bites go (about one in three, never two in a row) until the rate is back at the bottom, then
-reels in everything again. A bite let go is reeled in LATE, a random LET_GO_DELAY after the bite -
-Zel's idea, what a slow person does - so the fish is gone by then; if the game ends the round first
-("Your fish got away!", or the bar goes), nothing is pressed. Either way it is a miss.
+90-95%; 90-99% at first, narrowed by Zel the same day). SuccessRateKeeper decides, bite by bite:
+once the rate reaches the top of the band it lets some bites go (about one in three, never two in
+a row) until the rate is back at the bottom, then reels in everything again. A bite let go is
+reeled in LATE, a random LET_GO_DELAY after the bite - Zel's idea, what a slow person does - so the
+fish is gone by then; if the game ends the round first ("Your fish got away!", or the bar goes),
+nothing is pressed. Either way it is a miss.
 
 "Your fish got away!" only counts when it APPEARS while fishing (not seen on the previous check,
 seen on this one). The message stays up for a few seconds, and with a 1 s recast it is often
