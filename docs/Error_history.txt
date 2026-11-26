@@ -1783,3 +1783,41 @@ Lesson: A NUMBER IN A CONFIG FILE THAT DESCRIBES SOMEONE ELSE'S SCREEN IS A GUES
   measure for itself (pitch, here) should be measured from the picture and the config used only as
   the starting point. And when a log is full of a "cannot tell" that should be rare, count it:
   26 in 7 minutes was the bug report, written down before anyone asked.
+
+
+53. The fishing panel counted 9 catches of 25+ - icons beside the chat, a flipping pitch, dropped names.
+Symptom: "it's stating that I only caught about 9 fish, when in reality, it's over 25." The log
+  showed most reel-ins with no "caught" after them and no complaint either; a few "loot line not
+  understood ('Raw Lonoiah WISSHRASEH AY') - not counted"; and "chat: the lines are 32 px apart, not
+  16" then back to 16, three times in the first minute.
+Diagnosis: three faults, found by rebuilding his chat from the lines of his four screenshots and
+  replaying it through ChatReader (30 catches per session: 0-6 counted).
+  - His screenshots show the chat frame's scroll arrows and the portrait's level badge down the
+    right edge of the box, and two glowing buttons just below the last line. text_feed compared
+    each line across the box's whole width, so that art rode along: it stays put while the words
+    scroll up, so a line no longer matched itself one line higher, and the buttons' row was a
+    "line" of its own that never moved. The box stopped lining up exactly when a line arrived - a
+    silent "cannot tell", which is why most misses left no trace in the console.
+  - The pitch check switched to 32 whenever estimate_pitch preferred the double (it scores as well
+    as the pitch itself on a periodic picture; 16 scored 0.55 of 48 on one box, under the 0.6 the
+    divisor rule asked for). At 32 two chat lines are one picture: garbled names, missed lines.
+  - A loot line whose name OCR garbled was dropped as "not understood". Its green and its
+    "receive loot" had already proved it was a catch.
+  Smaller, found on the way: the line cut was "the emptiest row", and on the 16 px font four rows
+  nearly tie (0.7-1.5 px of ink each) - the cut moved 3 px between frames (more than the matching
+  slack) and sometimes sliced the descenders off ('Raw Lonaiaw Mud Snanperl'). And the 16 px font
+  is too small for Tesseract at its own size: 3x enlarged, every line read exactly.
+Fix: text_feed: a line is only as wide as its leftmost run of ink (a gap of 2 pitches ends it; a
+  row starting in the right half is not text), a line running into the box's edge is compared over
+  the common width, lines are cut half a line from the middle of the text body (stable, keeps
+  descenders), vertical slack is a quarter line, and a full box replaced by a few unmatched lines
+  is "cannot tell". estimate_pitch takes a whole fraction scoring half as well. ChatReader never
+  switches to 2x/3x the pitch in use and needs 6 votes once confirmed; OCR enlarges 3x; a reading
+  naming no known fish is retried at the other thresholds; an unreadable loot line counts as
+  "(name unreadable)". The log is on a 12-hour clock like the panel. Cards V-423..V-426,
+  L-719..L-722, four new fixtures.
+Lesson: WHAT IS DRAWN OVER A SCROLLING REGION DOES NOT SCROLL. Any "did this move?" comparison must
+  first cut away what cannot move with it - here by taking only the run of ink a line's own words
+  make. And a sensor that already proved something (green + "receive loot" = a catch) must not
+  throw that away because a later, harder step (reading the name) failed: count what is known, and
+  mark what is not.

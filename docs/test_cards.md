@@ -160,6 +160,10 @@ Code under test: core/text_feed.py
 | V-420 | Chat lines 16 px apart (a smaller font) are measured and read at 16, so every catch is counted | test_wow_catches.py | **new** |
 | V-421 | Guild chat is green too, but not the loot green - it is never read as a loot line | test_wow_catches.py | **new** |
 | V-422 | A line fading out, or a streak behind the empty top of the box, does not lose the box | test_wow_catches.py | **new** |
+| V-423 | Icons and scroll arrows beside the chat are not text: each line is only as wide as its words | test_wow_catches.py | **new** |
+| V-424 | Lines are cut between their descenders and the next line's ascenders, at the same place in every frame | test_wow_catches.py | **new** |
+| V-425 | A fishing session of the owner's real chat lines, scroll arrows and all: every catch counted, once | test_wow_catches.py | **new** |
+| V-426 | The owner's loot lines are read exactly: enlarged 3x, cut to their words | test_wow_catches.py | **new** |
 
 ### V-5xx  Image search (template matching)
 
@@ -352,6 +356,10 @@ Code under test: routes/fishing.py, routes/fish_tally.py, wow.py
 | L-716 | Auto-pause: after N minutes with no F5, never while paused, and every F5 starts it over | test_wow_catches.py | **new** |
 | L-717 | The one case pixels cannot settle: a reeled-in bite and a box of repeats counts one more; a fish that got away does not | test_wow_catches.py | **new** |
 | L-718 | The success rate is kept in its band: bites are let go only near the top, never two in a row, reeled in late | test_wow_fishing.py | **new** |
+| L-719 | The line pitch is never switched to twice or three times the one in use | test_wow_catches.py | **new** |
+| L-720 | A loot line whose name cannot be read is still a catch, never dropped | test_wow_catches.py | **new** |
+| L-721 | A name read wrong at one threshold and right at another is taken from the right one | test_wow_catches.py | **new** |
+| L-722 | The log's times are on a 12-hour clock, like the panel's Latest catches | test_wow_catches.py | **new** |
 
 ## A — Actions
 

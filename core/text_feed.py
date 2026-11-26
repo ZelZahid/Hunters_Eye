@@ -20,12 +20,15 @@ HOW, in order (each step measured on a real WoW chat box, see docs/wow_fishing.m
      green is 0,160,0, which a grey conversion turns to 94), then a morphological top-hat, which
      keeps thin bright strokes and drops smooth backgrounds. The box is see-through, and behind it
      can be dark water or bright fog; a fixed brightness threshold works on one and not the other.
-  2. Lines: rows of text sit at a fixed pitch, with a near-empty pixel row between them. The phase
-     is the offset where those gap rows hold the least ink, so lines are cut exactly between
-     glyphs even when descenders almost touch the next line. A line cut off by the box's top or
-     bottom edge is ignored until it is whole.
-  3. Matching: two lines are "the same" when their ink correlates (TM_CCOEFF_NORMED, a couple of
-     pixels of slack). Correlation ignores brightness, so a line that is FADING OUT (WoW fades old
+  2. Lines: rows of text sit at a fixed pitch. Each line's BODY (its small letters, half a line
+     tall) holds most of the ink; lines are cut half a line away from the body's middle, so each
+     keeps its own ascenders and descenders and the cut does not move between frames (line_phase()
+     says why not "the emptiest row"). A line cut off by the box's top or
+     bottom edge is ignored until it is whole. Each line is only as wide as its text (the leftmost
+     run of ink): a scroll bar or a button over the box's right side stays put while the text
+     scrolls past it, and is cut off rather than compared (text_end()).
+  3. Matching: two lines are "the same" when their ink correlates (TM_CCOEFF_NORMED, a quarter
+     of a line of slack up and down, a couple of pixels sideways). Correlation ignores brightness, so a line that is FADING OUT (WoW fades old
      chat) still matches itself.
   4. Alignment: the new picture should be the old one with its top n lines gone (scrolled off or
      faded) and new lines below. The smallest n that makes every remaining old line match is
@@ -68,6 +71,10 @@ INK_THRESHOLD = 60        #top-hat value of a glyph stroke; the gaps between lin
 MATCH_THRESHOLD = 0.75    #same line, two frames apart, over moving grass: 0.90-1.00 measured;
                           #different lines, even sharing "Cerellean Whiteclaw says:": at most 0.58
 SLACK_PX = 2              #how far a line may sit from where it was and still match itself
+GAP_PITCHES = 2           #a gap this many line pitches wide ends a line's text: WoW's widest gap
+                          #between words is about 5 px at a 16 px pitch; anything past 32 px of
+                          #nothing is not the same line (see text_end())
+LINE_START_FRACTION = 0.5 #a row whose ink starts in the right half of the box is not a line of text
 MAX_UNALIGNED_LINES = 3   #a picture that matches nothing old may still be new lines arriving in an
                           #emptied box - but only a few (one message, wrapped). More is "cannot tell".
 
@@ -75,12 +82,15 @@ MAX_UNALIGNED_LINES = 3   #a picture that matches nothing old may still be new l
 class Line:
     """One line of the box: its ink (for matching) and its picture (for reading)."""
 
-    __slots__ = ("top", "ink", "image")
+    __slots__ = ("top", "ink", "image", "text", "slack", "at_edge")
 
-    def __init__(self, top, ink, image):
+    def __init__(self, top, ink, image, end=None, slack=SLACK_PX, at_edge=False):
         self.top = top          #y of the line's top in the box, in pixels
-        self.ink = ink          #float32 ink, SLACK_PX taller on each side than the line
-        self.image = image      #the line as it looked (a view of the frame; copy to keep)
+        self.at_edge = at_edge  #its ink runs into the box's right edge (see same_line)
+        self.slack = slack      #rows of ink above and below the line, for matching (line_slack)
+        self.ink = ink          #float32 ink of the text only, `slack` taller on each side
+        self.image = image      #the whole row of the box as it looked (a view; copy to keep)
+        self.text = image[:, :end] if end is not None else image   #...only as far as the text
 
 
 def ink_image(frame, pitch, dark_text=False):
@@ -98,28 +108,30 @@ def ink_image(frame, pitch, dark_text=False):
 
 
 def line_phase(profile, pitch):
-    """The offset (0..pitch-1) of the gap rows: where the rows pitch apart hold the least ink.
+    """The offset (0..pitch-1) to cut lines at: half a line away from the middle of the text.
 
-    With wide gaps (a document's widely spaced lines) several offsets are equally empty; the MIDDLE
-    of that run is taken, so a line is never cut at its very first or last pixel row and the cut
-    lands in the same place on every frame.
+    Every line has a BODY - the rows of its small letters, half a line tall, holding most of the
+    ink - and between two bodies a band of thin rows: the descenders of the line above (g, j, p),
+    the gap, the ascenders of the line below. The body is found as the half-line window of rows
+    (pitch apart) with the most ink, and the cut goes opposite its middle, so each line keeps its
+    own ascenders and descenders, whatever its font.
+
+    NOT "the emptiest row", which is what this did first: the thin rows hold a pixel or two each,
+    nearly tied (0.7 / 1.0 / 1.5 / 1.0 pixels a row on the owner's 16 px chat), so the emptiest one
+    changed from frame to frame. The cut jumped 3 px - lines stopped matching themselves - and
+    landed above a line's descenders as often as below them, slicing them off ('Raw Lonaiaw Mud
+    Snanperl', measured). The body is many times inkier than anything around it, so its place does
+    not change between frames. On WoW's default font (18 px) it gives the same cut as before.
     """
-    cost = [float(profile[p::pitch].mean()) if profile[p::pitch].size else 0.0 for p in range(pitch)]
-    lowest = min(cost)
-    empty = [c <= lowest + 1e-9 for c in cost]
-    if all(empty):
+    cost = np.array([float(profile[p::pitch].mean()) if profile[p::pitch].size else 0.0
+                     for p in range(pitch)])
+    if not cost.any():
         return 0
-    #The longest run of equally-empty offsets, going round the circle (offset pitch-1 is next to 0).
-    best_start, best_length = 0, 0
-    for start in range(pitch):
-        if not empty[start] or empty[start - 1]:
-            continue
-        length = 0
-        while length < pitch and empty[(start + length) % pitch]:
-            length += 1
-        if length > best_length:
-            best_start, best_length = start, length
-    return (best_start + (best_length - 1) // 2) % pitch
+    width = max(1, pitch // 2)
+    ring = np.concatenate([cost, cost[:width - 1]])
+    sums = np.convolve(ring, np.ones(width), mode="valid")[:pitch]
+    start = int(np.argmax(sums))
+    return (start + width // 2 + pitch // 2) % pitch
 
 
 def estimate_pitch(frame, low=10, high=48):
@@ -144,10 +156,12 @@ def estimate_pitch(frame, low=10, high=48):
         return None
     #Twice the pitch lines up as well as the pitch itself, and can even score higher (measured: 36
     #beat 18 on a box of wrapped two-line messages). So a whole fraction of the best that scores
-    #nearly as well is the real pitch.
+    #at least half as well is the real pitch. Half, not more: 16 scored 0.55 of 48 on a box of the
+    #owner's chat lines (lines of very different lengths), and was read at 48 for seconds. A real
+    #pitch scores far below zero at a half or a third of itself (a line's middle against a gap).
     for divisor in (3, 2):
         smaller = int(round(best / divisor))
-        if smaller in scores and scores[smaller] >= 0.6 * scores[best]:
+        if smaller in scores and scores[smaller] >= 0.5 * scores[best]:
             return smaller
     return best
 
@@ -165,29 +179,72 @@ def split_lines(frame, pitch, ink=None, dark_text=False):
         return []
     phase = line_phase(profile, pitch)
     min_ink = 2 * pitch                  #a short real line ("apart...") has 150+; noise under 40
-    padded = cv.copyMakeBorder(ink, SLACK_PX, SLACK_PX, 0, 0, cv.BORDER_CONSTANT, value=0)
+    slack = line_slack(pitch)
+    padded = cv.copyMakeBorder(ink, slack, slack, 0, 0, cv.BORDER_CONSTANT, value=0)
     lines = []
     for top in range(phase, height - pitch + 1, pitch):
-        if strokes[top:top + pitch].sum() < min_ink:
+        end = text_end(strokes[top:top + pitch], pitch)
+        if end is None or strokes[top:top + pitch, :end].sum() < min_ink:
             continue
-        band = padded[top:top + pitch + 2 * SLACK_PX]
+        band = padded[top:top + pitch + 2 * slack, :end]
         #Faint ink is zeroed before matching: it is the background (grass, waves) showing through,
         #and it changes as the camera moves. Measured on a short line over grass, same text in
         #two frames: 0.69 with it, 0.90 without; different lines stay under 0.58 either way.
         lines.append(Line(top, np.where(band > INK_THRESHOLD, band, 0).astype(np.float32),
-                          frame[top:top + pitch]))
+                          frame[top:top + pitch], end, slack, end > width - pitch))
     return lines
 
 
+def line_slack(pitch):
+    """How many pixels up or down a line may sit from where it was and still match itself: a
+    quarter of a line (4 px at 16), at least SLACK_PX. A quarter, because the cut between lines can
+    move by up to 3 px between two frames on a small font (see line_phase), and a line one whole
+    pitch away is a different line."""
+    return max(SLACK_PX, pitch // 4)
+
+
+def text_end(strokes, pitch):
+    """Where a line's text ends (a column index, exclusive), or None if this row holds no text.
+
+    A line's text is its LEFTMOST run of ink: a gap of more than GAP_PITCHES line pitches ends it,
+    and anything further right is not part of it - a scroll bar, a button or an icon drawn over the
+    box. Those stay put while the text scrolls past them, so left in, the same line no longer
+    matched itself one line higher, and an icon on a row of its own was a "line" that never moved
+    (the owner's chat, 2026-11-25: a glowing button below the last line, and the box's scroll
+    arrows beside every line). A row whose first ink starts past LINE_START_FRACTION of the width
+    is not text either: that is the same kind of thing with no text to its left.
+    """
+    columns = np.flatnonzero(strokes.any(axis=0))
+    if columns.size == 0 or columns[0] > strokes.shape[1] * LINE_START_FRACTION:
+        return None
+    gaps = np.flatnonzero(np.diff(columns) > GAP_PITCHES * pitch)
+    last = columns[gaps[0]] if gaps.size else columns[-1]
+    return int(min(strokes.shape[1], last + 1 + SLACK_PX))
+
+
 def same_line(a, b, threshold=MATCH_THRESHOLD):
-    """Do two Lines show the same text? Correlation of their ink, with SLACK_PX of slack each way."""
-    s = SLACK_PX
-    template = b.ink[s:-s, s:b.ink.shape[1] - s]
-    if template.size == 0 or template.shape[1] > a.ink.shape[1]:
+    """Do two Lines show the same text? Correlation of their ink, with a few pixels of slack each
+    way (line_slack() up and down, SLACK_PX sideways)."""
+    s, v = SLACK_PX, b.slack
+    a_ink, b_ink = a.ink, b.ink
+    if a.at_edge or b.at_edge:
+        #A long line ends right where a scroll bar or a frame is drawn at the box's edge, with too
+        #small a gap to tell them apart, so what is joined onto its end changes as it scrolls past
+        #(415 px of text in one frame, 443 with the scroll arrows in the next - it no longer
+        #matched itself). Compared over the width both have; a line this long that agrees over
+        #all of it is the same line.
+        width = min(a_ink.shape[1], b_ink.shape[1])
+        a_ink, b_ink = a_ink[:, :width], b_ink[:, :width]
+    template = b_ink[v:b_ink.shape[0] - v, s:b_ink.shape[1] - s]
+    if template.size == 0 or not template.any() or not a_ink.any():
         return False
-    if not template.any() or not a.ink.any():
-        return False
-    score = cv.matchTemplate(a.ink, template, cv.TM_CCOEFF_NORMED)
+    searched = a_ink
+    if template.shape[1] > searched.shape[1]:
+        #Lines are only as wide as their text, so a longer line is padded with nothing to compare:
+        #its extra letters then simply fail to match (a different line scores low, as it should).
+        searched = cv.copyMakeBorder(searched, 0, 0, 0, template.shape[1] - searched.shape[1],
+                                     cv.BORDER_CONSTANT, value=0)
+    score = cv.matchTemplate(searched, template, cv.TM_CCOEFF_NORMED)
     return bool(np.nanmax(score) >= threshold)
 
 
@@ -237,11 +294,14 @@ class TextFeed:
             return []
         aligned = self._align(previous, current)
         if aligned is None:
-            if len(current) <= self.max_unaligned:
+            if len(current) <= self.max_unaligned and len(previous) <= self.max_unaligned:
                 #Nothing old is left: the box was empty (or fully faded) and these just arrived.
+                #Only from a box that was (nearly) empty already: WoW fades its lines one at a
+                #time, so a full box does not vanish at once while a line arrives - a full box
+                #replaced by a few lines that match nothing is something passing behind it.
                 self.ambiguous = False
                 self.lines = current
-                return [line.image for line in current]
+                return [line.text for line in current]
             self.lines = current
             return None
         dropped, junk = aligned
@@ -250,16 +310,28 @@ class TextFeed:
         new = rest[kept:]
         self.ambiguous = self._fits(previous, rest, dropped + 1)
         self.lines = current
-        return [line.image for line in new]
+        return [line.text for line in new]
 
     def _fits(self, previous, current, dropped):
-        """Does "the top `dropped` old lines are gone, the rest are still here" fit the picture?"""
+        """Does "the top `dropped` old lines are gone, the rest are still here" fit the picture?
+
+        The lines must match AND have moved the right distance: with n new lines below them, a
+        box that grows at the bottom (a game chat) moves every kept line up by n lines; one that
+        fills from the top (a terminal not yet full) does not move them at all. Anything else is
+        a coincidence of look-alike lines - in a chat full of the same loot line, the old bottom
+        line "matches" the new TOP line, and without this check most of the box was reported as
+        new (three Snappers counted at once, 2026-11-25)."""
         kept = len(previous) - dropped
         if kept < 0:
             return False
         if kept == 0:
             return len(current) <= self.max_unaligned
         if len(current) < kept:
+            return False
+        arrived = len(current) - kept
+        moved = previous[dropped].top - current[0].top
+        slack = line_slack(self.pitch) + 1
+        if abs(moved) > slack and abs(moved - arrived * self.pitch) > slack:
             return False
         return all(same_line(previous[dropped + i], current[i], self.threshold) for i in range(kept))
 

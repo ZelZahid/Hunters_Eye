@@ -101,7 +101,7 @@ AUTO_PAUSE_MINUTES = 30             #pause by itself after this long with no F5 
                                     #pause button). Every manual pause/resume restarts the count.
 AUTO_PAUSE_CHOICES = (10, 15, 20, 30, 45, 60, 90, 120)   #what the GUI (and --auto-pause) offer
 READ_CHAT = True                    #count catches from the chat box's "You receive loot" lines
-SUCCESS_RATE_PERCENT = (90, 99)     #keep bites reeled in / casts that ended inside this band, by
+SUCCESS_RATE_PERCENT = (90, 95)     #keep bites reeled in / casts that ended inside this band, by
                                     #letting a bite go now and then (reeled in 4-7 s late) once the
                                     #rate reaches the top, until it is back at the bottom. (100, 100)
                                     #= reel in every bite. The GUI's Setup tab, or --success-rate 85-95.
@@ -184,10 +184,18 @@ def close_log_file():
             _log_file = None
 
 
+def clock_text(when=None):
+    """'4:56:47 PM' - the 12-hour clock the owner reads, the same as wow_gui.py's Latest catches.
+    Written out by hand: strftime's "no leading zero" flag differs between Windows (%#I) and
+    macOS (%-I). File names and catches.csv keep 24-hour times, so they sort."""
+    now = time.localtime(when)
+    return f"{now.tm_hour % 12 or 12}:{now.tm_min:02d}:{now.tm_sec:02d} {'AM' if now.tm_hour < 12 else 'PM'}"
+
+
 def log(message, console=True):
-    """One line, timestamped. console=False lines go only to the log file: detail that helps
-    find out why a fish was missed, but would bury the console if printed every few seconds."""
-    line = f"[{time.strftime('%H:%M:%S')}] {message}"
+    """One line, timestamped (12-hour). console=False lines go only to the log file: detail that
+    helps find out why a fish was missed, but would bury the console if printed every few seconds."""
+    line = f"[{clock_text()}] {message}"
     if console:
         write_line(line)
     with _log_lock:
@@ -613,11 +621,23 @@ def chat_region(config, client):
             "width": max(1, int(round(rw * w))), "height": max(1, int(round(rh * h)))}
 
 
+OCR_SCALE = 3      #chat lines are enlarged this much (cubic) before they are thresholded and read
+
+
 def ocr_line(image, threshold):
     """One line of chat as text. The brightest channel, not grey: the loot words are pure green
     (0,160,0), which a grey conversion turns into 94 - below any threshold that keeps the background
-    out (EH#48). Measured: every line of Zel's chat screenshot read exactly at 110."""
+    out (EH#48). Measured: every line of Zel's chat screenshot read exactly at 110.
+
+    ENLARGED 3x FIRST, because the smaller chat font (16 px lines) is too small for Tesseract at
+    its own size: on the owner's four chat screenshots (2026-11-25), 3 of 12 loot lines came back
+    as 'Raw Brillant Smallish' at 1x, and all 12 exactly at 3x. (The opposite of Diablo II's map
+    overlay, where enlarging blurred thin glyphs - see text_detection.read_line: measure each font.)
+    It costs a few hundredths of a second, once per catch. The line arrives already cut to its
+    text (text_feed), so the icons and scroll arrows beside the chat are not read as letters."""
     gray = image.max(axis=2) if image.ndim == 3 else image
+    if OCR_SCALE != 1:
+        gray = cv.resize(gray, None, fx=OCR_SCALE, fy=OCR_SCALE, interpolation=cv.INTER_CUBIC)
     return text_detection.read_line(np.ascontiguousarray(gray), threshold=threshold, whitelist=None)
 
 
@@ -647,7 +667,9 @@ class ChatReader:
     "cannot tell"), the pitch is measured off the picture (text_feed.estimate_pitch, ~2 ms), and
     when PITCH_VOTES measurements in a row agree on another pitch, reading restarts at that one.
     Until one measurement has agreed with the pitch in use, every look measures (so a wrong pitch
-    is fixed within half a second of starting, not at the first catch).
+    is fixed within half a second of starting, not at the first catch); after that a change takes
+    PITCH_VOTES_CONFIRMED in a row. Twice or three times the pitch in use is never switched to:
+    lines 16 px apart line up every 32 px too, and reading at 32 cuts two lines into one picture.
 
     THE AMBIGUOUS CASE: a chat box showing nothing but the same loot line, say eight Snappers in a
     row, looks exactly the same after a ninth arrives. text_feed flags that as `ambiguous`. So when
@@ -657,10 +679,12 @@ class ChatReader:
     """
 
     PITCH_VOTES = 2            #measurements in a row that must agree before the pitch is changed
+    PITCH_VOTES_CONFIRMED = 6  #...once a picture has agreed with the pitch in use
 
-    def __init__(self, config, pitch, ocr=ocr_line, log=print, detail=None):
+    def __init__(self, config, pitch, ocr=ocr_line, log=print, detail=None, known=None):
         self.config = config
         self.ocr = ocr
+        self.known = known or (lambda: ())           #-> the names already known (a snapshot)
         self.log = log                                 #worth a line on the console
         self.detail = detail or (lambda message: None)  #only for the log file
         self.expect_until = None
@@ -687,8 +711,16 @@ class ChatReader:
             self._votes = []
             self.pitch_confirmed = True
             return False
-        self._votes = (self._votes + [measured])[-self.PITCH_VOTES:]
-        if len(self._votes) < self.PITCH_VOTES or len(set(self._votes)) != 1:
+        if any(abs(measured - k * self.pitch) <= 1 for k in (2, 3)):
+            #Lines 16 px apart also line up every 32 px, and a box with gaps in it (a blank slot,
+            #a faded line) can make the double score best. Reading at the double cuts two lines
+            #into one picture: names OCR'd as 'Raw Lonoiah WISSHRASEH AY', and catches missed.
+            #The owner's log flipped 16 -> 32 -> 16 three times in a minute (2026-11-25); a whole
+            #multiple of the pitch in use is never a reason to switch.
+            return False
+        votes = self.PITCH_VOTES_CONFIRMED if self.pitch_confirmed else self.PITCH_VOTES
+        self._votes = (self._votes + [measured])[-votes:]
+        if len(self._votes) < votes or len(set(self._votes)) != 1:
             return False
         self.log(f"chat: the lines are {measured} px apart, not {self.pitch} - reading at "
                  f"{measured} from now on (a different chat font size?)")
@@ -711,14 +743,29 @@ class ChatReader:
         return int(cv.countNonZero(green)) >= self.min_green
 
     def read(self, image):
-        """(name, count, closed) from a loot line's picture, or None; plus the text last read."""
-        text = ""
+        """(name, count, closed) from a loot line's picture, or None; plus the text it came from.
+
+        A reading of a name already known is taken at once (one OCR call, nearly always). Anything
+        else - a new fish, or a misread one - is read at the other thresholds too, and the first
+        that names a known fish wins; failing that, the first with its closing bracket (a new
+        fish), then any. So one bad threshold never decides a name another one reads right."""
+        try:
+            names = tuple(self.known())
+        except Exception:                    # noqa: BLE001 - a lookup aid, never a crash
+            names = ()
+        text, readings = "", []
         for threshold in self.config["ocr_thresholds"]:
             text = self.ocr(image, threshold)
             parsed = fish_tally.parse_loot_line(text)
-            if parsed is not None and parsed[2]:
+            if parsed is None:
+                continue
+            if fish_tally.known_name(parsed[0], names, parsed[2]) is not None:
                 return parsed, text
-        return fish_tally.parse_loot_line(text), text
+            readings.append((parsed, text))
+        for parsed, read_as in readings:
+            if parsed[2]:
+                return parsed, read_as
+        return readings[0] if readings else (None, text)
 
     def look(self, frame, now):
         events = []
@@ -733,7 +780,11 @@ class ChatReader:
             self.detail(f"chat: new loot line, read as {text!r}")
             if parsed is None:
                 if looks_like_loot(text):
-                    self.log(f"chat: a loot line arrived but could not be read (OCR: {text!r})")
+                    #It IS a loot line (the loot green, and "receive"/"loot" in it): a catch that
+                    #arrived. Counted with its name unreadable rather than dropped (2026-11-25:
+                    #'You receiv: Raw Brigit Svan beatNer>' was a Smallfish, and was lost).
+                    events.append(("", 1, False, "read"))
+                    self.expect_until = None
                 else:
                     self.detail("chat: ...green, but not a loot line - not counted")
                 continue
@@ -744,8 +795,8 @@ class ChatReader:
             if now >= self.expect_until:
                 self.expect_until = None
                 lines = self.feed.lines or []
-                if self._ambiguous_since and lines and self.is_loot(lines[-1].image):
-                    parsed, text = self.read(lines[-1].image)
+                if self._ambiguous_since and lines and self.is_loot(lines[-1].text):
+                    parsed, text = self.read(lines[-1].text)
                     if parsed is not None:
                         self.log(f"chat: no new line after the reel-in, but the box shows only "
                                  f"repeats of {parsed[0]!r} - counting one more of it")
@@ -760,6 +811,7 @@ class ChatWatcher:
     def __init__(self, config, screen):
         self.config = config
         self.screen = screen
+        self.known_names = ()      #replaced whole (never changed in place) by the main thread
         self.reader = None
         self._lock = threading.Lock()
         self._events = queue.Queue(maxsize=200)
@@ -812,7 +864,8 @@ class ChatWatcher:
                         if self.reader is not None and source_height == client[3]:
                             pitch = self.reader.pitch
                         self.reader = ChatReader(self.config, pitch,
-                                                 log=log, detail=lambda m: log(m, console=False))
+                                                 log=log, detail=lambda m: log(m, console=False),
+                                                 known=lambda: self.known_names)
                         self.reader.expect_until = waiting
                         source_height = client[3]
                     log(f"chat: reading the box at {region['width']}x{region['height']} px", console=False)
@@ -878,15 +931,15 @@ def read_chat_once():
           + (f" (measured: {measured})" if measured and measured != pitch else "") + ".")
     loot = 0
     for line in lines:
-        if reader.is_loot(line.image):
-            parsed, text = reader.read(line.image)
+        if reader.is_loot(line.text):
+            parsed, text = reader.read(line.text)
             if parsed:
                 loot += 1
                 print(f"  LOOT  {text}\n        -> {parsed[0]} x{parsed[1]}")
             else:
                 print(f"  loot? {text}   (green, but not read as a loot line)")
         else:
-            print(f"        {ocr_line(line.image, config['ocr_thresholds'][0])}")
+            print(f"        {ocr_line(line.text, config['ocr_thresholds'][0])}")
     print(f"{loot} loot line(s). The picture it read is saved as {picture}")
     if not lines:
         print("No text found there. Is the chat box where wow_gui.py's Setup tab says? (Chat "
@@ -1123,9 +1176,13 @@ class Bookkeeper:
     def caught(self, raw, count, closed, how, counted):
         name = self.catalog.resolve(raw, closed)
         if name is None:
-            log(f"loot line not understood ({raw!r}) - not counted")
-            return
-        if self.catalog.add(name):
+            #A loot line arrived (the chat reader only hands on lines with the loot green and
+            #"receive loot" in them), so it is a catch even when its name is garbled. Dropping it
+            #is how 25 fish became 9 (2026-11-25); counting it unnamed keeps the count right.
+            log(f"caught a fish whose name could not be read ({raw!r}) - counted as "
+                f"'{fish_tally.UNREADABLE}'")
+            name = fish_tally.UNREADABLE
+        elif self.catalog.add(name):
             log(f"a new item, not seen before: {name} (no price yet - set one in wow_gui.py)")
         if not counted:
             log(f"looted {name} while paused - not counted as fishing")
@@ -1237,6 +1294,7 @@ def run(dry_run, control=False, auto_pause_minutes=None, success_band=None):
     if lure is not None:
         threading.Thread(target=lure.run, daemon=True, name="lure").start()
     if chat is not None:
+        chat.known_names = tuple(catalog.names())
         threading.Thread(target=chat.run, daemon=True, name="chat").start()
 
     quit_requested = threading.Event()
@@ -1372,6 +1430,7 @@ def run(dry_run, control=False, auto_pause_minutes=None, success_band=None):
                     since_pause = (now - pause_state["at"]) if paused.is_set() and pause_state["at"] else 0.0
                     books.caught(raw, count, closed, how,
                                  counted=not paused.is_set() or since_pause <= PAUSE_GRACE_SECONDS)
+                    chat.known_names = tuple(catalog.names())   #a new fish may have been added
             if control and now >= next_status:
                 next_status = now + STATUS_EVERY_SECONDS
                 emit("status", {

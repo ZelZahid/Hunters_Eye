@@ -47,6 +47,29 @@ SNAP_CUTOFF = 0.86     #"Raw Longiaw Mud Snapper" vs the real name: 0.96; two di
 #which the GUI can merge - better than silently filing one fish under another's price.
 
 
+UNREADABLE = "(name unreadable)"   #a loot line that surely arrived, whose name OCR could not read:
+                                   #still a catch (counted, no price), never silently dropped
+
+
+def known_name(raw, names, closed=True):
+    """The one of `names` a reading means, or None - the same snapping Catalog.resolve() does, but
+    on a plain list (a snapshot), so another thread can use it while the catalog changes."""
+    lower = _tidy(raw or "").lower()
+    if not lower:
+        return None
+    best, best_ratio = None, SNAP_CUTOFF
+    for name in names:
+        if name.lower() == lower:
+            return name
+        candidate = lower if closed else lower[:len(name)]
+        if _numbers(name) != _numbers(candidate):
+            continue
+        ratio = difflib.SequenceMatcher(None, candidate, name.lower()).ratio()
+        if ratio >= best_ratio:
+            best, best_ratio = name, ratio
+    return best
+
+
 def parse_loot_line(text):
     """(name as read, count, closed) for a loot line, or None if `text` is not one.
 

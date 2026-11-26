@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import os
 import json
 import tempfile
+import time
 
 import cv2 as cv
 import numpy as np
@@ -380,6 +381,204 @@ reader.look(mixed, 0.0)
 reader.expect(1.0)
 check("a box with other lines in it is never ambiguous, so nothing is inferred from it",
       reader.look(mixed, 2.0) == [] and reader.look(mixed, 7.0) == [])
+
+
+#The owner's four chat screenshots of 2026-11-25 (16 px lines, a smaller chat font), each with the
+#chat frame's scroll arrows and the portrait's level badge down the right edge and two glowing
+#buttons below the last line. wow.py counted 9 of 25+ catches that session.
+ICONS = load("chat_icons_pitch16.png")
+SHOTS = [ICONS, load("chat_guild_smallfish_pitch16.png"), load("chat_catfish_smallfish_pitch16.png"),
+         load("chat_mana_potion_pitch16.png")]
+SNAPPER_NAME, SMALLFISH, CATFISH = ("Raw Longjaw Mud Snapper", "Raw Brilliant Smallfish",
+                                    "Raw Bristle Whisker Catfish")
+catalog = fish_tally.Catalog(wow.PRICES)          #the repo's price list only
+
+
+print("\nV-423  Icons and scroll arrows beside the chat are not text: each line is only as wide as its words")
+icon_lines = text_feed.split_lines(ICONS, 16)
+check(f"11 lines of text; the glowing buttons under the last line are not a line "
+      f"(tops {[line.top for line in icon_lines]})", len(icon_lines) == 11 and icon_lines[-1].top < 170)
+loot_lines = [line for line in icon_lines if wow.ChatReader(CONFIG, 16).is_loot(line.text)]
+check(f"the five loot lines stop where their words do, short of the scroll arrows at x 418+ "
+      f"({[line.text.shape[1] for line in loot_lines]})",
+      len(loot_lines) == 5 and all(line.text.shape[1] < 320 for line in loot_lines))
+check("...while the whole row is still there for anyone who wants it",
+      all(line.image.shape[1] == ICONS.shape[1] for line in icon_lines))
+#A long line ending right at the scroll arrows: in one frame 415 px of words, in the next its ink
+#runs into the arrows (443). It is the same line, compared over the width both have.
+long_line = max(icon_lines, key=lambda line: line.text.shape[1])
+joined = ICONS.copy()
+end = long_line.text.shape[1]
+cv.rectangle(joined, (end + 6, long_line.top + 7), (ICONS.shape[1] - 1, long_line.top + 8), (255, 255, 255), -1)
+moved = text_feed.split_lines(joined, 16)[icon_lines.index(long_line)]
+check(f"a line that runs into the box's edge in one frame still matches itself "
+      f"({long_line.text.shape[1]} px vs {moved.text.shape[1]} px)",
+      moved.at_edge and text_feed.same_line(long_line, moved) and text_feed.same_line(moved, long_line))
+check("...and still no two different lines of the screenshot match",
+      not [(i, j) for i, a in enumerate(icon_lines) for j, b in enumerate(icon_lines)
+           if i < j and text_feed.same_line(a, b) and a.text.shape[1] != b.text.shape[1]])
+
+
+print("\nV-424  Lines are cut between their descenders and the next line's ascenders, at the same place in every frame")
+#The cut used to be "the emptiest row", and on the 16 px font four rows nearly tie (0.7-1.5 px of
+#ink): it moved 3 px between frames and sometimes sliced the descenders off ("Lonaiaw Snanperl").
+check(f"the 16 px screenshot's Snappers are cut at rows 65, 113, 145, descenders and all "
+      f"({[line.top for line in text_feed.split_lines(PITCH16, 16) if wow.ChatReader(CONFIG, 16).is_loot(line.text)]})",
+      [line.top for line in text_feed.split_lines(PITCH16, 16)
+       if wow.ChatReader(CONFIG, 16).is_loot(line.text)] == [65, 113, 145])
+phases = sorted({line.top % 16 for n in range(0, 8) for line in text_feed.split_lines(earlier(PITCH16, n), 16)})
+check(f"the same box scrolled up a line at a time is always cut at the same offset ({phases})",
+      len(phases) == 1)
+check("WoW's default font (18 px) is cut exactly where it was before (rows 13, 31, ...)",
+      [line.top for line in lines_of(SCREENSHOT)] == [13, 31, 49, 67, 85, 103, 121])
+
+
+def chat_session(seed, catches=30, ocr=None, known=()):
+    """A fishing session made of the owner's real chat lines: each step, 0-2 other lines then one
+    loot line arrive at the bottom of a box with his chat frame's scroll arrows and buttons drawn
+    over its right edge, as in his screenshots; the box is looked at three times per step (4 a
+    second). Returns (loot line ids that arrived, events reported, pitch at the end, looks lost)."""
+    right = 418                                  #the scroll arrows and the level badge start here
+    strips = [(line.image[:, :right].copy(), wow.ChatReader(CONFIG, 16).is_loot(line.text))
+              for shot in SHOTS for line in text_feed.split_lines(shot, 16)]
+    loot = [i for i, (_, is_loot) in enumerate(strips) if is_loot]
+    other = [i for i, (_, is_loot) in enumerate(strips) if not is_loot]
+    slots = list(range(2, 163, 16))
+    background = ICONS[:1, :right].mean(axis=(0, 1)).astype(np.uint8)
+
+    def picture(stream):
+        frame = ICONS.copy()                     #its right edge and the buttons stay put
+        frame[:178, :right] = background
+        shown = stream[-len(slots):]
+        for top, i in zip(slots[len(slots) - len(shown):], shown):
+            frame[top:top + 16, :right] = strips[i][0]
+        return frame
+
+    rng = np.random.default_rng(seed)
+    stream = [int(i) for i in rng.choice(other, len(slots))]
+    reader = wow.ChatReader(CONFIG, 18, ocr=ocr or (lambda image, threshold: SNAPPER),
+                            log=lambda message: None, known=lambda: known)
+    arrived, events, lost, when = [], [], 0, 0.0
+    for _ in range(3):
+        events += reader.look(picture(stream), when)
+        when += 0.25
+    for _ in range(catches):
+        stream += [int(i) for i in rng.choice(other, int(rng.integers(0, 3)))]
+        stream.append(int(rng.choice(loot)))
+        arrived.append(stream[-1])
+        for _ in range(3):
+            events += reader.look(picture(stream), when)
+            lost += reader.lost
+            when += 0.25
+    return arrived, events, reader.pitch, lost
+
+
+print("\nV-425  A fishing session of the owner's real chat lines, scroll arrows and all: every catch counted, once")
+#Before this fix the same sessions counted 0-6 catches of 30 - the scroll arrows and buttons rode
+#along on every line and the box never lined up with itself. That is the "9 of 25" of 2026-11-25.
+for seed in (1, 2, 3):
+    arrived, events, pitch, lost = chat_session(seed)
+    check(f"session {seed}: {len(events)} of {len(arrived)} catches counted, read at {pitch} px, "
+          f"{lost} look(s) lost", len(events) == len(arrived) and pitch == 16)
+
+
+print("\nV-426  The owner's loot lines are read exactly: enlarged 3x, cut to their words")
+if ocr_or_skip("V-426"):
+    expected = [CATFISH, SNAPPER_NAME, "Lesser Healing Potion", SNAPPER_NAME, SNAPPER_NAME,
+                SMALLFISH, SNAPPER_NAME,
+                CATFISH, SMALLFISH, SMALLFISH, SNAPPER_NAME,
+                SNAPPER_NAME, SNAPPER_NAME, "Lesser Mana Potion"]
+    reader = wow.ChatReader(CONFIG, 16)
+    names = []
+    for shot in SHOTS:
+        for line in text_feed.split_lines(shot, 16):
+            if reader.is_loot(line.text):
+                parsed, text = reader.read(line.text)
+                names.append(catalog.resolve(parsed[0], parsed[2]) if parsed else None)
+    check(f"all 14 loot lines of the four screenshots name the right item ({names})", names == expected)
+    arrived, events, _, _ = chat_session(4, catches=12, ocr=wow.ocr_line, known=tuple(catalog.names()))
+    read = [catalog.resolve(raw, closed) for raw, count, closed, how in events]
+    check(f"a session read with real OCR: 12 catches, each with a name the price list knows ({read})",
+          len(read) == 12 and all(name in catalog.prices or name.startswith("Lesser") for name in read))
+
+
+print("\nL-719  The line pitch is never switched to twice or three times the one in use")
+#The owner's log: "the lines are 32 px apart, not 16 - reading at 32" and back, three times in a
+#minute. At 32 two chat lines are read as one ('Raw Lonoiah WISSHRASEH AY').
+real_estimate = text_feed.estimate_pitch
+try:
+    reader = wow.ChatReader(CONFIG, 16, ocr=lambda image, threshold: SNAPPER, log=lambda m: None)
+    reader.look(PITCH16, 0.0)
+    for measured in (32, 48):
+        text_feed.estimate_pitch = lambda frame, value=measured: value
+        for step in range(10):
+            reader.look(earlier(PITCH16, step % 3), 0.25 * step)
+        check(f"measured {measured} again and again: still read at 16 ({reader.pitch})", reader.pitch == 16)
+    text_feed.estimate_pitch = lambda frame: 14
+    reader.pitch_confirmed = True
+    switched_at = None
+    for step in range(10):
+        reader.look(earlier(PITCH16, step % 2), 0.25 * step)
+        if reader.pitch == 14 and switched_at is None:
+            switched_at = step
+    check(f"a real change, once the pitch was confirmed, takes {wow.ChatReader.PITCH_VOTES_CONFIRMED} "
+          f"measurements in a row, not 2 (switched at look {switched_at})",
+          switched_at is not None and switched_at >= wow.ChatReader.PITCH_VOTES_CONFIRMED - 1)
+finally:
+    text_feed.estimate_pitch = real_estimate
+check("16 is measured on a box of the owner's lines that scored 48 best before (lines of very "
+      "different lengths)", chat_session(6, catches=1)[2] == 16)
+
+
+print("\nL-720  A loot line whose name cannot be read is still a catch, never dropped")
+garbled = "You receiv: Raw Brigit Svan beatNer>"            #from the owner's log, 2026-11-25 17:03:45
+reader = wow.ChatReader(CONFIG, 16, ocr=lambda image, threshold: garbled, log=lambda m: None)
+reader.look(earlier(PITCH16, 2), 0.0)
+events = reader.look(PITCH16, 0.25)                  #a Snapper line and an "online" line arrive
+check(f"a green loot line OCR'd as {garbled!r}: one catch, name unknown ({events})",
+      events == [("", 1, False, "read")])
+with tempfile.TemporaryDirectory() as folder:
+    saved_history = wow.HISTORY
+    wow.HISTORY = Path(folder) / "catches.csv"
+    try:
+        books = wow.Bookkeeper(fish_tally.Catalog(wow.PRICES, Path(folder) / "mine.json"), "test", False)
+        books.caught("", 1, False, "read", True)
+        books.caught("Raw Lonoiah WISSHRASEH AY", 1, False, "read", True)
+        books.caught("Raw Longjaw Mud Snapper", 1, True, "read", True)
+        check(f"the Bookkeeper counts all three, two as '{fish_tally.UNREADABLE}' ({dict(books.tally.counts)})",
+              books.tally.total == 3 and books.tally.counts[fish_tally.UNREADABLE] == 2)
+        check("...and does not add the unreadable name to the price list",
+              fish_tally.UNREADABLE not in fish_tally.Catalog(wow.PRICES, Path(folder) / "mine.json").prices)
+    finally:
+        wow.HISTORY = saved_history
+
+
+print("\nL-721  A name read wrong at one threshold and right at another is taken from the right one")
+answers = {110: "You receive loot: [Raw Lonoiah WISSHRASEH AY]", 140: "You receive loot: [Raw Longjaw Mud Snapper]",
+           85: "You receive loot: [Raw Longjaw Mud Snapper]"}
+asked = []
+reader = wow.ChatReader(CONFIG, 16, ocr=lambda image, threshold: asked.append(threshold) or answers[threshold],
+                        known=lambda: catalog.names())
+parsed, text = reader.read(PITCH16[64:80])
+check(f"the known name, from the second threshold ({parsed}, thresholds tried {asked})",
+      parsed == (SNAPPER_NAME, 1, True) and asked == [110, 140])
+asked.clear()
+answers[110] = "You receive loot: [Raw Longjaw Mud Snapper]"
+reader.read(PITCH16[64:80])
+check(f"a known name read right the first time costs one OCR call ({asked})", asked == [110])
+answers.update({threshold: "You receive loot: [Glowing Starfish]" for threshold in answers})
+asked.clear()
+parsed, _ = reader.read(PITCH16[64:80])
+check(f"a new fish (no threshold reads a known name) is still taken, as read ({parsed})",
+      parsed == ("Glowing Starfish", 1, True))
+
+
+print("\nL-722  The log's times are on a 12-hour clock, like the panel's Latest catches")
+noon = time.mktime((2026, 11, 25, 12, 5, 9, 0, 0, -1))
+check(f"12:05:09 -> {wow.clock_text(noon)!r}", wow.clock_text(noon) == "12:05:09 PM")
+check(f"00:05:09 -> {wow.clock_text(noon - 12 * 3600)!r}", wow.clock_text(noon - 12 * 3600) == "12:05:09 AM")
+check(f"16:56:47 -> {wow.clock_text(noon + 4 * 3600 + 51 * 60 + 38)!r}",
+      wow.clock_text(noon + 4 * 3600 + 51 * 60 + 38) == "4:56:47 PM")
 
 
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")

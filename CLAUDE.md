@@ -320,7 +320,12 @@ warning in the docs and the script header.
 - **The chat's line pitch is measured, not trusted** (16 px with a smaller font, not chat.json's 18 -
   cut wrong, the box never lines up and catches are missed, EH#52). Loot green is **fully saturated**
   (S >= 200): guild chat is green too, but S 191.
-- **Success rate** = reeled / casts that ended; `SuccessRateKeeper` keeps it in a band (default 90-99%)
+- **Chat lines are only as wide as their words** (leftmost run of ink): scroll arrows, badges and
+  buttons drawn over the box stay put while text scrolls, and compared whole they broke every
+  alignment (9 of 25 counted, EH#53). Lines are cut half a line from the **text body**, never at
+  "the emptiest row" (it jittered 3 px and sliced descenders). The pitch is never switched to 2x/3x
+  the one in use. OCR enlarges chat lines 3x. A loot line whose name is unreadable still counts.
+- **Success rate** = reeled / casts that ended; `SuccessRateKeeper` keeps it in a band (default 90-95%)
   by letting a bite go (never two in a row), reeled in 4-7 s late. Pure, rng passed in.
 - **Catches are counted from the chat's green "You receive loot" lines, with no fish list built in.**
   `core/text_feed.py` finds the NEW lines by how the old ones slid up (ink correlation, faint ink
