@@ -317,6 +317,11 @@ warning in the docs and the script header.
   A bite in the first 1.5 s of FISHING is the lure landing, not a bite: ignored and logged.
 - When a live fish is missed, the run's log in `recordings/wow/` says why (heartbeat, near misses
   with the failed test, bites not acted on); `wow.py --check-audio` answers "does sound reach us?".
+- **The chat's line pitch is measured, not trusted** (16 px with a smaller font, not chat.json's 18 -
+  cut wrong, the box never lines up and catches are missed, EH#52). Loot green is **fully saturated**
+  (S >= 200): guild chat is green too, but S 191.
+- **Success rate** = reeled / casts that ended; `SuccessRateKeeper` keeps it in a band (default 90-99%)
+  by letting a bite go (never two in a row), reeled in 4-7 s late. Pure, rng passed in.
 - **Catches are counted from the chat's green "You receive loot" lines, with no fish list built in.**
   `core/text_feed.py` finds the NEW lines by how the old ones slid up (ink correlation, faint ink
   zeroed; same line 0.90-1.00, different <= 0.58); only new green lines are OCR'd (once per catch).

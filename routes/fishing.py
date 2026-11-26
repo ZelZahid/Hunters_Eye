@@ -31,6 +31,14 @@ THREE-VALUED INPUTS. `bar` and `got_away` are True / False / None, and None ("th
 be read") is never treated as False. A FISHING state that cannot see the screen waits; it does not
 decide the bar is gone and start pressing keys at a screen it cannot see.
 
+MISSING ON PURPOSE (Zel, 2026-11-26). A person does not reel in 100% of bites, so the loop can keep
+its success rate - bites reeled in / casts that ended, reeled or missed - inside a band (default
+90-99%). SuccessRateKeeper decides, bite by bite: once the rate reaches the top of the band it lets
+some bites go (about one in three, never two in a row) until the rate is back at the bottom, then
+reels in everything again. A bite let go is reeled in LATE, a random LET_GO_DELAY after the bite -
+Zel's idea, what a slow person does - so the fish is gone by then; if the game ends the round first
+("Your fish got away!", or the bar goes), nothing is pressed. Either way it is a miss.
+
 "Your fish got away!" only counts when it APPEARS while fishing (not seen on the previous check,
 seen on this one). The message stays up for a few seconds, and with a 1 s recast it is often
 still on screen when the next cast's bar comes up - reacting to it then would press the key in
@@ -46,6 +54,56 @@ FISHING = "fishing"                    #bar is up: listening for the splash
 STOPPED = "stopped"                    #gave up - see .reason
 
 PRESS = "press"
+LET_GO_DELAY = (4.0, 7.0)              #a bite let go is reeled in this late (random, seconds)
+
+
+class SuccessRateKeeper:
+    """Keeps the success rate - reeled / (reeled + missed) - inside [low, high] by letting a bite
+    go now and then. Pure: counts in, answer out; `rng` is a random.Random so tests can seed it.
+
+    let_go(reeled, missed) is asked once per bite, before reeling in. It answers True only while
+    LOWERING: that starts when the rate reaches `high` and ends when it is down to `low`, so the rate
+    swings slowly through the band instead of sitting at one number. While lowering, a bite is let
+    go with `chance`, and never two in a row. Below `min_attempts` it never lets one go (one catch
+    of one is 100%, and means nothing). high >= 1.0 (a band ending at 100%) turns it off.
+    """
+
+    def __init__(self, low=0.90, high=0.99, min_attempts=10, chance=0.35, rng=None):
+        low, high = float(low), float(high)
+        if not 0.0 < low <= high <= 1.0:
+            raise ValueError(f"the success-rate band must be 0 < low <= high <= 100%, got {low:.0%}-{high:.0%}")
+        self.low, self.high = low, high
+        self.min_attempts = int(min_attempts)
+        self.chance = float(chance)
+        self.rng = rng or random.Random()
+        self.lowering = False
+        self._last_let_go = False
+
+    @property
+    def off(self):
+        return self.high >= 1.0
+
+    @staticmethod
+    def rate(reeled, missed):
+        """The success rate 0.0-1.0, or None before anything was tried (not 0%, not 100%)."""
+        attempts = reeled + missed
+        return reeled / attempts if attempts else None
+
+    def band_text(self):
+        return "off" if self.off else f"{self.low:.0%}-{self.high:.0%}"
+
+    def let_go(self, reeled, missed):
+        rate = self.rate(reeled, missed)
+        if self.off or rate is None or reeled + missed < self.min_attempts:
+            self._last_let_go = False
+            return False
+        if rate >= self.high:
+            self.lowering = True
+        elif rate <= self.low:
+            self.lowering = False
+        answer = self.lowering and not self._last_let_go and self.rng.random() < self.chance
+        self._last_let_go = answer
+        return answer
 
 
 class FishingLoop:
@@ -57,7 +115,7 @@ class FishingLoop:
 
     def __init__(self, recast_delay=(1.0, 6.0), no_splash_timeout=30.0, cast_confirm_seconds=4.0,
                  bar_lost_seconds=0.6, max_failed_casts=3, splash_settle_seconds=1.5, rng=None,
-                 log=print):
+                 log=print, keeper=None, let_go_delay=LET_GO_DELAY):
         low, high = recast_delay
         if not 0 <= low <= high:
             raise ValueError(f"recast_delay must be (low, high) with 0 <= low <= high, got {recast_delay}")
@@ -69,6 +127,8 @@ class FishingLoop:
         self.splash_settle_seconds = float(splash_settle_seconds)
         self.rng = rng or random.Random()
         self.log = log
+        self.keeper = keeper       #a SuccessRateKeeper, or None: reel in every bite
+        self.let_go_delay = (float(let_go_delay[0]), float(let_go_delay[1]))
 
         self.state = CASTING
         self.reason = ""
@@ -80,6 +140,8 @@ class FishingLoop:
         self.catches = 0           #bites reeled in (the game decides if a fish was caught)
         self.caught_by = {"sound": 0, "sight": 0, "both": 0}   #which signal triggered each one
         self.misses = 0            #rounds that ended with no splash heard, or the fish got away
+        self.let_go = 0            #...of which bites let go on purpose (SuccessRateKeeper)
+        self.late_press_at = None  #FISHING, a bite let go: when to reel in, late
         self._saw_got_away = None
 
     # ---- the one entry point -------------------------------------------------------------------
@@ -158,6 +220,22 @@ class FishingLoop:
         return None
 
     def _fishing(self, now, bar, splash, bobbed, got_away_appeared):
+        if self.late_press_at is not None:
+            #A bite let go on purpose: deaf to it from here on (the lure is still bobbing).
+            if bar is False and self.bar_lost_at is None:
+                self.bar_lost_at = now
+            elif bar is True:
+                self.bar_lost_at = None
+            if got_away_appeared or (self.bar_lost_at is not None
+                                     and now - self.bar_lost_at >= self.bar_lost_seconds):
+                self.misses += 1
+                self._schedule_cast(now, "the fish got away (let go on purpose)")
+                return None
+            if now >= self.late_press_at:
+                self.misses += 1
+                self._schedule_cast(now, "reeled in late, on purpose")
+                return PRESS
+            return None
         signal = signal_name(splash, bobbed)
         if signal and now - self.fishing_since < self.splash_settle_seconds:
             self.log(f"{signal}, ignored: {now - self.fishing_since:.1f}s after the bar appeared is "
@@ -165,6 +243,16 @@ class FishingLoop:
             signal = None
         if signal and bar is False:
             self.log(f"{signal} but not acted on: the fishing bar is not on screen")
+        if signal and bar is not False and self.keeper is not None \
+                and self.keeper.let_go(self.catches, self.misses):
+            self.let_go += 1
+            delay = self.rng.uniform(*self.let_go_delay)
+            self.late_press_at = now + delay
+            rate = self.keeper.rate(self.catches, self.misses)
+            self.log(f"{signal} - letting this one go on purpose: reeling in {delay:.1f}s late "
+                     f"(success rate {'-' if rate is None else f'{rate:.0%}'}, "
+                     f"kept in {self.keeper.band_text()})")
+            return None
         if signal and bar is not False:
             #bar None (cannot read the screen this instant) still reels in: the bite itself is
             #the evidence a fish is on, and we were fishing a moment ago. Waiting to see the bar
@@ -200,6 +288,7 @@ class FishingLoop:
         self.state = FISHING
         self.fishing_since = now
         self.bar_lost_at = None
+        self.late_press_at = None
         self.log(why)
 
     def _schedule_cast(self, now, why):
@@ -207,6 +296,7 @@ class FishingLoop:
         self.state = CASTING
         self.cast_at = now + delay
         self.bar_lost_at = None
+        self.late_press_at = None
         self.log(f"{why}; casting again in {delay:.1f}s")
 
 

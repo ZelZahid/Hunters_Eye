@@ -157,6 +157,14 @@ check("a dry run says so in the header", "dry run" in text(panel.detail_label))
 bot.send("catch")
 check("a @catch line adds the fish to the table", tick_until(lambda: panel.table.exists("Raw Longjaw Mud Snapper")))
 check("...and to the latest catches", "Raw Longjaw Mud Snapper" in panel.recent.get(0))
+check(f"...at a 12-hour time: wow.py's 12:00:01 is 12:00:01 PM ({panel.recent.get(0)!r})",
+      panel.recent.get(0).startswith("12:00:01 PM  "))
+check("24-hour times become 12-hour ones: midnight, morning, noon, afternoon",
+      [wow_gui.twelve_hour(t) for t in ("00:05:09", "09:30:00", "12:00:00", "16:03:45", "23:59:59")]
+      == ["12:05:09 AM", "9:30:00 AM", "12:00:00 PM", "4:03:45 PM", "11:59:59 PM"])
+check("anything that is not a time is shown as it came, never a crash",
+      [wow_gui.twelve_hour(t) for t in ("?", "", None, "25:00:00", "4:03")]
+      == ["?", "", "None", "25:00:00", "4:03"])
 panel.handle_line('@stopped {"reason": "pressed the key 3 times and the fishing bar never appeared"}')
 check("a stop reason is kept to show once it has exited", "fishing bar never appeared" in panel.stopped_reason)
 panel.handle_line("@status {not json")
@@ -223,6 +231,26 @@ panel.stop_bot()
 check("Stop", tick_until(lambda: not bot.running()))
 root.update()
 check("...and the header says Not running", text(panel.state_label) in ("Not running", "Stopped"))
+
+
+print("\nT-411  The success rate is shown, and the band typed in Setup is what wow.py is started with")
+check("nothing tried yet: '-', not 0% or 100%", wow_gui.success_text(0, 0) == "-")
+check(f"4 reeled, 1 missed: {wow_gui.success_text(4, 1)!r}", wow_gui.success_text(4, 1) == "80%   (4 of 5)")
+check("with wow.py's band in its status line, the band is shown too",
+      wow_gui.success_text(23, 2, {"success_band": [90, 99]}) == "92%   (23 of 25)   kept in 90-99%")
+check("a band ending at 100 (off) is not shown as one",
+      "kept" not in wow_gui.success_text(23, 2, {"success_band": [100, 100]}))
+check(f"the Setup tab starts at wow.py's own band ({panel.band_low.get()}-{panel.band_high.get()})",
+      (int(panel.band_low.get()), int(panel.band_high.get())) == wow_gui.wow.SUCCESS_RATE_PERCENT)
+panel.band_low.set("85")
+panel.band_high.set("95")
+command = panel._command(False, "30", panel.success_band())
+check(f"85-95 typed: wow.py is started with --success-rate 85-95 ({command[-2:]})",
+      command[-2:] == ["--success-rate", "85-95"])
+panel.band_low.set("97")
+check("a band that is not one (97-95): wow.py keeps its default, and the log says why",
+      panel.success_band() is None and "is not one" in panel.log.get("1.0", "end"))
+check("the session card has a Success rate row", "success" in panel.session_values)
 root.destroy()
 
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")

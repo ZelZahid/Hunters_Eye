@@ -12,6 +12,9 @@ bobbing, whichever comes first:
     2. Wait a random 1-6 seconds, press F again (cast), and watch and listen again.
     3. "Your fish got away!" on screen, or the bar went away -> random wait, cast again.
     4. No bite for 30 seconds -> press F anyway (restart), random wait, cast again.
+    5. It does not reel in EVERY bite: once its success rate (bites reeled in / casts that ended)
+       reaches 99%, it lets some go - reeling in 4-7 s late - until it is back at 90%.
+       SUCCESS_RATE_PERCENT below, or --success-rate, or the GUI's Setup tab, sets the band.
 
 Every key press is held down a random 0.2-0.6 s, usually near the short end.
 
@@ -61,9 +64,11 @@ How it is built (see docs/wow_fishing.md for the measurements behind every numbe
          routes/fish_tally.py    - what was caught, prices, catch rate, earnings
 """
 import argparse
+import difflib
 import json
 import queue
 import random
+import re
 import sys
 import threading
 import time
@@ -96,6 +101,10 @@ AUTO_PAUSE_MINUTES = 30             #pause by itself after this long with no F5 
                                     #pause button). Every manual pause/resume restarts the count.
 AUTO_PAUSE_CHOICES = (10, 15, 20, 30, 45, 60, 90, 120)   #what the GUI (and --auto-pause) offer
 READ_CHAT = True                    #count catches from the chat box's "You receive loot" lines
+SUCCESS_RATE_PERCENT = (90, 99)     #keep bites reeled in / casts that ended inside this band, by
+                                    #letting a bite go now and then (reeled in 4-7 s late) once the
+                                    #rate reaches the top, until it is back at the bottom. (100, 100)
+                                    #= reel in every bite. The GUI's Setup tab, or --success-rate 85-95.
 
 PAUSE_KEY = "f5"                    #pauses, and the same key resumes
 QUIT_KEY = "end"
@@ -611,6 +620,14 @@ def ocr_line(image, threshold):
     return text_detection.read_line(np.ascontiguousarray(gray), threshold=threshold, whitelist=None)
 
 
+def looks_like_loot(text):
+    """Does OCR'd text look like a loot line that was misread (worth a warning), rather than some
+    other green line (not worth one)? Forgiving: 'receive' or 'loot', give or take a letter."""
+    words = re.findall(r"[a-z]+", text.lower())
+    return any(difflib.SequenceMatcher(None, word, target).ratio() >= 0.75
+               for word in words for target in ("receive", "loot"))
+
+
 class ChatReader:
     """Finds the new "You receive loot: [...]" lines in pictures of the chat box. Frame-driven and
     clock-free (time is passed in), so the tests feed it real chat pictures.
@@ -622,6 +639,15 @@ class ChatReader:
     them (measured 335-379 green pixels on a loot line, 0 on any other) are OCR'd - about 0.1 s,
     once per catch. A misread is tried again at the other thresholds before giving up.
 
+    THE PITCH IS CHECKED, NOT TRUSTED: chat.json says how far apart the lines are (18 px at 1080p
+    with WoW's default chat font), but a smaller chat font makes it 16, and lines cut 2 px off
+    drift further off on every line - the box then stops lining up with itself and catches are
+    missed (2 of 3, on the owner's chat, 2026-11-25). So whenever the box changed (a new line, or
+    "cannot tell"), the pitch is measured off the picture (text_feed.estimate_pitch, ~2 ms), and
+    when PITCH_VOTES measurements in a row agree on another pitch, reading restarts at that one.
+    Until one measurement has agreed with the pitch in use, every look measures (so a wrong pitch
+    is fixed within half a second of starting, not at the first catch).
+
     THE AMBIGUOUS CASE: a chat box showing nothing but the same loot line, say eight Snappers in a
     row, looks exactly the same after a ninth arrives. text_feed flags that as `ambiguous`. So when
     the loop reels in on a bite it calls expect(now); if no loot line has arrived `loot_wait_seconds`
@@ -629,18 +655,46 @@ class ChatReader:
     counted once more, as "inferred". cancel() (the fish got away) drops the expectation.
     """
 
+    PITCH_VOTES = 2            #measurements in a row that must agree before the pitch is changed
+
     def __init__(self, config, pitch, ocr=ocr_line, log=print, detail=None):
         self.config = config
-        self.feed = text_feed.TextFeed(pitch)
         self.ocr = ocr
         self.log = log                                 #worth a line on the console
         self.detail = detail or (lambda message: None)  #only for the log file
-        scale = pitch / config["line_pitch"]
-        self.min_green = config["loot_min_pixels"] * scale * scale
         self.expect_until = None
         self._loot_since = False
         self._ambiguous_since = False
         self.lost = False          #the last look did not line up with the one before
+        self._votes = []           #the last pitch measurements that disagreed with the one in use
+        self._use_pitch(pitch)
+        self.pitch_confirmed = False   #measured on every look until a picture agrees with it once
+
+    def _use_pitch(self, pitch):
+        self.pitch = int(pitch)
+        self.feed = text_feed.TextFeed(self.pitch)
+        scale = self.pitch / self.config["line_pitch"]
+        self.min_green = self.config["loot_min_pixels"] * scale * scale
+        self._votes = []
+
+    def _check_pitch(self, frame):
+        """Measure the line pitch off this picture; True if reading restarted at a new pitch."""
+        measured = text_feed.estimate_pitch(frame)
+        if measured is None:
+            return False               #too few lines to tell: no vote either way
+        if measured == self.pitch:
+            self._votes = []
+            self.pitch_confirmed = True
+            return False
+        self._votes = (self._votes + [measured])[-self.PITCH_VOTES:]
+        if len(self._votes) < self.PITCH_VOTES or len(set(self._votes)) != 1:
+            return False
+        self.log(f"chat: the lines are {measured} px apart, not {self.pitch} - reading at "
+                 f"{measured} from now on (a different chat font size?)")
+        self._use_pitch(measured)
+        self.feed.feed(frame)          #the first look at the new pitch: compared with the next one
+        self.lost = True
+        return True
 
     def expect(self, now):
         self.expect_until = now + self.config["loot_wait_seconds"]
@@ -669,13 +723,18 @@ class ChatReader:
         events = []
         new = self.feed.feed(frame)
         self.lost = new is None
+        if (new is None or new or not self.pitch_confirmed) and self._check_pitch(frame):
+            new = []                   #read at the wrong pitch: those "new lines" were miscut
         for image in new or []:
             if not self.is_loot(image):
                 continue
             parsed, text = self.read(image)
             self.detail(f"chat: new loot line, read as {text!r}")
             if parsed is None:
-                self.log(f"chat: a loot line arrived but could not be read (OCR: {text!r})")
+                if looks_like_loot(text):
+                    self.log(f"chat: a loot line arrived but could not be read (OCR: {text!r})")
+                else:
+                    self.detail("chat: ...green, but not a loot line - not counted")
                 continue
             events.append((*parsed, "read"))
             self.expect_until = None
@@ -727,7 +786,7 @@ class ChatWatcher:
         self._stop.set()
 
     def run(self):
-        source, source_region = None, None
+        source, source_region, source_height = None, None, None
         period = 1.0 / self.config["checks_per_second"]
         was_lost = False
         try:
@@ -745,11 +804,16 @@ class ChatWatcher:
                     source_region = region
                     with self._lock:
                         #A new reader (a moved window starts the comparison over), keeping any
-                        #reel-in it was waiting on.
+                        #reel-in it was waiting on - and the pitch it measured, if the window is
+                        #the same height (the chat font is the same size).
                         waiting = self.reader.expect_until if self.reader is not None else None
-                        self.reader = ChatReader(self.config, chat_pitch(self.config, client[3]),
+                        pitch = chat_pitch(self.config, client[3])
+                        if self.reader is not None and source_height == client[3]:
+                            pitch = self.reader.pitch
+                        self.reader = ChatReader(self.config, pitch,
                                                  log=log, detail=lambda m: log(m, console=False))
                         self.reader.expect_until = waiting
+                        source_height = client[3]
                     log(f"chat: reading the box at {region['width']}x{region['height']} px", console=False)
                 try:
                     frame = source.grab()
@@ -1099,7 +1163,19 @@ def emit(kind, payload):
     write_line(f"@{kind} {json.dumps(payload, separators=(',', ':'))}")
 
 
-def run(dry_run, control=False, auto_pause_minutes=None):
+def parse_success_band(text):
+    """'90-99' -> (90, 99) percent; 'off' -> (100, 100). ValueError if it is not a usable band."""
+    text = str(text).strip().lower().replace("%", "")
+    if text in ("off", "none", "100"):
+        return 100, 100
+    low, _, high = text.partition("-")
+    low, high = int(low), int(high or low)
+    if not 0 < low <= high <= 100:
+        raise ValueError(f"a band is LOW-HIGH percent with 0 < LOW <= HIGH <= 100, got {text!r}")
+    return low, high
+
+
+def run(dry_run, control=False, auto_pause_minutes=None, success_band=None):
     try:
         import keyboard
     except ImportError:
@@ -1148,8 +1224,12 @@ def run(dry_run, control=False, auto_pause_minutes=None):
     ears = SplashListener(source, reference) if source is not None else None
     lure = LureWatcher(eye, screen) if eye is not None else None
     chat = ChatWatcher(chat_config, screen) if chat_config is not None else None
+    low, high = success_band or SUCCESS_RATE_PERCENT
+    keeper = fishing.SuccessRateKeeper(low / 100, high / 100)
+    log(f"success rate kept in: {keeper.band_text()}"
+        + ("" if keeper.off else " (a bite is let go now and then, once it reaches the top)"))
     loop = fishing.FishingLoop(recast_delay=RECAST_DELAY_SECONDS,
-                               no_splash_timeout=NO_SPLASH_TIMEOUT_SECONDS, log=log)
+                               no_splash_timeout=NO_SPLASH_TIMEOUT_SECONDS, log=log, keeper=keeper)
     threading.Thread(target=screen.run, daemon=True, name="screen").start()
     if ears is not None:
         threading.Thread(target=ears.run, daemon=True, name="audio").start()
@@ -1280,6 +1360,7 @@ def run(dry_run, control=False, auto_pause_minutes=None):
                     "auto_pause_minutes": auto_pause.minutes,
                     "fishing_seconds": round(fishing_seconds, 1),
                     "reeled": loop.catches, "missed": loop.misses, "by": loop.caught_by,
+                    "let_go": loop.let_go, "success_band": [round(keeper.low * 100), round(keeper.high * 100)],
                     "caught": books.tally.total,
                     "chat": "reading" if chat is not None else "off", "dry_run": dry_run})
             time.sleep(0.01)                   #100 Hz: at most 10 ms between a bite and the press
@@ -1304,6 +1385,7 @@ def run(dry_run, control=False, auto_pause_minutes=None):
     by = loop.caught_by
     log(f"done after {minutes:.1f} min: {loop.catches} reeled in (heard {by['sound']}, seen "
         f"{by['sight']}, both {by['both']}), {loop.misses} missed"
+        f"{f' ({loop.let_go} let go on purpose)' if loop.let_go else ''}"
         f"{f', {source.dropped} audio chunks dropped' if source is not None and source.dropped else ''}")
     if chat is not None:
         log(books.summary(fishing_seconds))
@@ -1326,6 +1408,10 @@ def main(argv=None):
     parser.add_argument("--auto-pause", type=int, choices=AUTO_PAUSE_CHOICES, metavar="MINUTES",
                         help=f"pause after this many minutes without {PAUSE_KEY.upper()} "
                              f"(default {AUTO_PAUSE_MINUTES}; one of {AUTO_PAUSE_CHOICES})")
+    parser.add_argument("--success-rate", type=parse_success_band, metavar="LOW-HIGH",
+                        help=f"keep the success rate in this band, in percent, by letting a bite "
+                             f"go now and then (default {SUCCESS_RATE_PERCENT[0]}-"
+                             f"{SUCCESS_RATE_PERCENT[1]}; 'off' reels in every bite)")
     parser.add_argument("--control", action="store_true",
                         help="run under wow_gui.py: commands on stdin, state as @lines on stdout")
     args = parser.parse_args(argv)
@@ -1339,7 +1425,8 @@ def main(argv=None):
             print(f"No usable reference clips in {SPLASH_FOLDER}.")
             return 2
         return replay(args.replay, reference) if args.replay else check_audio(reference)
-    return run(args.dry_run, control=args.control, auto_pause_minutes=args.auto_pause)
+    return run(args.dry_run, control=args.control, auto_pause_minutes=args.auto_pause,
+               success_band=args.success_rate)
 
 
 if __name__ == "__main__":

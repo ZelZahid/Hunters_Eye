@@ -60,6 +60,7 @@ LOOT_FRAMES = [load(f"chat_loot_{t}s.png") for t in ("28_25", "28_5", "28_75")] 
 CRAB = load("chat_crab_behind.png")               #a monster walking behind the (empty) chat box
 CONFIG = wow.load_chat_config()
 PITCH = 18
+SNAPPER_LINE = "You receive loot: [Raw Longjaw Mud Snapper]"
 
 
 def lines_of(frame):
@@ -150,6 +151,94 @@ if ocr_or_skip("V-319"):
     check(f"the recording: nothing on the first look, then Gaffer Jack, then the Albacore ({events})",
           [[e[0] for e in batch] for batch in events] == [[], ["Gaffer Jack"], ["Raw Rainbow Fin Albacore"]])
     check("...each counted once: looking again finds nothing", reader.look(LOOT_FRAMES[2], 0.75) == [])
+
+
+print("\nV-420  Chat lines 16 px apart (a smaller font) are measured and read at 16, so every catch is counted")
+#The owner's chat on 2026-11-25, 16:04: three Snappers, each after a skill-up line, lines 16 px
+#apart. wow.py read it at the 18 px chat.json says, the box stopped lining up with itself every
+#few seconds, and two of the three catches were never counted.
+PITCH16 = load("chat_pitch16_loot.png")
+check(f"the pitch is measured as 16 (got {text_feed.estimate_pitch(PITCH16)})",
+      text_feed.estimate_pitch(PITCH16) == 16)
+check("...and as 18 on the screenshot and recording read at 18 before - nothing changes there",
+      text_feed.estimate_pitch(SCREENSHOT) == 18 and text_feed.estimate_pitch(LOOT_FRAMES[2]) == 18)
+
+
+def earlier(frame, lines_back, pitch=16):
+    """The box as it was `lines_back` lines ago: everything that many lines lower, the empty water
+    from its own top filling the space above (WoW's chat grows at the bottom and scrolls up)."""
+    if lines_back == 0:
+        return frame.copy()
+    water = np.vstack([frame[:pitch]] * lines_back)
+    return np.ascontiguousarray(np.vstack([water, frame[:frame.shape[0] - lines_back * pitch]]))
+
+
+#Lines 0-7: skill 55, LOOT, online, skill 56, LOOT, skill 57, LOOT, online. Each step is one arrival.
+ARRIVALS = [6, 6, 6, 5, 5, 3, 3, 1, 1, 0, 0]
+notes = []
+reader = wow.ChatReader(CONFIG, 18, ocr=lambda image, threshold: SNAPPER_LINE, log=notes.append)
+found = [len(reader.look(earlier(PITCH16, n), 0.25 * i)) for i, n in enumerate(ARRIVALS)]
+check(f"started at chat.json's 18, it switches to 16 within the first two looks ({notes[:1]})",
+      reader.pitch == 16 and any("16 px apart" in note for note in notes))
+check(f"...then the two Snappers that arrive are each counted once, when they arrive ({found})",
+      found == [0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0])
+reader = wow.ChatReader(CONFIG, 16, ocr=lambda image, threshold: SNAPPER_LINE, log=notes.append)
+found = [len(reader.look(earlier(PITCH16, n), 0.25 * i)) for i, n in enumerate([8, 8] + ARRIVALS)]
+check(f"from an empty box: all three, one per arrival ({found})", sum(found) == 3
+      and found == [0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0])
+reader = wow.ChatReader(CONFIG, 16, ocr=lambda image, threshold: SNAPPER_LINE, log=notes.append)
+[reader.look(PITCH16, t) for t in (0.0, 0.25, 0.5)]
+check("a box at the right pitch is never switched away from it", reader.pitch == 16)
+
+
+print("\nV-421  Guild chat is green too, but not the loot green - it is never read as a loot line")
+GUILD = load("chat_guild_pitch16.png")
+reader = wow.ChatReader(CONFIG, 16)
+guild_lines = text_feed.split_lines(GUILD, 16)
+check(f"9 lines, 6 of them green guild chat: none is taken for loot "
+      f"({[reader.is_loot(line.image) for line in guild_lines]})",
+      len(guild_lines) == 9 and not any(reader.is_loot(line.image) for line in guild_lines))
+check("...while every loot line still is, on the owner's chat and on the recording",
+      [reader.is_loot(l.image) for l in text_feed.split_lines(PITCH16, 16)].count(True) == 3
+      and wow.ChatReader(CONFIG, 18).is_loot(lines_of(LOOT_FRAMES[2])[-1].image))
+check("a green line that does not read as loot is not reported as an unread loot line",
+      not wow.looks_like_loot("[Guild] [Belle Rogl: long weekend to level to 60 an tm")
+      and wow.looks_like_loot("You recieve lool: [Raw Longjaw") and wow.looks_like_loot("Vou rcceive"))
+
+
+print("\nV-422  A line fading out, or a streak behind the empty top of the box, does not lose the box")
+#A fading line stays bright enough to be a line but too faint to match itself for a moment
+#(measured on the recording over grass at 35-45% brightness); before, that made the whole box
+#"cannot tell", and a loot line arriving in that moment was never counted.
+rows = [0, 1, 3, 4, 5, 6, 2]
+before = box(rows)
+after = box(rows + [2])
+top = 13                                     #the screenshot's first whole line starts here
+junk = after.copy()
+junk[top:top + PITCH] = (junk[top:top + PITCH].astype(np.float32) * 0.6).astype(np.uint8)
+junk[top:top + PITCH, :, :] = np.roll(junk[top:top + PITCH], 120, axis=1)   #no longer matches itself
+feed = text_feed.TextFeed(PITCH)
+feed.feed(before)
+new = feed.feed(junk)
+check(f"the top line no longer matching while a Snapper arrives: the Snapper is still found "
+      f"({None if new is None else len(new)} new)", new is not None and len(new) == 1)
+emptied = before.copy()
+emptied[top:top + PITCH] = SCREENSHOT[:1].mean(axis=0, keepdims=True).astype(np.uint8)  #slot left empty
+streak = emptied.copy()
+for x in range(30, 400, 9):                  #a dashed glint behind the empty slot
+    cv.line(streak, (x, top + 8), (x + 5, top + 8), (255, 255, 255), 2)
+feed = text_feed.TextFeed(PITCH)
+feed.feed(emptied)
+check("a streak appearing in the empty top slot is set aside: nothing new, not 'cannot tell'",
+      feed.feed(streak) == [])
+feed = text_feed.TextFeed(PITCH)
+feed.feed(before)
+check("but a line that was seen before is never set aside as junk: a box whose top line was seen elsewhere stays 'cannot tell'",
+      feed.feed(box([4, 1, 3, 4, 5, 6, 2])) is None)
+feed = text_feed.TextFeed(PITCH)
+feed.feed(box(rows))
+check("the same box again, nothing faded: nothing new (the junk step changes no plain answer)",
+      feed.feed(box(rows)) == [] and not feed.ambiguous)
 
 
 print("\nL-712  Loot lines are parsed from what OCR really returns - misread brackets, stacks, junk after")

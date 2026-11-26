@@ -157,6 +157,9 @@ Code under test: core/text_feed.py
 | V-417 | A line matches itself in another frame - even fading, or over moving grass - and never a different line | test_wow_catches.py | **new** |
 | V-418 | New lines are found as they arrive on a real recording; an unchanged box finds none; a crab is 'cannot tell' | test_wow_catches.py | **new** |
 | V-419 | A box of nothing but the same line: no line is invented, but it says it cannot be sure | test_wow_catches.py | **new** |
+| V-420 | Chat lines 16 px apart (a smaller font) are measured and read at 16, so every catch is counted | test_wow_catches.py | **new** |
+| V-421 | Guild chat is green too, but not the loot green - it is never read as a loot line | test_wow_catches.py | **new** |
+| V-422 | A line fading out, or a streak behind the empty top of the box, does not lose the box | test_wow_catches.py | **new** |
 
 ### V-5xx  Image search (template matching)
 
@@ -348,6 +351,7 @@ Code under test: routes/fishing.py, routes/fish_tally.py, wow.py
 | L-715 | The tally: counts, what they are worth (unpriced fish counted apart), and per hour | test_wow_catches.py | **new** |
 | L-716 | Auto-pause: after N minutes with no F5, never while paused, and every F5 starts it over | test_wow_catches.py | **new** |
 | L-717 | The one case pixels cannot settle: a reeled-in bite and a box of repeats counts one more; a fish that got away does not | test_wow_catches.py | **new** |
+| L-718 | The success rate is kept in its band: bites are let go only near the top, never two in a row, reeled in late | test_wow_fishing.py | **new** |
 
 ## A — Actions
 
@@ -496,3 +500,4 @@ Code under test: wow_gui.py, wow.py --control
 | T-408 | Session numbers: fishing time across restarts, catch rate, earnings in gold/silver/copper, unpriced flagged | test_wow_panel.py | **new** |
 | T-409 | Pause sends the same toggle as F5; the header follows wow.py's answer | test_wow_panel.py | **new** |
 | T-410 | Every word the panel sends is one wow.py --control answers to | test_wow_panel.py | **new** |
+| T-411 | The success rate is shown, and the band typed in Setup is what wow.py is started with | test_wow_panel.py | **new** |

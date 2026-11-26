@@ -1754,3 +1754,32 @@ Lesson: A GUARD THAT LEANS ON SOMEONE ELSE'S SEGMENTATION INHERITS ITS ERRORS IN
   The known-limitation note reasoned carefully about one direction and so read as complete. When a
   rule is "the whole X", ask what happens when X is cut too short as well as too long - and
   check the question against the boxes, not against the grouping that produced the problem.
+
+
+52. The fishing panel counted 1 Snapper of 3 - the chat was read at the wrong line pitch.
+Symptom: "here in chat there is 3 fish caught, but in the gui only 1 is shown." The Log tab showed
+  one "caught", one "looted ... while paused", and red "a loot line arrived but could not be read"
+  lines whose OCR was GUILD chat.
+Diagnosis: two separate faults, found in recordings/wow/wow_2026-11-25_16-02-29.log and Zel's
+  chat_check.png.
+  - The log said "the box changed all at once" 26 times in 7 minutes, one of them the moment the
+    first Snapper's loot line arrived. estimate_pitch() on his chat picture said 16; chat.json says
+    18 (measured on the 2026-11-24 recordings - his chat font was smaller by 11-25). Cut at 18,
+    every line lands 2 px further off than the one above, the lines stop matching themselves, the
+    box reads as "cannot tell", and whatever arrived in that frame is never counted. Replayed on a
+    crop of his own screenshot: read at 18 the catches were missed and two NON-loot arrivals were
+    counted instead (a miscut line straddled the green); at 16, all three, once each.
+  - Guild chat is green (64,255,64, saturation 191) and passed the loot colour test (saturation
+    150+). Harmless to the count - OCR said it was not a loot line - but every guild message was
+    OCR'd and logged in red as an unread loot line, which buried the real problem.
+Fix: ChatReader measures the pitch off the chat (on every look until a picture agrees with the
+  one in use, then whenever the box changes) and switches when two measurements in a row agree on
+  another one. Loot green needs saturation 200+ (loot 253 median live, 205 in compressed video;
+  guild 191 max). A green line whose OCR does not look like "receive"/"loot" is a detail, not a
+  red warning. text_feed also sets aside up to 3 unmatched top lines (a line fading out, a glint)
+  before giving up on the alignment. Cards V-420/V-421/V-422, on two new real fixtures.
+Lesson: A NUMBER IN A CONFIG FILE THAT DESCRIBES SOMEONE ELSE'S SCREEN IS A GUESS. The pitch was
+  measured carefully - on recordings from a day when the font was bigger. Anything the picture can
+  measure for itself (pitch, here) should be measured from the picture and the config used only as
+  the starting point. And when a log is full of a "cannot tell" that should be rare, count it:
+  26 in 7 minutes was the bug report, written down before anyone asked.
