@@ -189,7 +189,7 @@ At the top of `wow.py`, under `SETTINGS`. Edit, then restart.
 | `WINDOW_TITLE` | `World of Warcraft` | the window it looks at and must be in front |
 | `AUTO_PAUSE_MINUTES` | `30` | pause by itself after this long with no `F5` (the panel and `--auto-pause` override it per run) |
 | `READ_CHAT` | `True` | count catches from the chat box |
-| `SUCCESS_RATE_PERCENT` | `(90, 99)` | keep the success rate in this band by letting a bite go now and then (below); `(100, 100)` reels in every bite. The panel's Setup tab and `--success-rate 85-95` override it per run |
+| `SUCCESS_RATE_PERCENT` | `(90, 99)` | keep the success rate in this band by letting a bite go now and then (below); `(100, 100)` reels in every bite. The panel's Setup tab changes it at once, even while fishing; `--success-rate 85-95` sets it for one run |
 
 **The timeout decides which slow bites are abandoned.** The cast bar lasts about 30 s. In the
 reference video the second cast's splash was heard 20.2 s after its bar appeared (bar at 17.0 s,
@@ -217,7 +217,9 @@ bite at a time:
   bar goes), nothing is pressed. The log says `letting this one go on purpose` each time.
 
 The rate is per run of `wow.py`; the panel's figure adds up the whole session (restarts included),
-so the two can differ a little after a Stop and Start. **This does not make automating WoW any less
+so the two can differ a little after a Stop and Start. The band in use is shown next to the rate
+(*kept in 90-99%*); a change in the Setup tab reaches `wow.py` at once, as two words on its input
+(`success_low_90`, `success_high_95`), and the card follows when `wow.py` reports it back. **This does not make automating WoW any less
 against Blizzard's terms** (see the top of this file).
 
 **Not measured:** how long WoW keeps a fish on the hook after the splash. If 4 s is still in time,

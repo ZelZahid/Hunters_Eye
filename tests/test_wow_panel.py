@@ -49,7 +49,11 @@ check("wow.py --control registers toggle, pause, resume and quit",
 check("...and one auto_pause_<minutes> per choice the panel offers",
       'handlers[f"auto_pause_{minutes}"]' in source and "for minutes in AUTO_PAUSE_CHOICES" in source)
 sent = set(re.findall(r'self\.bot\.send\(f?"([a-z_]+)', panel_source))
-check(f"the panel only sends those ({sorted(sent)})", sent <= {"toggle", "pause", "resume", "quit", "auto_pause_"})
+check("...and one success_low_<percent> and success_high_<percent> per percent the Setup tab offers",
+      'handlers[f"success_low_{percent}"]' in source and 'handlers[f"success_high_{percent}"]' in source
+      and "for percent in SUCCESS_RATE_CHOICES" in source)
+check(f"the panel only sends those ({sorted(sent)})",
+      sent <= {"toggle", "pause", "resume", "quit", "auto_pause_", "success_low_", "success_high_"})
 check("end of input quits wow.py (a closed panel never leaves it pressing keys)",
       "on_close=quit_requested.set" in source)
 check("the F5 button and the F5 key call the same function", 'lambda: toggle_pause("control panel")' in source
@@ -80,7 +84,10 @@ root.withdraw()
 #The stand-in: answers like wow.py --control. Each status line reports what it was told.
 STAND_IN = textwrap.dedent("""\
     import json, sys, threading, time
-    state = {"paused": False, "minutes": 30.0, "left": 1800.0, "fishing": 0.0, "reason": None}
+    state = {"paused": False, "minutes": 30.0, "left": 1800.0, "fishing": 0.0, "reason": None,
+             "band": [90, 99]}
+    if "--success-rate" in sys.argv:
+        state["band"] = [int(v) for v in sys.argv[sys.argv.index("--success-rate") + 1].split("-")]
     if "--auto-pause" in sys.argv:
         state["minutes"] = float(sys.argv[sys.argv.index("--auto-pause") + 1])
         state["left"] = state["minutes"] * 60
@@ -89,7 +96,8 @@ STAND_IN = textwrap.dedent("""\
               "pause_reason": state["reason"], "blocked": None, "auto_pause_left": state["left"],
               "auto_pause_minutes": state["minutes"], "fishing_seconds": state["fishing"],
               "reeled": 3, "missed": 1, "by": {}, "caught": 2, "chat": "reading",
-              "dry_run": "--dry-run" in sys.argv}), flush=True)
+              "dry_run": "--dry-run" in sys.argv, "success_band": state["band"],
+              "chat_pitch": 16}), flush=True)
     print("stand-in: started " + " ".join(sys.argv[1:]), flush=True)
     status()
     for line in sys.stdin:
@@ -100,6 +108,10 @@ STAND_IN = textwrap.dedent("""\
             state["reason"] = "manual" if state["paused"] else None
         elif word.startswith("auto_pause_"):
             state["minutes"] = float(word.split("_")[-1]); state["left"] = state["minutes"] * 60
+        elif word.startswith("success_low_"):
+            state["band"][0] = int(word.split("_")[-1])
+        elif word.startswith("success_high_"):
+            state["band"][1] = int(word.split("_")[-1])
         elif word == "catch":
             print('@catch {"fish": "Raw Longjaw Mud Snapper", "count": 1, "how": "read", "time": "12:00:01"}', flush=True)
         elif word == "fish":
@@ -233,7 +245,7 @@ root.update()
 check("...and the header says Not running", text(panel.state_label) in ("Not running", "Stopped"))
 
 
-print("\nT-411  The success rate is shown, and the band typed in Setup is what wow.py is started with")
+print("\nT-411  The success rate is shown, the band typed in Setup reaches wow.py at once, and the measured chat pitch is shown")
 check("nothing tried yet: '-', not 0% or 100%", wow_gui.success_text(0, 0) == "-")
 check(f"4 reeled, 1 missed: {wow_gui.success_text(4, 1)!r}", wow_gui.success_text(4, 1) == "80%   (4 of 5)")
 check("with wow.py's band in its status line, the band is shown too",
@@ -250,7 +262,26 @@ check(f"85-95 typed: wow.py is started with --success-rate 85-95 ({command[-2:]}
 panel.band_low.set("97")
 check("a band that is not one (97-95): wow.py keeps its default, and the log says why",
       panel.success_band() is None and "is not one" in panel.log.get("1.0", "end"))
+check("...and so is one outside 50-100 (40-95), which wow.py has no word for",
+      (panel.band_low.set("40"), panel.success_band())[1] is None)
 check("the session card has a Success rate row", "success" in panel.session_values)
+panel.band_low.set("90")
+panel.band_high.set("99")
+panel.start_bot()
+check("started: the session card shows the band wow.py reports (90-99)",
+      tick_until(lambda: "kept in 90-99%" in text(panel.session_values["success"])))
+check("the Setup tab shows the line pitch wow.py MEASURED (16), not chat.json's starting 18",
+      tick_until(lambda: "lines 16 px apart (measured" in text(panel.chat_where)))
+panel.band_high.set("95")
+check("changing the band while fishing reaches wow.py at once: the card says 90-95",
+      tick_until(lambda: "kept in 90-95%" in text(panel.session_values["success"])))
+check("...sent as the two words wow.py answers to",
+      "stand-in: got success_high_95" in panel.log.get("1.0", "end"))
+panel.band_low.set("9")                      #on the way to typing 95: not a band, nothing sent
+check("a half-typed number sends nothing and logs nothing",
+      "success_low_9\n" not in panel.log.get("1.0", "end"))
+panel.stop_bot()
+tick_until(lambda: not panel.bot.running())
 root.destroy()
 
 print(f"\n{'ALL CHECKS PASSED' if failures == 0 else str(failures) + ' CHECK(S) FAILED'}")

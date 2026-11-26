@@ -378,6 +378,11 @@ check("below the top of the band nothing is let go (95%, 50 times)",
       not any(keeper.let_go(95, 5) for _ in range(50)))
 check("bands that cannot be: refused", all(_raises(lambda b=b: Keeper(*b)) for b in
                                            ((0.0, 0.9), (0.95, 0.90), (0.9, 1.01))))
+keeper = Keeper(0.90, 0.99)
+keeper.set_band(0.90, 0.95)
+check("the band can be changed while fishing; a band that is not one is refused and the old kept",
+      (keeper.low, keeper.high) == (0.90, 0.95) and _raises(lambda: keeper.set_band(0.97, 0.95))
+      and (keeper.low, keeper.high) == (0.90, 0.95))
 check("a band ending at 100% is off: every bite reeled in",
       Keeper(0.9, 1.0).off and not any(Keeper(0.9, 1.0).let_go(500, 0) for _ in range(20)))
 

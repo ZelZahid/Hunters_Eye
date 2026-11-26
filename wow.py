@@ -105,6 +105,7 @@ SUCCESS_RATE_PERCENT = (90, 99)     #keep bites reeled in / casts that ended ins
                                     #letting a bite go now and then (reeled in 4-7 s late) once the
                                     #rate reaches the top, until it is back at the bottom. (100, 100)
                                     #= reel in every bite. The GUI's Setup tab, or --success-rate 85-95.
+SUCCESS_RATE_CHOICES = range(50, 101)  #what the GUI offers for either end of the band
 
 PAUSE_KEY = "f5"                    #pauses, and the same key resumes
 QUIT_KEY = "end"
@@ -1264,6 +1265,23 @@ def run(dry_run, control=False, auto_pause_minutes=None, success_band=None):
                 play_cue(rising=False)
                 log(f"PAUSED ({by}) - {PAUSE_KEY.upper()} again to resume")
 
+    band_asked = {"low": round(keeper.low * 100), "high": round(keeper.high * 100)}
+
+    def chat_pitch():
+        """The line pitch the chat is being read at right now (measured), or None."""
+        reader = chat.reader if chat is not None else None
+        return reader.pitch if reader is not None else None
+
+    def set_success_band(which, percent):
+        #Low and high arrive as two words; the band changes as soon as the pair is one (going from
+        #90-95 to 97-99, "low 97" alone would be 97-95 - it waits for "high 99").
+        band_asked[which] = percent
+        try:
+            keeper.set_band(band_asked["low"] / 100, band_asked["high"] / 100)
+        except ValueError:
+            return
+        log(f"success rate now kept in: {keeper.band_text()}")
+
     def set_auto_pause(minutes):
         with state_lock:
             auto_pause.set_minutes(minutes, time.monotonic())
@@ -1278,6 +1296,9 @@ def run(dry_run, control=False, auto_pause_minutes=None, success_band=None):
                     "quit": quit_requested.set}
         for minutes in AUTO_PAUSE_CHOICES:
             handlers[f"auto_pause_{minutes}"] = lambda m=minutes: set_auto_pause(m)
+        for percent in SUCCESS_RATE_CHOICES:
+            handlers[f"success_low_{percent}"] = lambda p=percent: set_success_band("low", p)
+            handlers[f"success_high_{percent}"] = lambda p=percent: set_success_band("high", p)
         #End of input = the control panel went away: nobody is watching, so stop.
         command_channel.listen(handlers, on_close=quit_requested.set, log=log)
     log(f"{'DRY RUN - no key will be pressed. ' if dry_run else ''}"
@@ -1362,7 +1383,8 @@ def run(dry_run, control=False, auto_pause_minutes=None, success_band=None):
                     "reeled": loop.catches, "missed": loop.misses, "by": loop.caught_by,
                     "let_go": loop.let_go, "success_band": [round(keeper.low * 100), round(keeper.high * 100)],
                     "caught": books.tally.total,
-                    "chat": "reading" if chat is not None else "off", "dry_run": dry_run})
+                    "chat": "reading" if chat is not None else "off", "chat_pitch": chat_pitch(),
+                    "dry_run": dry_run})
             time.sleep(0.01)                   #100 Hz: at most 10 ms between a bite and the press
     except KeyboardInterrupt:
         pass

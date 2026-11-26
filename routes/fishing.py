@@ -69,15 +69,20 @@ class SuccessRateKeeper:
     """
 
     def __init__(self, low=0.90, high=0.99, min_attempts=10, chance=0.35, rng=None):
-        low, high = float(low), float(high)
-        if not 0.0 < low <= high <= 1.0:
-            raise ValueError(f"the success-rate band must be 0 < low <= high <= 100%, got {low:.0%}-{high:.0%}")
-        self.low, self.high = low, high
+        self.set_band(low, high)
         self.min_attempts = int(min_attempts)
         self.chance = float(chance)
         self.rng = rng or random.Random()
         self.lowering = False
         self._last_let_go = False
+
+    def set_band(self, low, high):
+        """A new band, at once (the panel's Setup tab while fishing). ValueError if it is not one;
+        the old band stays then. let_go() judges the next bite against it."""
+        low, high = float(low), float(high)
+        if not 0.0 < low <= high <= 1.0:
+            raise ValueError(f"the success-rate band must be 0 < low <= high <= 100%, got {low:.0%}-{high:.0%}")
+        self.low, self.high = low, high
 
     @property
     def off(self):

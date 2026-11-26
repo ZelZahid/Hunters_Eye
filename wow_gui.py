@@ -301,14 +301,8 @@ class FishingPanel:
         return command
 
     def success_band(self):
-        """The band typed in the Setup tab as (low, high) percent, or None (with a note in the log)
-        if it is not one - wow.py then keeps its own default."""
-        try:
-            return wow.parse_success_band(f"{self.band_low.get()}-{self.band_high.get()}")
-        except ValueError:
-            self._append(f"panel: the success-rate band {self.band_low.get()}-{self.band_high.get()}% "
-                         f"is not one (0 < low <= high <= 100) - using wow.py's default", "problem")
-            return None
+        """The band to start wow.py with, or None (with a note in the log): it keeps its default."""
+        return self.band_from_setup()
 
     # --- the top: state, start/stop -------------------------------------------------------
     def _build_header(self):
@@ -594,28 +588,60 @@ class FishingPanel:
         ttk.Label(rate, text="% and").pack(side="left")
         ttk.Spinbox(rate, from_=50, to=100, width=4, textvariable=self.band_high).pack(side="left", padx=4)
         ttk.Label(rate, text="%").pack(side="left")
+        self.band_low.trace_add("write", self._band_changed)
+        self.band_high.trace_add("write", self._band_changed)
         ttk.Label(tab, style="Caption.TLabel", wraplength=900, justify="left", text=(
             "Success rate = bites reeled in / casts that ended. Once it reaches the top of the band, "
             "some bites are let go (reeled in 4-7 s late, so the fish gets away) until it is back at "
-            "the bottom. 100 and 100 reels in every bite. Used from the next Start; the default is "
-            "SUCCESS_RATE_PERCENT at the top of wow.py.")).pack(fill="x")
+            "the bottom. 100 and 100 reels in every bite. A change takes effect at once, also while "
+            "fishing (This session shows the band in use); the default is SUCCESS_RATE_PERCENT at "
+            "the top of wow.py.")).pack(fill="x")
         self.check_text = dark_text(ScrolledText(tab, height=12, wrap="word", state="disabled",
                                                  font=gui._log_font()))
         self.check_text.pack(fill="both", expand=True, pady=(8, 0))
         self._show_chat_where()
         return tab
 
-    def _show_chat_where(self):
+    def _show_chat_where(self, measured=None):
+        """measured: the pitch wow.py is reading the chat at right now (it measures it off the
+        chat), or None when it is not running - then chat.json's starting guess is shown."""
+        self.shown_pitch = measured
         mine = wow.USER_CHAT_CONFIG.exists()
         config = wow.load_chat_config()
         if config is None:
             self.chat_where.configure(text="The chat settings cannot be read - see the Log tab.")
             return
         x, y, w, h = config["region"]
+        lines = (f"lines {measured} px apart (measured on your chat while fishing)" if measured else
+                 f"lines {config['line_pitch']:.0f} px apart at {config['source_height']:.0f} px tall "
+                 f"to start with - measured on your chat once fishing starts")
         self.chat_where.configure(text=(
             f"Reading: {'your own area' if mine else 'the default area'} - from {x:.1%} across and "
-            f"{y:.1%} down the WoW window, {w:.1%} wide and {h:.1%} tall; "
-            f"lines {config['line_pitch']:.0f} px apart at {config['source_height']:.0f} px tall."))
+            f"{y:.1%} down the WoW window, {w:.1%} wide and {h:.1%} tall; {lines}."))
+
+    def band_from_setup(self, quiet=False):
+        """The band typed in the Setup tab as (low, high) percent, or None if it is not one -
+        both ends in wow.SUCCESS_RATE_CHOICES, low <= high. quiet: no note in the log (used on
+        every keystroke, where "9" on the way to "95" is not a mistake)."""
+        try:
+            low, high = int(self.band_low.get()), int(self.band_high.get())
+        except ValueError:
+            low = high = None
+        if low in wow.SUCCESS_RATE_CHOICES and high in wow.SUCCESS_RATE_CHOICES and low <= high:
+            return low, high
+        if not quiet:
+            self._append(f"panel: the success-rate band {self.band_low.get()}-{self.band_high.get()}% "
+                         f"is not one (each end {wow.SUCCESS_RATE_CHOICES.start}-"
+                         f"{wow.SUCCESS_RATE_CHOICES.stop - 1}, low <= high) - using wow.py's default",
+                         "problem")
+        return None
+
+    def _band_changed(self, *_):
+        """Spinbox changed: tell a running wow.py at once (it answers in its status line)."""
+        band = self.band_from_setup(quiet=True)
+        if band is not None and self.bot.running():
+            self.bot.send(f"success_low_{band[0]}")
+            self.bot.send(f"success_high_{band[1]}")
 
     def _set_check_text(self, text):
         self.check_text.configure(state="normal")
@@ -773,6 +799,8 @@ class FishingPanel:
             self.fishing.update(payload.get("fishing_seconds"))
             self.reeled.update(payload.get("reeled"))
             self.missed.update(payload.get("missed"))
+            if payload.get("chat_pitch") != self.shown_pitch:
+                self._show_chat_where(payload.get("chat_pitch"))
         elif kind == "catch":
             self.add_catch(payload.get("fish", "?"), int(payload.get("count", 1)),
                            payload.get("how", "read"), payload.get("time", time.strftime("%H:%M:%S")))

@@ -500,4 +500,4 @@ Code under test: wow_gui.py, wow.py --control
 | T-408 | Session numbers: fishing time across restarts, catch rate, earnings in gold/silver/copper, unpriced flagged | test_wow_panel.py | **new** |
 | T-409 | Pause sends the same toggle as F5; the header follows wow.py's answer | test_wow_panel.py | **new** |
 | T-410 | Every word the panel sends is one wow.py --control answers to | test_wow_panel.py | **new** |
-| T-411 | The success rate is shown, and the band typed in Setup is what wow.py is started with | test_wow_panel.py | **new** |
+| T-411 | The success rate is shown, the band typed in Setup reaches wow.py at once, and the measured chat pitch is shown | test_wow_panel.py | **new** |
